@@ -121,6 +121,11 @@ button.small{padding:4px 10px;font-size:10px;}
         </div>
       </div>
       <canvas id="mainChart" height="260" style="width:100%;"></canvas>
+<div style="margin-top:8px;padding:10px;background:linear-gradient(135deg,rgba(240,165,0,0.08),rgba(0,207,168,0.08));border:1px solid rgba(240,165,0,0.25);border-radius:10px;">
+  <h3 style="font-size:13px;color:#ffaa00;margin:0 0 4px 0;">🔮 Forecast Ahead — OpenRouter Brain (Not on Chart)</h3>
+  <p style="font-size:11px;color:#e8ecf0;margin:0;line-height:1.4;"><strong id="forecastDirAhead">Direction:</strong> <span id="forecastReasonAhead">Click Refresh Forecast to load from OpenRouter (needs key from Settings).</span></p>
+  <div style="font-size:10px;color:#8898aa;margin-top:4px;">Predicted Nifty: <span id="predNiftyAhead">—</span> · BankNifty: <span id="predBankAhead">—</span> · Confidence: <span id="confAhead">—</span></div>
+</div>
       <div style="display:flex;gap:10px;margin-top:6px;font-size:10px;color:var(--muted);flex-wrap:wrap;align-items:center;">
         <span><span style="display:inline-block;width:8px;height:8px;background:#00ffa3;border-radius:50%;margin-right:3px;"></span>Past Range (Green)</span>
         <span><span style="display:inline-block;width:8px;height:8px;background:#ff5555;border-radius:50%;margin-right:3px;"></span>Forecast Down (Red)</span>
