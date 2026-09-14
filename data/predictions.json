@@ -62,5 +62,27 @@
     "validated": 3,
     "wins": 2,
     "accuracy_percent": 66.7
-  }
+  },
+  "snapshots": [
+    {
+      "timestamp": "2026-09-14 16:24:21",
+      "nifty_spot": 23385.33,
+      "bank_spot": 56614.15
+    },
+    {
+      "timestamp": "2026-09-14 16:39:22",
+      "nifty_spot": 23394.35,
+      "bank_spot": 56597.26
+    },
+    {
+      "timestamp": "2026-09-14 16:39:29",
+      "nifty_spot": 23393.29,
+      "bank_spot": 56606.42
+    },
+    {
+      "timestamp": "2026-09-14 16:39:34",
+      "nifty_spot": 23390.5,
+      "bank_spot": 56609.87
+    }
+  ]
 }
