@@ -46,6 +46,9 @@
     <button class="icon-btn" id="btn-insight" title="Show forecast panel" aria-label="Show forecast panel">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3v18h18"/><path d="M7 14l4-5 3 3 5-7"/></svg>
     </button>
+    <button class="icon-btn" id="btn-journal" title="Trade journal" aria-label="Trade journal">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h7M9 11h7"/></svg>
+    </button>
     <button class="icon-btn" id="btn-theme" title="Toggle dark mode" aria-label="Toggle dark mode">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
     </button>
@@ -167,6 +170,7 @@
         <div class="news-filters" role="group" aria-label="News filter">
           <button class="filter-btn" data-filter="all"    aria-pressed="true">All</button>
           <button class="filter-btn" data-filter="high"   aria-pressed="false">High impact</button>
+          <button class="filter-btn" data-filter="filing" aria-pressed="false">Filings</button>
           <button class="filter-btn" data-filter="pos"    aria-pressed="false">Positive</button>
           <button class="filter-btn" data-filter="neg"    aria-pressed="false">Negative</button>
           <button class="filter-btn" data-filter="india"  aria-pressed="false">India</button>
@@ -180,6 +184,19 @@
   <!-- ------------------------------------------------- INSIGHT (right) -->
   <aside class="panel insight-panel" id="insight-panel" aria-label="Forecast and study">
     <div class="panel-scroll">
+
+      <!-- Your position, from the local trade journal -->
+      <div class="section hidden" id="position-section">
+        <div class="section-head">
+          <span class="label">Your position</span>
+          <button class="btn btn-sm" id="btn-open-journal">Journal</button>
+        </div>
+        <div class="kv"><span class="kv-k">Net quantity</span><span class="kv-v" id="pos-qty">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Average cost</span><span class="kv-v" id="pos-avg">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Unrealised</span><span class="kv-v" id="pos-unreal">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Realised</span><span class="kv-v" id="pos-real">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Entries on chart</span><span class="kv-v" id="pos-count">&mdash;</span></div>
+      </div>
 
       <!-- Forecast verdict -->
       <div class="section">
@@ -297,9 +314,75 @@
   </div>
 </div>
 
+<!-- ============================================================== JOURNAL -->
+<div class="modal-backdrop hidden" id="journal-modal" role="dialog" aria-modal="true" aria-labelledby="journal-title">
+  <div class="modal" style="width:min(760px,100%)">
+    <div class="modal-head">
+      <h2 id="journal-title">Trade journal</h2>
+      <button class="icon-btn" id="btn-close-journal" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <!-- gate -->
+    <div class="modal-body" id="journal-gate">
+      <div class="notice" id="gate-notice">
+        Your entries are stored in this browser only. They are never uploaded and never
+        reach the repository. This passcode keeps someone who picks up your machine out
+        of the log; it is not security, because this page is public and runs client-side.
+      </div>
+      <div class="field">
+        <label for="j-user">ID</label>
+        <input type="text" id="j-user" autocomplete="username" spellcheck="false" />
+      </div>
+      <div class="field">
+        <label for="j-pass">Passcode</label>
+        <input type="password" id="j-pass" autocomplete="current-password" />
+      </div>
+      <div class="notice info hidden" id="gate-setup">
+        No passcode is set on this browser yet. Enter the ID and passcode you want to use
+        and they will be saved here as a salted hash.
+      </div>
+      <p class="muted" style="font-size:11.5px;margin:0" id="gate-error"></p>
+    </div>
+
+    <!-- log -->
+    <div class="modal-body hidden" id="journal-body">
+      <form class="journal-form" id="journal-form">
+        <div class="field"><label for="j-date">Date and time</label><input type="datetime-local" id="j-date" required /></div>
+        <div class="field"><label for="j-symbol">Instrument</label><select id="j-symbol"></select></div>
+        <div class="field"><label for="j-side">Side</label><select id="j-side"><option value="BUY">Buy</option><option value="SELL">Sell</option></select></div>
+        <div class="field"><label for="j-qty">Quantity</label><input type="number" id="j-qty" min="0" step="any" required /></div>
+        <div class="field"><label for="j-price">Price</label><input type="number" id="j-price" min="0" step="any" required /></div>
+        <div class="field" style="grid-column:1/-1"><label for="j-note">Note (optional)</label><input type="text" id="j-note" maxlength="200" placeholder="why you took it" /></div>
+        <div class="field" style="grid-column:1/-1;justify-self:start"><button type="submit" class="btn btn-primary">Add entry</button></div>
+      </form>
+
+      <div class="stat-grid" id="journal-summary"></div>
+
+      <div class="journal-table-wrap">
+        <table class="journal-table" id="journal-table">
+          <thead><tr><th>When</th><th>Instrument</th><th>Side</th><th class="num-col">Qty</th><th class="num-col">Price</th><th>Note</th><th></th></tr></thead>
+          <tbody id="journal-rows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <span class="muted" style="margin-right:auto;font-size:11px" id="journal-count"></span>
+      <button class="btn" id="btn-journal-export">Export</button>
+      <button class="btn" id="btn-journal-import">Import</button>
+      <input type="file" id="journal-file" accept="application/json" class="hidden" />
+      <button class="btn btn-primary" id="btn-journal-unlock">Unlock</button>
+      <button class="btn hidden" id="btn-journal-lock">Lock</button>
+    </div>
+  </div>
+</div>
+
 <script src="assets/js/config.js"></script>
 <script src="assets/local-config.js" onerror="void 0"></script>
 <script src="assets/js/core.js"></script>
+<script src="assets/js/journal.js"></script>
 <script src="assets/js/data.js"></script>
 <script src="assets/js/engine.js"></script>
 <script src="assets/js/chart.js"></script>

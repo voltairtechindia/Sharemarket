@@ -12,7 +12,7 @@
 
   var chart = null, candleSeries = null, fcSeries = null, upSeries = null, loSeries = null;
   var state = {
-    candles: [], forecast: null, reasons: [], tf: C.defaultTimeframe,
+    candles: [], forecast: null, reasons: [], tf: C.defaultTimeframe, symbol: C.defaultSymbol,
     lastCandleTime: null, pinned: null, total: 0,
   };
   var els = {};
@@ -119,9 +119,10 @@
   }
 
   /* ------------------------------------------------------------------ data */
-  function setData(candles, forecast, reasons, tfKey) {
+  function setData(candles, forecast, reasons, tfKey, symbol) {
     if (!chart) return;
     state.tf = tfKey;
+    if (symbol) state.symbol = symbol;
     state.candles = candles || [];
     state.forecast = forecast || null;
     state.reasons = reasons || [];
@@ -199,6 +200,13 @@
         text: (r.impact === 'high' && Math.abs(r.move) >= 0.15) ? core.fmt.pct(r.move, 1) : '',
       };
     });
+    // Your own entries sit on the same axis as the news points, so you can see
+    // what the tape was doing at the moment you took the trade.
+    var trades = [];
+    if (KT.journal && KT.journal.isUnlocked && KT.journal.isUnlocked()) {
+      try { trades = KT.journal.markers(state.symbol || KT.CONFIG.defaultSymbol); } catch (e) { trades = []; }
+    }
+    markers = markers.concat(trades);
     markers.sort(function (a, b) { return a.time - b.time; });
     try { candleSeries.setMarkers(markers); } catch (e) {}
   }
@@ -318,7 +326,7 @@
 
   KT.chart = {
     init: init, setData: setData, tick: tick, retheme: retheme,
-    frameView: frameView, showEmpty: showEmpty,
+    frameView: frameView, showEmpty: showEmpty, refreshMarkers: applyMarkers,
     getState: function () { return state; },
   };
 })(window.KT);

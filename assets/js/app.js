@@ -37,6 +37,9 @@
     loadSettings();
     applyTheme(core.store.get('theme', 'light'));
     wireUI();
+    // The journal is an add-on. If anything in it throws, the terminal itself
+    // must still boot, so its wiring never sits on the critical path.
+    try { wireJournal(); } catch (e) { console.warn('journal unavailable:', e); }
     renderWatchlist();
     startClock();
 
@@ -58,6 +61,7 @@
             renderNews(); renderFeedCount(n);
           }).catch(noop),
           data.loadBaked(C.baked.rollup).then(function (r) { S.rollup = r; renderSectors(); }).catch(noop),
+          loadFilings().catch(noop),
           data.loadBaked(C.baked.index).then(function (i) { if (!S.feedsTotal) { S.feedsTotal = i.count; renderFeedCount(null); } }).catch(noop),
         ]);
       })
@@ -293,6 +297,7 @@
         renderFeedCount(n);
       }).catch(noop),
       data.loadBaked(C.baked.rollup).then(function (r) { S.rollup = r; renderSectors(); }).catch(noop),
+      loadFilings().catch(noop),
     ]).then(function () { renderNews(); });
   }
 
@@ -318,7 +323,8 @@
       livePrice: S.quote && S.quote.price ? S.quote.price : null,
     });
     S.reasons = engine.buildReasons(S.candles, data.getNews(), S.timeframe);
-    chart.setData(S.candles, S.forecast, S.reasons, S.timeframe);
+    chart.setData(S.candles, S.forecast, S.reasons, S.timeframe, S.symbol);
+    renderPosition();
     renderForecast(S.forecast);
     renderLanes();
     maybeEnrichNarrative();
@@ -492,7 +498,8 @@
     if (!list) return;
     var items = data.getNews().filter(function (n) {
       switch (S.newsFilter) {
-        case 'high':  return n.impact === 'high';
+        case 'high':   return n.impact === 'high';
+        case 'filing': return n.lane === 'filing';
         case 'pos':   return n.sentiment > 0.6;
         case 'neg':   return n.sentiment < -0.6;
         case 'india': return n.region === 'indian';
@@ -544,6 +551,206 @@
     });
     list.innerHTML = '';
     list.appendChild(frag);
+  }
+
+  /* Corporate filings are just a very high quality news lane: an order win or
+     an insolvency petition is published here before the wires carry it. They
+     merge into the same store so they score, rank and mark the chart like any
+     other headline, with lane 'filing' so they can be filtered on their own. */
+  function loadFilings() {
+    return data.loadBaked(C.baked.filings).then(function (j) {
+      var rows = (j && j.filings) || [];
+      if (!rows.length) return;
+      data.mergeNews(rows.map(function (f) {
+        return {
+          key: core.keyOf(f.headline),
+          headline: f.headline,
+          url: f.url || '',
+          ts: f.ts,
+          sentiment: typeof f.sentiment === 'number' ? f.sentiment : 0,
+          impact: f.impact || 'medium',
+          terms: f.kind ? [f.kind] : [],
+          industry: f.kind || 'filing',
+          source: f.source || 'Exchange filing',
+          region: 'indian',
+          lane: 'filing',
+        };
+      }));
+      S.filings = { count: j.count, high: j.high, at: j.updated_iso };
+      renderNews();
+    });
+  }
+
+  function renderPosition() {
+    var sec = el('position-section');
+    if (!sec) return;
+    if (!KT.journal || !KT.journal.isUnlocked()) { sec.classList.add('hidden'); return; }
+    var live = S.quote && S.quote.price ? S.quote.price : null;
+    var pos = KT.journal.position(S.symbol, live);
+    if (!pos.trades) { sec.classList.add('hidden'); return; }
+    sec.classList.remove('hidden');
+    text('pos-qty', fmt.int(pos.qty));
+    text('pos-avg', pos.qty ? fmt.price(pos.avgCost) : '—');
+    text('pos-unreal', pos.qty ? fmt.signed(pos.unrealised) + '  (' + fmt.pct(pos.pctOnCost) + ')' : '—');
+    core.cls('pos-unreal', fmt.cls(pos.unrealised));
+    text('pos-real', fmt.signed(pos.realised));
+    core.cls('pos-real', fmt.cls(pos.realised));
+    text('pos-count', pos.trades + ' on ' + C.symbols[S.symbol].label);
+  }
+
+  /* ------------------------------------------------------------- journal UI */
+  function wireJournal() {
+    var J = KT.journal;
+    if (!J) return;
+    var modal = el('journal-modal');
+
+    function open() {
+      modal.classList.remove('hidden');
+      el('gate-setup').classList.toggle('hidden', J.hasAuth());
+      el('btn-journal-unlock').textContent = J.hasAuth() ? 'Unlock' : 'Set passcode';
+      if (J.isUnlocked()) showLog(); else showGate();
+    }
+    function close() { modal.classList.add('hidden'); }
+
+    function showGate() {
+      el('journal-gate').classList.remove('hidden');
+      el('journal-body').classList.add('hidden');
+      el('btn-journal-unlock').classList.remove('hidden');
+      el('btn-journal-lock').classList.add('hidden');
+      ['btn-journal-export', 'btn-journal-import'].forEach(function (b) { el(b).classList.add('hidden'); });
+    }
+    function showLog() {
+      el('journal-gate').classList.add('hidden');
+      el('journal-body').classList.remove('hidden');
+      el('btn-journal-unlock').classList.add('hidden');
+      el('btn-journal-lock').classList.remove('hidden');
+      ['btn-journal-export', 'btn-journal-import'].forEach(function (b) { el(b).classList.remove('hidden'); });
+      fillSymbols();
+      if (!el('j-date').value) {
+        var d = core.fmt.ist();
+        el('j-date').value = d.toISOString().slice(0, 16);
+      }
+      renderRows();
+    }
+
+    function fillSymbols() {
+      var sel = el('j-symbol');
+      if (sel.options.length) return;
+      Object.keys(C.symbols).forEach(function (k) {
+        var o = document.createElement('option');
+        o.value = k; o.textContent = C.symbols[k].label;
+        sel.appendChild(o);
+      });
+      sel.value = S.symbol;
+    }
+
+    function renderRows() {
+      var rows = J.all(), body = el('journal-rows');
+      text('journal-count', rows.length + (rows.length === 1 ? ' entry' : ' entries') + ' in this browser');
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="7" class="journal-empty">No entries yet. Add one above and it appears on the chart.</td></tr>';
+      } else {
+        body.innerHTML = '';
+        rows.forEach(function (t) {
+          var tr = document.createElement('tr');
+          tr.innerHTML =
+            '<td>' + fmt.stamp(t.ts, 3600) + '</td>' +
+            '<td>' + ((C.symbols[t.symbol] || {}).label || t.symbol) + '</td>' +
+            '<td class="side-' + t.side.toLowerCase() + '">' + t.side + '</td>' +
+            '<td class="num-col">' + fmt.int(t.qty) + '</td>' +
+            '<td class="num-col">' + fmt.price(t.price) + '</td>' +
+            '<td>' + (t.note ? t.note.replace(/[<>&]/g, '') : '<span class="muted">—</span>') + '</td>' +
+            '<td><button class="row-del" data-id="' + t.id + '" title="Delete">&times;</button></td>';
+          body.appendChild(tr);
+        });
+      }
+      // summary tiles for the currently selected instrument
+      var live = S.quote && S.quote.price ? S.quote.price : null;
+      var pos = J.position(S.symbol, live);
+      el('journal-summary').innerHTML =
+        tile('Net qty', fmt.int(pos.qty)) +
+        tile('Avg cost', pos.qty ? fmt.price(pos.avgCost) : '—') +
+        tile('Unrealised', pos.qty ? fmt.signed(pos.unrealised) : '—', fmt.cls(pos.unrealised)) +
+        tile('Realised', fmt.signed(pos.realised), fmt.cls(pos.realised));
+      renderPosition();
+      chart.refreshMarkers();
+    }
+    function tile(k, v, cls) {
+      return '<div class="stat"><span class="stat-k">' + k + '</span>' +
+             '<span class="stat-v ' + (cls || '') + '">' + v + '</span></div>';
+    }
+
+    el('btn-journal').addEventListener('click', open);
+    var openBtn = el('btn-open-journal');
+    if (openBtn) openBtn.addEventListener('click', open);
+    el('btn-close-journal').addEventListener('click', close);
+    modal.addEventListener('click', function (e) { if (e.target === modal) close(); });
+
+    el('btn-journal-unlock').addEventListener('click', function () {
+      var u = el('j-user').value.trim(), pw = el('j-pass').value;
+      if (!u || !pw) { text('gate-error', 'Enter both an ID and a passcode.'); return; }
+      text('gate-error', 'Checking…');
+      var step = J.hasAuth() ? J.verify(u, pw) : J.setAuth(u, pw).then(function () { return true; });
+      step.then(function (ok) {
+        if (!ok) { text('gate-error', 'That ID or passcode does not match what is stored on this browser.'); return; }
+        text('gate-error', '');
+        el('j-pass').value = '';
+        J.unlock(); J.load(); showLog();
+      }).catch(function () { text('gate-error', 'Could not check the passcode in this browser.'); });
+    });
+    el('j-pass').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') el('btn-journal-unlock').click();
+    });
+
+    el('btn-journal-lock').addEventListener('click', function () {
+      J.lock(); showGate(); renderPosition(); chart.refreshMarkers();
+    });
+
+    el('journal-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var when = el('j-date').value;
+      if (!when) return;
+      // datetime-local has no zone; the page works in IST, so read it as IST.
+      var ts = Math.floor(Date.parse(when + ':00+05:30') / 1000);
+      if (!ts || isNaN(ts)) ts = Math.floor(Date.now() / 1000);
+      J.add({
+        ts: ts, symbol: el('j-symbol').value, side: el('j-side').value,
+        qty: el('j-qty').value, price: el('j-price').value, note: el('j-note').value,
+      });
+      el('j-qty').value = ''; el('j-price').value = ''; el('j-note').value = '';
+      renderRows();
+    });
+
+    el('journal-rows').addEventListener('click', function (e) {
+      var b = e.target.closest('.row-del');
+      if (!b) return;
+      J.remove(b.getAttribute('data-id'));
+      renderRows();
+    });
+
+    el('btn-journal-export').addEventListener('click', function () {
+      var blob = new Blob([J.exportJson()], { type: 'application/json' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'trade-journal-' + new Date().toISOString().slice(0, 10) + '.json';
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+    });
+    el('btn-journal-import').addEventListener('click', function () { el('journal-file').click(); });
+    el('journal-file').addEventListener('change', function (e) {
+      var f = e.target.files && e.target.files[0];
+      if (!f) return;
+      var fr = new FileReader();
+      fr.onload = function () {
+        try {
+          var n = J.importJson(String(fr.result));
+          text('journal-count', 'Imported ' + n + ' new ' + (n === 1 ? 'entry' : 'entries'));
+          renderRows();
+        } catch (err) { text('journal-count', 'That file could not be read as a journal export.'); }
+      };
+      fr.readAsText(f);
+      e.target.value = '';
+    });
   }
 
   function renderForecast(f) {

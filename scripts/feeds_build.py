@@ -280,6 +280,33 @@ NEXT_TIER = [
     "Clean Science Technology", "Fine Organic Industries", "Camlin Fine Sciences",
 ]
 
+# Retail chatter. Reddit and YouTube both publish plain RSS with no key, so
+# they slot straight into the existing fetcher. Treated as low priority and
+# scored like any other headline - they are mood, not fact.
+SOCIAL = [
+    ("r/IndianStreetBets",  "https://www.reddit.com/r/IndianStreetBets/new/.rss"),
+    ("r/NSEbets",           "https://www.reddit.com/r/NSEbets/new/.rss"),
+    ("r/IndiaInvestments",  "https://www.reddit.com/r/IndiaInvestments/new/.rss"),
+    ("r/DalalStreetTalks",  "https://www.reddit.com/r/DalalStreetTalks/new/.rss"),
+    ("r/StockMarketIndia",  "https://www.reddit.com/r/StockMarketIndia/new/.rss"),
+    ("r/options",           "https://www.reddit.com/r/options/new/.rss"),
+    ("r/wallstreetbets",    "https://www.reddit.com/r/wallstreetbets/hot/.rss"),
+    ("r/stocks",            "https://www.reddit.com/r/stocks/new/.rss"),
+]
+
+# YouTube channel RSS. Titles only, so this is a weak signal, but it catches
+# big-name commentary quickly. Swap in your own channel IDs freely: the id is
+# the UC... string in the channel URL.
+YOUTUBE = [
+    ("CNBC-TV18",        "UCWnPjmqvljcafA0z2U1fwKQ"),
+    ("ET NOW",           "UC-8-9d_jPjSBJ7xbTC8QBLQ"),
+    ("Zee Business",     "UCJBGTJb9BSqEaFMoZzUjmuQ"),
+    ("Moneycontrol",     "UCHVn02HJiFPpItDMK6YXaeg"),
+    ("NDTV Profit",      "UCZFMm1mMw0F81Z37aaEzTUA"),
+    ("Bloomberg TV",     "UCIALMKvObZNtJ6AmdCLP7Lg"),
+    ("Yahoo Finance",    "UCEAZeUIeJs0IjQiqTCdVSIg"),
+]
+
 SECTOR_QUERIES = [
     "Nifty Bank index stocks", "Nifty IT index stocks", "Nifty Auto index stocks",
     "Nifty Pharma index stocks", "Nifty Metal index stocks", "Nifty FMCG index stocks",
@@ -334,6 +361,14 @@ def build():
         q = f"{co} share price news"
         add("gn_" + slug(co), co, gn(q), "gnews", "india", ["company"], 3)
 
+    for name, url in SOCIAL:
+        region = "world" if name in ("r/wallstreetbets", "r/stocks", "r/options") else "india"
+        add("so_" + slug(name), name, url, "social", region, ["social", "retail"], 2)
+    for name, cid in YOUTUBE:
+        add("yt_" + slug(name), name + " (YouTube)",
+            f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}",
+            "social", "india", ["social", "video"], 3)
+
     by_priority = {}
     for f in feeds:
         by_priority[f["priority"]] = by_priority.get(f["priority"], 0) + 1
@@ -344,6 +379,7 @@ def build():
         "by_lane": {
             "direct": sum(1 for f in feeds if f["lane"] == "direct"),
             "gnews": sum(1 for f in feeds if f["lane"] == "gnews"),
+            "social": sum(1 for f in feeds if f["lane"] == "social"),
         },
         "by_region": {
             "india": sum(1 for f in feeds if f["region"] == "india"),

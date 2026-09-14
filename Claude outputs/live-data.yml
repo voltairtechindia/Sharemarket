@@ -48,6 +48,10 @@ jobs:
         run: python scripts/fetch_news.py
         continue-on-error: true
 
+      - name: Fetch corporate filings and chatter
+        run: python scripts/fetch_filings.py
+        continue-on-error: true
+
       - name: Commit refreshed data
         run: |
           git config user.name  "github-actions[bot]"

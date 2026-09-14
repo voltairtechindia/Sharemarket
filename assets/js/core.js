@@ -108,7 +108,7 @@
      Loaded from config/lexicon.json so the browser and the Python worker use
      one table. Longest term wins and is blanked out, so "ban" cannot score
      inside "banking" and "surge" cannot double count after "surges".         */
-  var lexicon = null, bullRx = [], bearRx = [], impactHi = [], impactMd = [], relevance = [], noise = [], sectorMap = {};
+  var lexicon = null, bullRx = [], bearRx = [], impactHi = [], impactMd = [], relevance = [], noise = [], procedural = [], sectorMap = {};
 
   function esc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
@@ -128,6 +128,7 @@
     impactMd = lex.impact_medium.map(function (s) { return s.toLowerCase(); });
     relevance = lex.relevance.map(function (s) { return s.toLowerCase(); });
     noise = lex.noise.map(function (s) { return s.toLowerCase(); });
+    procedural = (lex.procedural || []).map(function (s) { return s.toLowerCase(); });
     sectorMap = {};
     Object.keys(lex.sector_map).forEach(function (k) {
       sectorMap[k] = lex.sector_map[k].map(function (s) { return s.toLowerCase(); });
@@ -149,10 +150,26 @@
       }
     }
     var sentiment = Math.max(-4, Math.min(4, total / 2));
+
+    // Impact needs corroboration. One institution word is not a market event -
+    // "RBI invites comments on draft KYC directions" mentions the RBI but moves
+    // nothing, and tagging it HIGH made every Indian headline look urgent.
+    var hiHits = 0;
+    for (var h = 0; h < impactHi.length; h++) if (low.indexOf(impactHi[h]) !== -1) hiHits++;
+    var mdHits = 0;
+    for (var d = 0; d < impactMd.length; d++) if (low.indexOf(impactMd[d]) !== -1) mdHits++;
+
+    var isProcedural = false;
+    for (var q = 0; q < procedural.length; q++) if (low.indexOf(procedural[q]) !== -1) { isProcedural = true; break; }
+
     var impact = 'low';
-    for (var h = 0; h < impactHi.length; h++) if (low.indexOf(impactHi[h]) !== -1) { impact = 'high'; break; }
-    if (impact === 'low') for (var d = 0; d < impactMd.length; d++) if (low.indexOf(impactMd[d]) !== -1) { impact = 'medium'; break; }
-    return { sentiment: Math.round(sentiment * 100) / 100, impact: impact, terms: terms.slice(0, 6) };
+    if (hiHits && (hiHits > 1 || Math.abs(sentiment) >= 1)) impact = 'high';
+    else if (hiHits || mdHits) impact = 'medium';
+    // A notice is still a notice however many keywords it contains.
+    if (isProcedural) impact = (impact === 'high') ? 'medium' : 'low';
+
+    return { sentiment: Math.round(sentiment * 100) / 100, impact: impact,
+             terms: terms.slice(0, 6), procedural: isProcedural };
   }
 
   function isNoise(text) {

@@ -527,3 +527,25 @@ body { display: flex; flex-direction: column; overflow: hidden; }
    only things allowed to scroll sideways are their own containers. */
 html, body { max-width: 100%; overflow-x: clip; }
 .news-head-text, .sector-n, .mw-title, .driver-k { min-width: 0; }
+
+
+/* ------------------------------------------------------------- journal */
+.journal-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.journal-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.journal-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.journal-table th {
+  text-align: left; font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--ink-muted); font-weight: 600; padding: 7px 9px;
+  border-bottom: 1px solid var(--border); background: var(--bg-sunken); white-space: nowrap;
+}
+.journal-table td { padding: 7px 9px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.journal-table tr:last-child td { border-bottom: none; }
+.journal-table .num-col { text-align: right; font-family: var(--mono); }
+.journal-table .side-buy  { color: var(--brand); font-weight: 600; }
+.journal-table .side-sell { color: var(--down); font-weight: 600; }
+.journal-table .row-del {
+  border: none; background: none; color: var(--ink-faint); cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 2px 5px; border-radius: 3px;
+}
+.journal-table .row-del:hover { color: var(--down); background: var(--down-soft); }
+.journal-empty { padding: 18px; text-align: center; color: var(--ink-muted); font-size: 12px; }

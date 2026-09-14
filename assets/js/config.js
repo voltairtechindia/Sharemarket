@@ -110,6 +110,8 @@ KT.CONFIG = {
     seasonality: 'data/seasonality.json',
     quote:       'data/quote.json',
     health:      'data/feed_health.json',
+    filings:     'data/filings.json',
+    social:      'data/social.json',
     index:       'data/feeds_index.json',
     lexicon:     'config/lexicon.json',
     candles:     (sym, tf) => `data/candles_${sym}_${tf}.json`,

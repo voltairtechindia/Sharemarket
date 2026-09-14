@@ -36,6 +36,7 @@ IMPACT_HI = [k.lower() for k in LEX["impact_high"]]
 IMPACT_MD = [k.lower() for k in LEX["impact_medium"]]
 RELEVANCE = [k.lower() for k in LEX["relevance"]]
 NOISE = [k.lower() for k in LEX["noise"]]
+PROCEDURAL = [k.lower() for k in LEX.get("procedural", [])]
 SECTORS = {k: [t.lower() for t in v] for k, v in LEX["sector_map"].items()}
 
 # Terms are matched longest-first on word boundaries, and each match is blanked
@@ -76,11 +77,22 @@ def score_text(text):
     # Compress so a headline stuffed with words cannot dominate.
     sentiment = max(-4.0, min(4.0, total / 2.0))
 
-    impact = "low"
-    if any(k in low for k in IMPACT_HI):
+    # Impact needs corroboration. One institution word is not a market event:
+    # "RBI invites comments on draft KYC directions" mentions the RBI but moves
+    # nothing, and tagging it high made every Indian headline look urgent.
+    hi_hits = sum(1 for k in IMPACT_HI if k in low)
+    md_hits = sum(1 for k in IMPACT_MD if k in low)
+    is_procedural = any(k in low for k in PROCEDURAL)
+
+    if hi_hits and (hi_hits > 1 or abs(sentiment) >= 1):
         impact = "high"
-    elif any(k in low for k in IMPACT_MD):
+    elif hi_hits or md_hits:
         impact = "medium"
+    else:
+        impact = "low"
+    if is_procedural:
+        impact = "medium" if impact == "high" else "low"
+
     return round(sentiment, 2), impact, hits[:6]
 
 
