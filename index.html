@@ -1,370 +1,230 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>FNO AI Dashboard — Self-Explaining (Internal)</title>
-<style>
-:root{--bg:#0c0e17;--surface:#131620;--card:#181a26;--text:#eaeaf3;--muted:#9aa0b5;--accent:#00cfa8;--red:#ff5a7a;--gold:#f0a500;--border:#23243d;--font:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;}
-*{box-sizing:border-box;margin:0;padding:0;font-family:var(--font);}
-body{background:var(--bg);color:var(--text);line-height:1.45;}
-.container{max-width:1280px;margin:0 auto;padding:22px 24px 60px;}
-header{padding:18px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:rgba(12,14,23,0.92);backdrop-filter:blur(10px);z-index:10;}
-header h1{font-size:18px;font-weight:700;letter-spacing:0.2px;color:var(--text);}
-header .tag{font-size:10px;background:rgba(0,207,168,0.12);color:var(--accent);padding:3px 8px;border-radius:999px;font-weight:700;text-transform:uppercase;letter-spacing:0.4px;border:1px solid rgba(0,207,168,0.25);}
-.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;transition:transform .1s ease,box-shadow .2s ease;}
-.card:hover{box-shadow:0 8px 22px rgba(0,207,168,0.05);}
-.card h2{font-size:12px;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:10px;display:flex;align-items:center;gap:6px;}
-.card h2 .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);display:inline-block;}
-.big{font-size:26px;font-weight:800;color:var(--text);letter-spacing:-0.6px;line-height:1.1;}
-.sub{font-size:11px;color:var(--muted);margin-top:3px;}
-.pill{display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;}
-.green-pill{background:rgba(0,207,168,0.10);color:var(--accent);border:1px solid rgba(0,207,168,0.20);}
-.red-pill{background:rgba(255,90,122,0.10);color:var(--red);border:1px solid rgba(255,90,122,0.20);}
-.gold-pill{background:rgba(240,165,0,0.10);color:var(--gold);border:1px solid rgba(240,165,0,0.20);}
-.grid-2{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));}
-.grid-3{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));}
-.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px;}
-.section-label{font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:600;letter-spacing:0.02em;}
-input[type="text"],input[type="number"],input[type="password"]{padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:#0c0e17;color:var(--text);font-family:inherit;font-size:13px;width:100%;outline:none;transition:border-color .15s;}
-input:focus{border-color:var(--accent);}
-button{padding:8px 14px;border:none;border-radius:8px;background:var(--accent);color:#000;font-weight:700;font-size:12px;cursor:pointer;transition:filter .15s;}
-button:hover{filter:brightness(1.08);}
-button.secondary{background:#23243d;color:var(--text);}
-button.small{padding:4px 10px;font-size:10px;}
-.table{width:100%;border-collapse:collapse;font-size:12px;}
-.table thead th{padding:7px 6px;text-align:left;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid var(--border);font-weight:600;}
-.table tbody td{padding:7px 6px;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:top;}
-.table tbody tr:hover{background:rgba(255,255,255,0.015);}
-.news-strip{max-height:260px;overflow-y:auto;padding-right:6px;}
-.news-strip .item{padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.06);}
-.news-strip .item:last-child{border-bottom:none;}
-.news-strip .item h4{font-size:13px;font-weight:600;color:var(--text);margin-bottom:2px;line-height:1.3;}
-.news-strip .item .meta{font-size:10px;color:var(--muted);display:flex;gap:8px;flex-wrap:wrap;margin-top:2px;}
-.news-strip .ts{font-size:9px;color:var(--gold);font-weight:700;}
-.forecast-box{background:linear-gradient(135deg, rgba(0,207,168,0.08), rgba(240,165,0,0.06));border:1px solid rgba(0,207,168,0.18);border-radius:12px;padding:14px;}
-.forecast-box h3{font-size:13px;color:var(--accent);letter-spacing:0.05em;margin-bottom:4px;}
-.tooltip{position:relative;cursor:help;display:inline-block;}
-.tooltip .tip{visibility:hidden;opacity:0;width:220px;background:#1a1a2e;color:#e8ecf0;text-align:left;border-radius:8px;padding:9px;position:absolute;z-index:10;bottom:120%;left:50%;margin-left:-110px;font-size:11px;line-height:1.35;border:1px solid var(--border);box-shadow:0 6px 18px rgba(0,0,0,0.5);transition:opacity .15s;pointer-events:none;}
-.tooltip:hover .tip{visibility:visible;opacity:1;}
-.tooltip .tip::after{content:"";position:absolute;top:100%;left:50%;margin-left:-5px;border-width:5px;border-style:solid;border-color:var(--border) transparent transparent transparent;}
-.error-msg{font-size:11px;color:var(--red);margin-top:4px;}
-.ok-msg{font-size:11px;color:var(--accent);margin-top:4px;}
-.chart-wrap{position:relative;}
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kite Market Terminal - NIFTY & SENSEX AI Forecast</title>
+  <link rel="stylesheet" href="assets/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 </head>
-<body>
-<header>
-  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-    <h1>FNO AI Dashboard</h1>
-    <span class="tag">Internal — Self-Explaining</span>
-    <span style="font-size:10px;color:var(--muted);">Forecast powered by news + market pattern + OpenRouter brain</span>
-  </div>
-  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-    <button onclick="loadForecast()" class="small">Refresh Forecast</button>
-    <button onclick="saveConfig()" class="small secondary">Save Config</button>
-  </div>
-</header>
-
-<div class="container">
-
-  <!-- EMBEDDED CONFIG (top, small, self-sufficient) -->
-  <div id="gearPanel" style="display:block;"><section style="margin-bottom:18px;padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;">
-    <h2 style="font-size:12px;color:var(--muted);letter-spacing:0.08em;margin-bottom:8px;">⚙ Settings <span style="font-weight:400;font-size:11px;color:var(--muted);">— configure once, never touch again</span></h2>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;align-items:end;">
-      <div>
-        <label for="orKey" style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px;">OpenRouter API Key <span class="tooltip"><span style="color:var(--gold);">?</span><span class="tip">Your free OpenRouter key. Not saved to server — only to your browser (localStorage) for 24/7 updates.</span></span></label>
-        <input id="orKey" type="password" placeholder="Paste your key here" value="" onchange="checkConfig()" />
-        <div id="keyStatus" style="font-size:10px;margin-top:2px;"></div>
+<body class="kite-theme">
+  <!-- Top Header Bar (Zerodha Kite Style) -->
+  <header class="top-nav">
+    <div class="nav-left">
+      <div class="kite-logo">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M12 2L2 12L12 22L22 12L12 2Z" fill="#ff5722"/>
+        </svg>
+        <span class="brand-text">KITE</span>
       </div>
-      <div>
-        <label style="font-size:10px;color:var(--muted);">Security</label><br>
-        <button onclick="clearKey()" class="small secondary" style="font-size:10px;padding:4px 8px;">Clear Key (Erase from Browser)</button>
-        <div style="font-size:9px;color:var(--gold);margin-top:2px;">Key never touches GitHub. Uses only free OpenRouter models (no cost). Only your browser sends it to openrouter.ai when Forecast is clicked.</div>
-      </div>
-      <div>
-        <label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px;">Update Frequency</label>
-        <div style="display:flex;gap:6px;">
-          <button onclick="setIntervalMs(600000)" id="btn10" class="small active-int" style="background:var(--accent);color:#000;">10 min</button><button onclick="setModel('openai/gpt-4o-mini')" id="btnModelMini" class="small active-int" style="background:var(--accent);color:#000;">Free: gpt-4o-mini</button><button onclick="setModel('google/gemini-flash-1.5')" id="btnModelGemini" class="small secondary">Free: gemini</button><button onclick="setModel('meta-llama/llama-3.1-8b-instruct')" id="btnModelLlama" class="small secondary">Free: Llama-3.1</button>
-          <button onclick="setIntervalMs(300000)" id="btn5" class="small secondary">5 min</button>
-          <button onclick="setIntervalMs(1800000)" id="btn30" class="small secondary">30 min</button>
+      <div class="header-indices">
+        <div class="index-pill" id="head-nifty" onclick="switchAsset('NIFTY')">
+          <span class="idx-name">NIFTY 50</span>
+          <span class="idx-val" id="head-nifty-val">25,380.20</span>
+          <span class="idx-chg pos" id="head-nifty-chg">+84.15 (+0.33%)</span>
         </div>
-      </div>
-      <div>
-        <label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px;">Show / Hide</label>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;">
-          <button onclick="toggleSensex(this)" id="btnSensex" class="small active-int" style="background:var(--accent);color:#000;">Sensex ON</button>
-          <button onclick="toggleBank(this)" id="btnBank" class="small active-int" style="background:var(--accent);color:#000;">BankNifty ON</button>
+        <div class="index-pill" id="head-sensex" onclick="switchAsset('SENSEX')">
+          <span class="idx-name">SENSEX</span>
+          <span class="idx-val" id="head-sensex-val">82,920.45</span>
+          <span class="idx-chg pos" id="head-sensex-chg">+245.80 (+0.30%)</span>
         </div>
       </div>
     </div>
-    <div id="configMsg" style="font-size:11px;color:var(--muted);margin-top:6px;"></div>
-  </section></div></div>
+    <div class="nav-right">
+      <div class="market-clock">
+        <span class="status-dot live" id="market-status-dot"></span>
+        <span id="market-time">IST 09:15:00</span>
+        <span class="session-badge" id="session-badge">LIVE 1s</span>
+      </div>
+      <button class="btn-settings" id="open-settings-btn" title="API & Model Settings">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+        <span>Model Config</span>
+      </button>
+    </div>
+  </header>
 
-  <!-- MAIN: Chart (past) + Forecast (future, same chart) -->
-  
-  <!-- GEAR / SETTINGS COLLAPSIBLE -->
-  <div style="margin-bottom:10px;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:10px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="document.getElementById('gearPanel').style.display=document.getElementById('gearPanel').style.display==='none'?'block':'none'; this.style.opacity='0.9';">
-    <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);font-weight:600;"><span style="font-size:18px;">⚙</span> Settings & Config — Add / Change / Hide (click to open)</div>
-    <span id="gearArrow" style="font-size:12px;color:var(--muted);">▼</span>
-  </div>
-  <div id="gearPanel" style="display:block;">
-<div style="display:grid;grid-template-columns:2.2fr 1fr;gap:14px;margin-bottom:14px;align-items:start;">
-    <div class="card chart-wrap">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
-        <h2 style="font-size:13px;text-transform:uppercase;color:var(--muted);margin:0;"><span class="dot" style="background:var(--accent);"></span> Chart — Past + Forecast (News Based)</h2>
-        <div style="display:flex;gap:4px;">
-          <button onclick="cFrame('hourly')" class="small">H</button>
-          <button onclick="cFrame('daily')" class="small">D</button>
-          <button onclick="cFrame('monthly')" class="small" style="font-weight:700;background:var(--gold);color:#000;">M</button>
-          <button onclick="cFrame('yearly')" class="small">Y</button>
+  <!-- Main Application Workspace -->
+  <div class="workspace">
+    <!-- Left MarketWatch Sidebar -->
+    <aside class="marketwatch-sidebar">
+      <div class="mw-search">
+        <input type="text" id="mw-search-input" placeholder="Search eg: nifty, sensex, bank" />
+        <span class="search-count">2/50</span>
+      </div>
+      <ul class="mw-list" id="watchlist-items">
+        <li class="mw-item active" data-symbol="NIFTY" onclick="switchAsset('NIFTY')">
+          <div class="mw-col-left">
+            <span class="mw-title">NIFTY 50</span>
+            <span class="mw-sub">NSE INDEX</span>
+          </div>
+          <div class="mw-col-right">
+            <span class="mw-ltp" id="mw-nifty-ltp">25,380.20</span>
+            <span class="mw-pct pos" id="mw-nifty-pct">+0.33%</span>
+          </div>
+        </li>
+        <li class="mw-item" data-symbol="SENSEX" onclick="switchAsset('SENSEX')">
+          <div class="mw-col-left">
+            <span class="mw-title">SENSEX</span>
+            <span class="mw-sub">BSE INDEX</span>
+          </div>
+          <div class="mw-col-right">
+            <span class="mw-ltp" id="mw-sensex-ltp">82,920.45</span>
+            <span class="mw-pct pos" id="mw-sensex-pct">+0.30%</span>
+          </div>
+        </li>
+      </ul>
+
+      <!-- Watchlist Footer Numbers -->
+      <div class="mw-footer-pages">
+        <span class="page-num active">1</span>
+        <span class="page-num">2</span>
+        <span class="page-num">3</span>
+        <span class="page-num">4</span>
+        <span class="page-num">5</span>
+      </div>
+
+      <!-- Macro Sentiment & Seasonal Outlook Card -->
+      <div class="seasonal-card">
+        <div class="card-header">
+          <span class="card-title">SEASONAL & NEWS BIAS</span>
+          <span class="confidence-badge" id="ai-confidence">84% AI</span>
+        </div>
+        <div class="gauge-container">
+          <div class="gauge-bar">
+            <div class="gauge-fill" id="sentiment-fill" style="width: 65%;"></div>
+          </div>
+          <div class="gauge-labels">
+            <span>Bearish</span>
+            <span id="sentiment-label" class="pos">Bullish Trend</span>
+            <span>Bullish</span>
+          </div>
+        </div>
+        <div class="seasonal-details">
+          <div class="s-row">
+            <span>Historical Seasonality:</span>
+            <strong id="season-stat">Bullish (Sept/Q3: +1.8%)</strong>
+          </div>
+          <div class="s-row">
+            <span>RSS Filtered Feeds:</span>
+            <strong id="feed-count-display">1,024 Active</strong>
+          </div>
+          <div class="s-row">
+            <span>Interval Reason Window:</span>
+            <strong id="reason-window-display">1 Hour Markers</strong>
+          </div>
         </div>
       </div>
-      <canvas id="mainChart" height="260" style="width:100%;"></canvas><div style="font-size:10px;color:#8898aa;margin-top:4px;padding:4px 6px;background:rgba(255,255,255,0.03);border-radius:6px;border-left:2px solid #ffaa00;"><strong>Chart reading:</strong> Green = past price; Gold dashed = forecast ahead; Green ▲ = buy; Red ■ = sell.</div><div style="font-size:10px;color:#8898aa;margin-top:4px;padding:4px 6px;background:rgba(255,255,255,0.03);border-radius:6px;border-left:2px solid #ffaa00;"><strong>Chart reading:</strong> Green line = past price movement; Gold dashed = OpenRouter forecast ahead; Green ▲ = your buy entry; Red ■ = your sell entry.</div>
-<div style="margin-top:8px;padding:10px;background:linear-gradient(135deg,rgba(240,165,0,0.08),rgba(0,207,168,0.08));border:1px solid rgba(240,165,0,0.25);border-radius:10px;">
-  <h3 style="font-size:13px;color:#ffaa00;margin:0 0 4px 0;">🔮 Forecast Ahead — OpenRouter Brain (Not on Chart)</h3>
-  <p style="font-size:11px;color:#e8ecf0;margin:0;line-height:1.4;"><strong id="forecastDirAhead">Direction:</strong> <span id="forecastReasonAhead">Click Refresh Forecast to load from OpenRouter (needs key from Settings).</span></p>
-  <div style="font-size:10px;color:#8898aa;margin-top:4px;">Predicted Nifty: <span id="predNiftyAhead">—</span> · BankNifty: <span id="predBankAhead">—</span> · Confidence: <span id="confAhead">—</span></div>
-</div>
-      <div style="display:flex;gap:10px;margin-top:6px;font-size:10px;color:var(--muted);flex-wrap:wrap;align-items:center;">
-        <span><span style="display:inline-block;width:8px;height:8px;background:#00ffa3;border-radius:50%;margin-right:3px;"></span>Past Range (Green)</span>
-        <span><span style="display:inline-block;width:8px;height:8px;background:#ff5555;border-radius:50%;margin-right:3px;"></span>Forecast Down (Red)</span>
-        <span><span style="display:inline-block;width:8px;height:8px;background:#ffaa00;border-radius:50%;margin-right:3px;"></span>Forecast Up / AI (Gold)</span>
-        <span style="font-size:10px;color:var(--gold);">◉ Forecast = OpenRouter brain reading latest news + patterns</span>
+    </aside>
+
+    <!-- Center Chart and Forecast Canvas -->
+    <main class="chart-viewport">
+      <!-- Toolbar for Timeframes and Views -->
+      <div class="chart-toolbar">
+        <div class="asset-info">
+          <h2 id="current-asset-title">NIFTY 50</h2>
+          <span class="current-price" id="main-ltp">25,380.20</span>
+          <span class="current-change pos" id="main-chg">+84.15 (+0.33%)</span>
+        </div>
+
+        <div class="timeframe-selector">
+          <button class="tf-btn" data-tf="1m" onclick="setTimeframe('1m')">1m</button>
+          <button class="tf-btn active" data-tf="1h" onclick="setTimeframe('1h')">1H</button>
+          <button class="tf-btn" data-tf="1d" onclick="setTimeframe('1d')">1D</button>
+          <button class="tf-btn" data-tf="1M" onclick="setTimeframe('1M')">1M</button>
+          <button class="tf-btn" data-tf="1Y" onclick="setTimeframe('1Y')">1Y</button>
+          <button class="tf-btn" data-tf="ALL" onclick="setTimeframe('ALL')">TILL DATE</button>
+        </div>
+
+        <div class="chart-legend">
+          <span class="legend-item"><span class="box past"></span> 4/5 Historical & Status</span>
+          <span class="legend-item"><span class="box future"></span> 1/5 AI Forecast Trajectory</span>
+        </div>
+      </div>
+
+      <!-- TV Lightweight Chart Container -->
+      <div id="tradingview-chart-box" class="chart-box"></div>
+
+      <!-- Annotation Tooltip / Reason Hover Info -->
+      <div id="annotation-tooltip" class="chart-annotation-card hidden">
+        <div class="ann-header">
+          <span class="ann-tag" id="ann-tag">1-HOUR INTERVAL REASON</span>
+          <span class="ann-time" id="ann-time">--:--</span>
+        </div>
+        <p class="ann-text" id="ann-text">Loading market catalyst...</p>
+        <div class="ann-footer">
+          <span id="ann-impact">Impact: Neutral</span>
+          <span id="ann-source">Source: RSS Feed Aggregate</span>
+        </div>
+      </div>
+
+      <!-- Bottom Realtime News Stream & 1-Min Poll Status -->
+      <div class="news-console">
+        <div class="news-console-header">
+          <div class="nc-title">
+            <span class="pulse-icon"></span>
+            <span>24/7 LIVE RSS INTELLIGENCE (1000+ GLOBAL & INDIAN FEEDS)</span>
+          </div>
+          <div class="nc-meta">
+            <span id="last-poll-time">Last update: Just now</span>
+            <button class="btn-refresh" onclick="triggerManualAnalysis()" title="Refresh AI Forecast Now">Analyze Now</button>
+          </div>
+        </div>
+        <div class="news-stream" id="news-stream-box">
+          <div class="news-item">
+            <span class="news-badge macro">MACRO</span>
+            <span class="news-time">09:14</span>
+            <span class="news-headline">RBI liquidity intervention supports banking sector as inflation stays within target band.</span>
+            <span class="news-tag pos">+0.4% Impact</span>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- OpenRouter & Free Model Configuration Modal -->
+  <div class="modal-overlay hidden" id="settings-modal">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3>Model & API Configuration</h3>
+        <button class="btn-close" onclick="toggleSettingsModal(false)">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="cfg-api-key">OpenRouter API Key (Saved in Browser Storage)</label>
+          <input type="password" id="cfg-api-key" placeholder="sk-or-v1-..." />
+          <small>Embedded default key is pre-loaded. Override anytime.</small>
+        </div>
+        <div class="form-group">
+          <label for="cfg-model-select">Selected Free Model</label>
+          <select id="cfg-model-select">
+            <option value="google/gemini-2.0-flash-exp:free" selected>google/gemini-2.0-flash-exp:free (Fastest & Fresh)</option>
+            <option value="meta-llama/llama-3.3-70b-instruct:free">meta-llama/llama-3.3-70b-instruct:free (High Reasoning)</option>
+            <option value="mistralai/mistral-7b-instruct:free">mistralai/mistral-7b-instruct:free (Lightweight)</option>
+            <option value="qwen/qwen-2.5-coder-32b-instruct:free">qwen/qwen-2.5-coder-32b-instruct:free</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Forecast Interval Annotations</label>
+          <div class="radio-row">
+            <label><input type="radio" name="reason-interval" value="1h" checked> 1 Hour (Daily)</label>
+            <label><input type="radio" name="reason-interval" value="10m"> 10 Min (Intraday)</label>
+            <label><input type="radio" name="reason-interval" value="1d"> 1 Day (Monthly)</label>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="toggleSettingsModal(false)">Cancel</button>
+        <button class="btn-primary" onclick="saveConfiguration()">Save & Re-Forecast</button>
       </div>
     </div>
-
-    <!-- NEWS RIGHT (self-explaining, timestamp visible) -->
-    <div class="card" style="height:max-content;">
-      <h2><span class="dot"></span> News — Reference Only (Date + Time Visible)</h2>
-      <div class="news-strip" id="newsStrip">
-        <div class="item"><h4>FII cash net Sellers -₹438 Cr; DII net Buyers +₹1,026 Cr</h4><div class="meta"><span class="green-pill">Positive</span><span>Medium</span><span class="ts">📅 14/09/2026 🕐 16:30</span></div></div>
-        <div class="item"><h4>US Fed signals neutral rate stance; DXY flat</h4><div class="meta"><span>Neutral</span><span>Low</span><span class="ts">📅 14/09/2026 🕐 16:10</span></div></div>
-        <div class="item"><h4>Crude Brent +0.6% on supply concerns — aviation / refineries watch</h4><div class="meta"><span class="red-pill">Negative</span><span>High</span><span class="ts">📅 14/09/2026 🕐 15:45</span></div></div>
-        <div class="item"><h4>NSE VIX up 3.2% ahead of monthly expiry — premium expansion expected</h4><div class="meta"><span class="red-pill">Negative</span><span>High</span><span class="ts">📅 14/09/2026 🕐 15:20</span></div></div>
-        <div class="item"><h4>SBI aims DPDP compliance; banking regulation loosening</h4><div class="meta"><span class="green-pill">Positive</span><span>Low</span><span class="ts">📅 14/09/2026 🕐 14:55</span></div></div>
-      </div>
-      <p class="sub" style="margin-top:6px;">Only major / industry-relevant items shown. Full input: 1050 RSS feeds (Indian + International). Noise (weather, sports, entertainment) filtered automatically.</p>
-    </div>
   </div>
 
-  <!-- IMPORTANT STATS -->
-  <div class="grid-3" style="margin-bottom:14px;">
-    <div class="card" id="cardNifty">
-      <h2><span class="dot"></span> Nifty 50 <span style="float:right;font-weight:400;font-size:11px;color:var(--muted);">FNO Index</span></h2>
-      <div class="big">23,398.10 <span style="font-size:14px;color:var(--red);font-weight:500;">-79.70 (-0.34%)</span></div>
-      <div class="sub">Spot · Futures +22.40 bps · PCR 0.92 · IV 14.2%</div>
-      <div class="row"><span class="pill green-pill">OIC +8.4%</span><span class="pill green-pill">PCR Bullish</span><span class="pill">Max Pain 23,350</span></div>
-      <div style="margin-top:6px;font-size:11px;color:var(--muted);"><strong>What it means:</strong> Higher OI + bullish PCR = institutional buying. Negative daily close = short-term caution.</div>
-    </div>
-    <div class="card" id="cardBank">
-      <h2><span class="dot"></span> Bank Nifty <span style="float:right;font-weight:400;font-size:11px;color:var(--muted);">FNO Index</span></h2>
-      <div class="big">56,606.55 <span style="font-size:14px;color:var(--green);font-weight:500;">+134.60 (+0.24%)</span></div>
-      <div class="sub">Spot · Futures +73.65 bps · PCR 1.15 · IV 16.8%</div>
-      <div class="row"><span class="pill red-pill">OIC -3.2%</span><span class="pill">PCR Neutral</span><span class="pill">Max Pain 56,500</span></div>
-      <div style="margin-top:6px;font-size:11px;color:var(--muted);"><strong>What it means:</strong> Positive close + falling OI = weak buying pressure. Watch banking news for direction.</div>
-    </div>
-    <div class="card" id="cardSensex" style="opacity:1;transition:opacity .2s;">
-      <h2><span class="dot"></span> Sensex <span style="float:right;font-weight:400;font-size:11px;color:var(--muted);">BSE 30</span></h2>
-      <div class="big">79,200 <span style="font-size:14px;color:var(--green);font-weight:500;">+0.15%</span></div>
-      <div class="sub">BSE 30 · Financial-heavy · IT-heavy index</div>
-      <div class="row"><span class="pill">IT Heavy</span><span class="pill">Financial Heavy</span></div>
-      <div style="margin-top:6px;font-size:11px;color:var(--muted);"><strong>What it means:</strong> Broader market health check. If Sensex diverges from Nifty, watch sector rotation.</div>
-    </div>
-  </div>
-
-  <!-- FORECAST (OpenRouter brain) — replaces old AI Prediction card -->
-  <div class="forecast-box" id="forecastBox" style="margin-bottom:14px;">
-    <h3><span style="font-size:12px;border:1px solid var(--gold);padding:2px 6px;border-radius:4px;background:rgba(240,165,0,0.10);color:var(--gold);">FORECAST — OpenRouter Brain</span> <span style="font-weight:400;color:#8898aa;font-size:10px;margin-left:6px;">Updated from latest news + market patterns</span></h3>
-    <div style="font-size:13px;color:#e8ecf0;line-height:1.5;">
-      <strong id="forecastDir">Direction: Range-bound / Slight Up</strong> — <strong id="forecastConf">Confidence: 72%</strong><br/>
-      <span id="forecastReason">Reasoning: FII selling offset by DII buying; DXY flat; crude rising hurts refineries; VIX uptick ahead of expiry suggests premium expansion. Banking regulation loosening = positive for Bank Nifty. AI contracts = positive for IT/Pharma.</span>
-    </div>
-    <div style="display:flex;gap:12px;margin-top:8px;font-size:11px;color:var(--muted);flex-wrap:wrap;">
-      <span><strong>Predicted Nifty Range:</strong> <span id="predNifty">23,250 — 23,550</span></span>
-      <span><strong>Predicted BankNifty Range:</strong> <span id="predBank">56,300 — 56,800</span></span>
-      <span><strong>Predicted Sensex Range:</strong> <span id="predSensex">79,200 — 79,800</span></span>
-    </div>
-    <div style="font-size:10px;color:#8898aa;margin-top:6px;">Source logic: OpenRouter reads this dashboard's latest news + market metrics + past patterns. No external X connection needed.</div>
-    <div id="forecastError" class="error-msg"></div>
-    <div id="forecastOk" class="ok-msg"></div>
-  </div>
-
-  <!-- INVESTMENT TRACKER -->
-  <section style="padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:14px;">
-    <h2 style="font-size:14px;color:var(--gold);margin-bottom:6px;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--gold);margin-right:6px;"></span> Your Investment Tracker — Enter Buy / Sell to See Accuracy vs Forecast</h2>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:8px;">
-      <div><label style="font-size:10px;color:var(--muted);">Buy Price (Nifty)</label><br><input id="buyNifty" type="number" placeholder="e.g. 23398" onchange="updateTracker();drawBuySell();" /></div>
-      <div><label style="font-size:10px;color:var(--muted);">Buy Qty</label><br><input id="buyQtyNifty" type="number" placeholder="Qty" onchange="updateTracker();" /></div>
-      <div><label style="font-size:10px;color:var(--muted);">Sell Price (Nifty)</label><br><input id="sellNifty" type="number" placeholder="e.g. 23450" onchange="updateTracker();drawBuySell();" /></div>
-      <div><label style="font-size:10px;color:var(--muted);">Sell Qty</label><br><input id="sellQtyNifty" type="number" placeholder="Qty" onchange="updateTracker();" /></div>
-    </div>
-    <div id="trackerResult" style="padding:8px;background:rgba(0,207,168,0.08);border-radius:8px;border-left:3px solid var(--accent);font-size:13px;color:var(--accent);">Enter prices and qty above to see P&amp;L vs AI forecast accuracy.</div><div id="tradeLog" style="margin-top:10px;padding:8px;background:rgba(255,255,255,0.03);border-radius:8px;border:1px solid rgba(255,255,255,0.08);"><strong style="font-size:11px;color:#ffaa00;">Your Purchase Log (with time)</strong><table class="table" style="font-size:11px;margin-top:4px;"><thead><tr><th>Time</th><th>Buy Price</th><th>Sell Price</th><th>Qty</th><th>P&amp;L</th><th>Predicted</th></tr></thead><tbody id="tradeRows"><tr><td colspan="6" style="color:#8898aa;">No trades yet. Enter buy/sell above.</td></tr></tbody></table></div>
-  </section>
-
-  <!-- SELF-LEARNING LOG (clear, bottom) -->
-  <section style="margin-bottom:14px;">
-    <div class="card">
-      <h2><span class="dot" style="background:var(--gold);"></span> Self-Learning Log <span style="float:right;font-weight:400;color:var(--muted);font-size:11px;">Auto-validated vs market close</span></h2>
-      <table class="table">
-        <thead><tr><th>Date</th><th>Nifty Call</th><th>BankNifty Call</th><th>Signals</th><th>Correct</th><th>Notes</th></tr></thead>
-        <tbody>
-          <tr><td>2026-09-10</td><td>Up / Range</td><td>Down</td><td>OI ↑, PCR <1, FII+, Intl cautious</td><td><span class="green-pill">Yes</span></td><td>Nifty +0.18%; BN -0.12%</td></tr>
-          <tr><td>2026-09-09</td><td>Down</td><td>Up</td><td>OI ↓, PCR >1, news neg</td><td><span class="red-pill">No</span></td><td>Model corrected weights for next run</td></tr>
-          <tr><td>2026-09-08</td><td>Neutral</td><td>Up</td><td>Mixed, VIX low</td><td><span class="green-pill">Yes</span></td><td>Range-bound as predicted</td></tr>
-        </tbody>
-      </table>
-      <div style="font-size:11px;color:var(--muted);margin-top:6px;"><strong>How it teaches itself:</strong> Each validated prediction updates signal weights. Correct = reinforce. Incorrect = reduce conflicting signal. Source: <code>predictions.json</code>.</div>
-    </div>
-  </section>
-
-  <!-- INDUSTRY IMPACT -->
-  <section>
-    <div class="card">
-      <h2><span class="dot" style="background:var(--accent);"></span> Industry Impact → Nifty / BankNifty / Sensex <span style="float:right;font-weight:400;color:var(--muted);font-size:11px;">Live · 15 min</span></h2>
-      <table class="table">
-        <thead><tr><th>Industry / News</th><th>Sentiment</th><th>Level</th><th>Nifty</th><th>BankNifty</th><th>Sensesx</th><th>Source Feeds</th></tr></thead>
-        <tbody>
-          <tr><td>Banking (SBI / DPDP)</td><td><span class="green-pill">Positive</span></td><td>Med</td><td>+0.15%</td><td>+0.40%</td><td>+0.08%</td><td>Moneycontrol, ET</td></tr>
-          <tr><td>IT / Pharma (AI contracts)</td><td><span class="green-pill">Positive</span></td><td>Low</td><td>+0.08%</td><td>+0.02%</td><td>+0.05%</td><td>Reuters, Yahoo</td></tr>
-          <tr><td>Oil / Refineries (crude +0.6%)</td><td><span class="red-pill">Negative</span></td><td>High</td><td>-0.22%</td><td>0.00%</td><td>-0.10%</td><td>Reuters Global</td></tr>
-          <tr><td>Auto / Capital Goods</td><td><span class="green-pill">Positive</span></td><td>Med</td><td>+0.18%</td><td>+0.05%</td><td>+0.03%</td><td>Bloomberg, CNBC</td></tr>
-          <tr><td>Power / Energy</td><td><span class="green-pill">Positive</span></td><td>Low</td><td>+0.05%</td><td>+0.10%</td><td>+0.02%</td><td>ET, Moneycontrol</td></tr>
-        </tbody>
-      </table>
-      <div style="font-size:11px;color:var(--muted);margin-top:6px;"><strong>Self-taught validation:</strong> Predictions in <code>live_impact.json</code> compare to actual close. Accuracy feeds back to weight adjustments.</div>
-    </div>
-  </section>
-
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script>
-// ============ CONFIG & STATE ============
-const LS_KEY = 'or_config';
-let chartInst = null;
-let buyPrice = null, sellPrice = null;
-let freezeSensex = false, freezeBank = false;
-let refreshMs = 600000; // 10 min default
-
-function clearKey(){ localStorage.removeItem('or_config'); document.getElementById('orKey').value=''; document.getElementById('keyStatus').innerHTML='<span style="color:var(--red);">✓ Cleared from browser.</span>'; document.getElementById('configMsg').innerHTML='<span class="ok-msg">Security: key erased. Refresh page to confirm.</span>'; }
-function loadConfig() {
-  try { const s = localStorage.getItem(LS_KEY); if(s){ const d=JSON.parse(s); if(d.key) document.getElementById('orKey').value=d.key; if(d.interval) { refreshMs = d.interval; setIntervalMs(d.interval); } if(d.hideSensex) toggleSensex(document.getElementById('btnSensex')); if(d.hideBank) toggleBank(document.getElementById('btnBank')); if(d.model) { selectedModel = d.model; setModel(d.model); } } } catch(e){}
-  checkConfig();
-}
-function saveConfig() {
-  const d = { key: document.getElementById('orKey').value.trim(), interval: refreshMs, hideSensex: freezeSensex, hideBank: freezeBank };
-  d.model = selectedModel; localStorage.setItem(LS_KEY, JSON.stringify(d));
-  document.getElementById('configMsg').innerHTML = '<span class="ok-msg">Config saved to browser (localStorage). Key never leaves your device.</span>';
-  checkConfig();
-}
-function checkConfig() {
-  const k = document.getElementById('orKey').value.trim();
-  const status = document.getElementById('keyStatus');
-  if(k && k.startsWith('sk-or-')){ status.innerHTML='<span style="color:var(--accent);">✓ Key looks valid. Forecast button ready.</span>'; }
-  else if(k){ status.innerHTML='<span style="color:var(--gold);">⚠ Key present but format looks off — check copy/paste.</span>'; }
-  else { status.innerHTML='<span style="color:var(--red);">✗ No OpenRouter key. Add in settings above to unlock forecast.</span>'; }
-}
-let selectedModel = 'openai/gpt-4o-mini';
-function setModel(m){ selectedModel = m; localStorage.setItem('or_model', m); ['btnModelMini','btnModelGemini','btnModelLlama'].forEach(id=>{ const b=document.getElementById(id); if(b){ b.style.background = (m===b.innerText.replace('Free: ','') || (m==='openai/gpt-4o-mini' && id==='btnModelMini')||(m==='google/gemini-flash-1.5' && id==='btnModelGemini')||(m==='meta-llama/llama-3.1-8b-instruct' && id==='btnModelLlama'))?'var(--accent)':'#23243d'; b.style.color = (b.style.background==='var(--accent)')?'#000':'#e6e6f0'; } }); document.getElementById('configMsg').innerHTML='<span class="ok-msg">Model set to free tier: '+m+'</span>'; }
-function setIntervalMs(ms){ refreshMs = ms; ['btn10','btn5','btn30'].forEach(id=>document.getElementById(id).classList.remove('active-int','secondary')); const btn = ms===600000?'btn10':ms===300000?'btn5':'btn30'; document.getElementById(btn).classList.add('active-int'); document.getElementById(btn).style.background='var(--accent)'; document.getElementById(btn).style.color='#000'; document.getElementById(btn).classList.remove('secondary'); }
-function toggleSensex(btn){ freezeSensex = !freezeSensex; document.getElementById('cardSensex').style.opacity = freezeSensex ? '0.35' : '1'; btn.innerText = freezeSensex ? 'Sensex OFF' : 'Sensex ON'; btn.style.background = freezeSensex ? '#23243d' : 'var(--accent)'; btn.style.color = freezeSensex ? '#e6e6f0' : '#000'; }
-function toggleBank(btn){ freezeBank = !freezeBank; document.getElementById('cardBank').style.opacity = freezeBank ? '0.35' : '1'; btn.innerText = freezeBank ? 'BankNifty OFF' : 'BankNifty ON'; btn.style.background = freezeBank ? '#23243d' : 'var(--accent)'; btn.style.color = freezeBank ? '#e6e6f0' : '#000'; }
-
-// ============ CHART ============
-function cFrame(p){
-  const n = {hourly:36,daily:60,monthly:120,yearly:10}[p]||120;
-  const labels=[]; const past=[];
-  let price = p==='yearly'?12000:(p==='monthly'?20000:23300);
-  for(let i=0;i<n;i++){ const chg=(Math.random()-0.48)*(p==='yearly'?1500:(p==='monthly'?800:120)); price+=chg; past.push(Math.round(price)); labels.push(String(i+1)); }
-  const ctx=document.getElementById('mainChart').getContext('2d'); if(chartInst)chartInst.destroy();
-  chartInst=new Chart(ctx,{type:'line',data:{labels:labels,datasets:[{label:'Price (Past) — Nifty / BankNifty / Sensex',data:past,borderColor:'#00ffa3',backgroundColor:'rgba(0,255,163,0.12)',borderWidth:2.5,fill:true,tension:0.3,pointRadius:2,pointBackgroundColor:'#00ffa3'}]},options:{responsive:true,animation:{duration:400},plugins:{legend:{labels:{color:'#e8ecf0',font:{size:10},boxWidth:10}}},scales:{y:{ticks:{color:'#8898aa',font:{size:9},callback:v=>v.toLocaleString('en-IN')}},x:{ticks:{color:'#8898aa',font:{size:9},maxTicksLimit:10}}}});
-  // Highlight active button
-  document.getElementById('btnH').style.background='var(--border)'; document.getElementById('btnH').style.color='#e6e6f0';
-  document.getElementById('btnD').style.background='var(--border)'; document.getElementById('btnD').style.color='#e6e6f0';
-  document.getElementById('btnM').style.background='var(--gold)'; document.getElementById('btnM').style.color='#000';
-  document.getElementById('btnY').style.background='var(--border)'; document.getElementById('btnY').style.color='#e6e6f0';
-  if(p==='hourly'){document.getElementById('btnH').style.background='var(--gold)';document.getElementById('btnH').style.color='#000';}
-  else if(p==='daily'){document.getElementById('btnD').style.background='var(--gold)';document.getElementById('btnD').style.color='#000';}
-  else if(p==='yearly'){document.getElementById('btnY').style.background='var(--gold)';document.getElementById('btnY').style.color='#000';}
-}
-function drawBuySell(){ buyPrice=parseFloat(document.getElementById('buyNifty').value)||null; sellPrice=parseFloat(document.getElementById('sellNifty').value)||null; if(chartInst){ chartInst.destroy(); cFrame('monthly'); } updateTracker(); }
-function updateTracker(){ const b=parseFloat(document.getElementById('buyNifty').value)||0, s=parseFloat(document.getElementById('sellNifty').value)||0, q=parseFloat(document.getElementById('buyQtyNifty').value)||0; const r=document.getElementById('trackerResult'); if(b&&s&&q){ const plq=s-b, pct=plq/b*100; r.innerHTML='<strong>P&amp;L: ₹'+(plq*q).toFixed(0)+'</strong> per unit · <strong>Gain %: '+pct.toFixed(2)+'%</strong> · <span style="color:#ffaa00;">Compare with Forecast (OpenRouter) direction above for accuracy.</span>';} else { r.innerHTML='Enter buy/sell prices + qty to see accuracy vs AI forecast.'; } }
-
-// ============ OPENROUTER FORECAST ============
-function loadForecast(){
-  const key = document.getElementById('orKey').value.trim();
-  const errBox = document.getElementById('forecastError');
-  const okBox = document.getElementById('forecastOk');
-  errBox.innerHTML = ''; okBox.innerHTML = '';
-  if(!key){ errBox.innerHTML = 'No OpenRouter key configured. Add in Settings above to unlock forecast.'; return; }
-  okBox.innerHTML = 'Thinking... (OpenRouter brain reading news + patterns)';
-  // Build context from current dashboard state
-  const context = `Market (as of now): Nifty ~23398 (-0.34%), BankNifty ~56606 (+0.24%), Sensex ~79200 (+0.15%), VIX 14.2, DXY 104.5, Crude Brent 78.3. News: FII selling offset by DII buying; Fed neutral; crude up hurts refineries; banking regulation loosening positive; AI contracts positive; VIX rising ahead of expiry. Past predictions: recent up/range for Nifty, down pressure for BankNifty. Provide a concise forecast based ONLY on this data.`;
-  fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json', 'Authorization':'Bearer '+key},
-    body: JSON.stringify({model:selectedModel, messages:[{role:'system',content:'You are a concise market analyst. Return ONLY valid JSON with keys: direction (UP/DOWN/RANGE), reason (1-2 sentences, mention news factors), confidence (0-1), range_low (number), range_high (number). No extra text.'},{role:'user',content:context}]})
-  }).then(r=>r.json()).then(data=>{
-    try{
-      const text = (data.choices&&data.choices[0]&&data.choices[0].message&&data.choices[0].message.content)||'';
-      const m = text.match(/\{[\s\S]*?\}/);
-      if(!m){ throw new Error('No JSON found'); }
-      const f = JSON.parse(m[0]);
-      document.getElementById('forecastDir').innerText = 'Direction: '+(f.direction||'Range / Mixed');
-      document.getElementById('forecastConf').innerText = 'Confidence: '+Math.round((f.confidence||0.7)*100)+'%';
-      document.getElementById('forecastReason').innerText = 'Reasoning (news-based): '+(f.reason||'Market shows mixed signals — banking regulation + AI contracts positive, crude + VIX negative.');
-      document.getElementById('predNifty').innerText = (f.range_low||23200)+' — '+(f.range_high||23600);
-      document.getElementById('forecastDirAhead') && (document.getElementById('forecastDirAhead').innerText = 'Direction: '+(f.direction||'Range / Mixed'));
-      document.getElementById('forecastReasonAhead') && (document.getElementById('forecastReasonAhead').innerText = (f.reason||'Based on latest news + market patterns.'));
-      document.getElementById('confAhead') && (document.getElementById('confAhead').innerText = Math.round((f.confidence||0.7)*100)+'%');
-      document.getElementById('predNiftyAhead') && (document.getElementById('predNiftyAhead').innerText = (f.range_low||23200)+' — '+(f.range_high||23600));
-      document.getElementById('predBankAhead') && (document.getElementById('predBankAhead').innerText = (f.range_low||56300)+' — '+(f.range_high||56800));
-      document.getElementById('predBank').innerText = (f.range_low||56300)+' — '+(f.range_high||56800); // rough for BN
-      document.getElementById('predSensex').innerText = (f.range_low||79000)+' — '+(f.range_high||80000);
-      okBox.innerHTML = '<span style="color:var(--accent);">✓ OpenRouter forecast loaded from latest news + patterns.</span>';
-      errBox.innerHTML = '';
-    }catch(e){ errBox.innerHTML = 'Forecast parse error — try again. Check key and network. Error: '+e.message; okBox.innerHTML=''; }
-  }).catch(e=>{ errBox.innerHTML = 'Forecast failed: '+e.message+'. Check key / network / quota.'; okBox.innerHTML=''; });
-}
-
-// Auto-load on ready
-window.addEventListener('load', ()=>{ loadConfig(); cFrame('monthly'); loadForecast(); });
-</script>
-<div id="live-news" style="margin:20px 0;padding:14px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;">
-  <h3 style="font-size:14px;color:#00ffa3;margin-bottom:8px;">News Updates (Reference — with time)</h3>
-  <div id="news-ref" style="font-size:12px;color:#e8ecf0;line-height:1.5;max-height:220px;overflow-y:auto;"></div>
-</div>
-<div id="live-market" style="margin:10px 0;padding:14px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;">
-  <h3 style="font-size:14px;color:#00ffa3;margin-bottom:8px;">Market Impact (Nifty / BankNifty / Sensex)</h3>
-  <div id="market-container" style="font-size:13px;color:#e8ecf0;line-height:1.6;"></div>
-</div>
-<div id="live-predictions" style="margin:10px 0;padding:14px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;">
-  <h3 style="font-size:14px;color:#00ffa3;margin-bottom:8px;">Self-Learning Predictions</h3>
-  <div id="predictions-container" style="font-size:13px;color:#e8ecf0;line-height:1.6;"></div>
-</div>
-<script>
-function loadLiveData() {
-  fetch('data/news.json').then(r=>r.json()).catch(()=>({news_items:[{title:'Reference news stream active — see date+time below',industry:'General',source:'RSS 1050 feeds',timestamp:new Date().toLocaleString('en-IN'),impact_tag:'Positive'}]})).then(d=>{
-    const items=d.news_items||[]; const c=document.getElementById('news-ref');
-    if(!c) return;
-    c.innerHTML = items.map(i=>'<div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);"><strong style="font-size:13px;color:#00ffa3;">'+(i.title||i.headline||'News')+'</strong><div style="font-size:10px;color:#8898aa;">'+(i.industry||'General')+' | '+(i.source||'RSS')+' | '+(i.timestamp||new Date().toLocaleString())+'</div></div>').join('');
-  });
-  fetch('data/live_impact.json').then(r=>r.json()).catch(()=>({})).then(d=>{
-    const c=document.getElementById('market-container'); if(!c)return;
-    const m=d.market||{}; const impacts=d.industry_news_impact||[];
-    let h='<div style="padding:8px;background:rgba(255,255,255,0.03);border-radius:8px;"><strong>Nifty:</strong> '+(m.nifty_spot||'—')+' <span style="font-size:10px;color:#8898aa;">('+(m.nifty_change_pct||'—')+'%)</span> | <strong>BankNifty:</strong> '+(m.banknifty_spot||'—')+' <span style="font-size:10px;color:#8898aa;">('+(m.banknifty_change_pct||'—')+'%)</span> | <strong>Sensex:</strong> '+(m.sensex_spot||'—')+'</div>';
-    h += impacts.map(i=>'<div style="margin:4px 0;padding:6px;background:rgba(255,255,255,0.03);border-radius:6px;border-left:3px solid '+(i.impact_tag==='Positive'?'#00ffa3':'#ff5555')+';"><strong>'+i.industry+'</strong> — '+(i.news_headline||'Update')+' | Nifty: '+(i.indirect_nifty_effect||'—')+'</div>').join('');
-    c.innerHTML = h;
-  });
-  fetch('data/predictions.json').then(r=>r.json()).catch(()=>({predictions:[]})).then(d=>{
-    const c=document.getElementById('predictions-container'); if(!c)return;
-    const preds = d.predictions||[]; const last = preds[preds.length-1]||{};
-    c.innerHTML = '<div style="padding:8px;background:rgba(255,255,255,0.03);border-radius:8px;"><strong>Latest Prediction:</strong> '+(last.nifty_direction||'—')+' / '+(last.banknifty_direction||'—')+' | Conf: '+((last.confidence||0.6)*100).toFixed(0)+'% | Date: '+(last.date||'—')+'</div>';
-  });
-}
-loadLiveData(); setInterval(loadLiveData, 600000);
-</script>
-
+  <script src="assets/app.js"></script>
 </body>
 </html>
