@@ -74,8 +74,13 @@ button.small{padding:4px 10px;font-size:10px;}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;align-items:end;">
       <div>
         <label for="orKey" style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px;">OpenRouter API Key <span class="tooltip"><span style="color:var(--gold);">?</span><span class="tip">Your free OpenRouter key. Not saved to server — only to your browser (localStorage) for 24/7 updates.</span></span></label>
-        <input id="orKey" type="password" placeholder="sk-or-v1-..." value="" onchange="checkConfig()" />
+        <input id="orKey" type="password" placeholder="Paste your key here" value="" onchange="checkConfig()" />
         <div id="keyStatus" style="font-size:10px;margin-top:2px;"></div>
+      </div>
+      <div>
+        <label style="font-size:10px;color:var(--muted);">Security</label><br>
+        <button onclick="clearKey()" class="small secondary" style="font-size:10px;padding:4px 8px;">Clear Key (Erase from Browser)</button>
+        <div style="font-size:9px;color:var(--gold);margin-top:2px;">Key never touches GitHub. Only your browser sends it to openrouter.ai when Forecast is clicked.</div>
       </div>
       <div>
         <label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px;">Update Frequency</label>
@@ -230,6 +235,7 @@ let buyPrice = null, sellPrice = null;
 let freezeSensex = false, freezeBank = false;
 let refreshMs = 600000; // 10 min default
 
+function clearKey(){ localStorage.removeItem('or_config'); document.getElementById('orKey').value=''; document.getElementById('keyStatus').innerHTML='<span style="color:var(--red);">✓ Cleared from browser.</span>'; document.getElementById('configMsg').innerHTML='<span class="ok-msg">Security: key erased. Refresh page to confirm.</span>'; }
 function loadConfig() {
   try { const s = localStorage.getItem(LS_KEY); if(s){ const d=JSON.parse(s); if(d.key) document.getElementById('orKey').value=d.key; if(d.interval) { refreshMs = d.interval; setIntervalMs(d.interval); } if(d.hideSensex) toggleSensex(document.getElementById('btnSensex')); if(d.hideBank) toggleBank(document.getElementById('btnBank')); } } catch(e){}
   checkConfig();
