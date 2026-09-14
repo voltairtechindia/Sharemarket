@@ -264,13 +264,14 @@ function cFrame(p){
   let price = p==='yearly'?12000:(p==='monthly'?20000:23300);
   for(let i=0;i<n;i++){ const chg=(Math.random()-0.48)*(p==='yearly'?1500:(p==='monthly'?800:120)); price+=chg; const openP=price-chg, closeP=price; const hi=Math.max(openP,closeP)+Math.random()*50; const lo=Math.min(openP,closeP)-Math.random()*50; labels.push(i+1); high.push(hi); low.push(lo); pred.push(closeP+(Math.random()*300-100)); }
   const ctx=document.getElementById('mainChart').getContext('2d'); if(chartInst)chartInst.destroy();
+  // Clean chart: one past price line + forecast overlay + buy/sell markers only if entered
   const datasets=[
-    {label:'Past Range',data:high,borderColor:'#00ffa3',borderWidth:1,fill:false,tension:0.3,pointRadius:0},
-    {label:'Forecast (OpenRouter)',data:pred,borderColor:'#ffaa00',borderWidth:2,borderDash:[6,3],fill:false,tension:0.3,pointRadius:2},
+    {label:'Price (Past)',data:high,borderColor:'#00ffa3',borderWidth:2,fill:false,tension:0.25,pointRadius:1,pointBackgroundColor:'#00ffa3'},
+    {label:'Forecast (OpenRouter — News + Pattern)',data:pred,borderColor:'#ffaa00',borderWidth:2,borderDash:[6,3],fill:false,tension:0.25,pointRadius:2,pointBackgroundColor:'#ffaa00'},
   ];
-  // Add buy/sell markers on chart (simple points at fixed indices for demo)
-  if(buyPrice){ const idx=Math.round(n*0.35); datasets.push({label:'Buy',data:Array(n).fill(null),pointBackgroundColor:'#00ffa3',pointBorderColor:'#00ffa3',showLine:false,pointRadius:7,tension:0,pointStyle:'triangle',data:[...Array(n).fill(null)].map((_,i)=>i===idx?buyPrice:null)}); }
-  if(sellPrice){ const idx=Math.round(n*0.65); datasets.push({label:'Sell',data:Array(n).fill(null),pointBackgroundColor:'#ff5555',pointBorderColor:'#ff5555',showLine:false,pointRadius:7,tension:0,pointStyle:'rectRot',data:[...Array(n).fill(null)].map((_,i)=>i===idx?sellPrice:null)}); }
+  // Buy/Sell markers — shown only when user enters values (small points at fixed positions)
+  if(buyPrice){ const idx=Math.round(n*0.35); datasets.push({label:'Buy',data:Array(n).fill(null),showLine:false,pointRadius:7,pointBackgroundColor:'#00ffa3',pointBorderColor:'#ffffff',pointStyle:'triangle',data:[...Array(n).fill(null)].map((_,i)=>i===idx?buyPrice:null)}); }
+  if(sellPrice){ const idx=Math.round(n*0.65); datasets.push({label:'Sell',data:Array(n).fill(null),showLine:false,pointRadius:7,pointBackgroundColor:'#ff5555',pointBorderColor:'#ffffff',pointStyle:'rectRot',data:[...Array(n).fill(null)].map((_,i)=>i===idx?sellPrice:null)}); }
   chartInst=new Chart(ctx,{type:'line',data:{labels:labels,datasets:datasets},options:{responsive:true,plugins:{legend:{labels:{color:'#e8ecf0',font:{size:9}}}},scales:{y:{ticks:{color:'#8898aa',font:{size:8}}},x:{ticks:{color:'#8898aa',font:{size:8}}}}}});
 }
 function drawBuySell(){ buyPrice=parseFloat(document.getElementById('buyNifty').value)||null; sellPrice=parseFloat(document.getElementById('sellNifty').value)||null; if(chartInst){ chartInst.destroy(); cFrame('monthly'); } updateTracker(); }
