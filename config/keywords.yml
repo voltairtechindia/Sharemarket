@@ -1,0 +1,84 @@
+# Maps words found in a headline to the sectors and stocks likely to react.
+# This is what turns a news feed into something you can trade off.
+# Matching is case insensitive and uses whole words, so "ev" will not match "every".
+# Add your own rows freely, the scripts pick up changes on the next run.
+
+high_impact:      # these push an item up the feed and mark it with an amber rule
+  - repo rate
+  - monetary policy
+  - rate cut
+  - rate hike
+  - crr
+  - inflation
+  - cpi
+  - wpi
+  - gdp
+  - fed
+  - fomc
+  - tariff
+  - tariffs
+  - sanctions
+  - war
+  - ceasefire
+  - circuit
+  - crackdown
+  - budget
+  - gst council
+  - downgrade
+  - upgrade
+  - default
+  - bans
+  - probe
+  - raid
+
+sectors:
+  banking:
+    words: [rbi, repo rate, bank, banks, banking, nbfc, credit growth, npa,
+            deposit rate, lending, hdfc bank, icici, sbi, axis bank, kotak,
+            bajaj finance, nifty bank, bank nifty]
+    stocks: [HDFCBANK, ICICIBANK, SBIN, AXISBANK, KOTAKBANK, BAJFINANCE]
+  it:
+    words: [it stocks, it sector, nifty it, it services, software exports, h1b,
+            visa fee, deal wins, tcv, nasdaq, infosys, tcs, wipro, hcl tech,
+            tech mahindra, lti mindtree]
+    stocks: [TCS, INFY, WIPRO, HCLTECH, TECHM, LTIM]
+  oil_gas:
+    words: [crude, opec, brent, refining, refinery, petrol, diesel, gas price,
+            lpg, reliance, ongc, bpcl, ioc, hpcl, gail]
+    stocks: [RELIANCE, ONGC, BPCL, IOC, HINDPETRO, GAIL]
+  auto:
+    words: [auto, autos, auto sales, ev, evs, electric vehicle, vehicle sales,
+            two wheeler, scrappage, maruti, tata motors, mahindra, bajaj auto,
+            eicher, hero motocorp]
+    stocks: [MARUTI, TATAMOTORS, M&M, BAJAJ-AUTO, EICHERMOT, HEROMOTOCO]
+  pharma:
+    words: [pharma, usfda, drug approval, generic, clinical trial, patent,
+            sun pharma, dr reddy, cipla, divis, lupin, aurobindo]
+    stocks: [SUNPHARMA, DRREDDY, CIPLA, DIVISLAB, LUPIN, AUROPHARMA]
+  metals:
+    words: [steel, iron ore, aluminium, copper, china stimulus, metal, metals,
+            mining, tata steel, jsw steel, hindalco, vedanta, sail, nmdc]
+    stocks: [TATASTEEL, JSWSTEEL, HINDALCO, VEDL, SAIL, NMDC]
+  fmcg:
+    words: [fmcg, rural demand, monsoon, consumption, palm oil, hul,
+            hindustan unilever, itc, nestle, britannia, dabur, marico]
+    stocks: [HINDUNILVR, ITC, NESTLEIND, BRITANNIA, DABUR, MARICO]
+  power:
+    words: [power demand, coal, renewable, renewables, solar, transmission,
+            discom, ntpc, powergrid, tata power, adani green, jsw energy]
+    stocks: [NTPC, POWERGRID, TATAPOWER, ADANIGREEN, JSWENERGY]
+  infra:
+    words: [infrastructure, order book, capex, road project, highway, railway,
+            defence order, defence, larsen, adani ports, irctc, bel, hal, rvnl]
+    stocks: [LT, ADANIPORTS, IRCTC, BEL, HAL, RVNL]
+  realty:
+    words: [real estate, realty, housing sales, rera, home loan, property prices,
+            dlf, godrej properties, oberoi realty, lodha, prestige estates]
+    stocks: [DLF, GODREJPROP, OBEROIRLTY, LODHA, PRESTIGE]
+
+# Direction hints. Bearish words outweighing bullish ones tags the item negative.
+bullish: [surge, surges, rally, rallies, jumps, gains, record high, upgrade,
+          beats estimates, order win, stimulus, rate cut, inflows, rebound, breakout]
+bearish: [slump, slumps, crash, falls, plunge, plunges, downgrade, misses estimates,
+          probe, raid, ban, bans, default, outflows, selloff, sell off, rate hike,
+          slide, tumble, tumbles]

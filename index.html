@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Market desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="tape">
+  <div class="tape-head">
+    <h1>Market desk</h1>
+    <div class="clock"><span id="clock">--:--:--</span> IST</div>
+  </div>
+  <div id="headline" class="headline-row">
+    <p class="empty">Waiting for the first data run. Trigger the market workflow from the Actions tab.</p>
+  </div>
+</header>
+
+<main>
+  <aside class="rail">
+    <section class="block">
+      <h2>Nifty F&amp;O</h2>
+      <div id="fno" class="quote-list"></div>
+    </section>
+
+    <section class="block">
+      <h2>Sectors</h2>
+      <div id="india" class="quote-list"></div>
+    </section>
+
+    <section class="block">
+      <h2>Biggest movers</h2>
+      <div id="movers" class="quote-list"></div>
+    </section>
+
+    <section class="block">
+      <h2>Global</h2>
+      <div id="global" class="quote-list"></div>
+    </section>
+
+    <section class="block">
+      <h2>Currency and commodities</h2>
+      <div id="macro" class="quote-list"></div>
+    </section>
+  </aside>
+
+  <section class="feed">
+    <nav class="tabs" role="tablist">
+      <button class="tab is-on" data-panel="news" role="tab" aria-selected="true">News</button>
+      <button class="tab" data-panel="social" role="tab" aria-selected="false">Social</button>
+      <button class="tab" data-panel="options" role="tab" aria-selected="false">Option chain</button>
+      <button class="tab" data-panel="forecast" role="tab" aria-selected="false">Forecast</button>
+    </nav>
+
+    <div class="panel is-on" id="panel-news">
+      <div class="filters">
+        <label class="check"><input type="checkbox" id="only-high"> High impact only</label>
+        <input type="search" id="news-search" placeholder="Filter by word, stock or sector">
+      </div>
+      <div id="news-list"><p class="empty">No news pulled yet.</p></div>
+    </div>
+
+    <div class="panel" id="panel-social">
+      <div class="filters">
+        <label class="check"><input type="checkbox" id="only-market" checked> Market related only</label>
+        <span id="x-status" class="note"></span>
+      </div>
+      <div id="social-list"><p class="empty">No posts pulled yet.</p></div>
+    </div>
+
+    <div class="panel" id="panel-forecast">
+      <div id="forecast-body"><p class="empty">No forecast logged yet. Run the forecast
+      workflow from the Actions tab, or <code>python scripts/predict.py</code> locally.</p></div>
+    </div>
+
+    <div class="panel" id="panel-options">
+      <div id="options-body">
+        <p class="empty">No option chain yet. NSE blocks GitHub runners, so either run
+        <code>python scripts/fetch_market.py</code> on your own machine, or add a free
+        Dhan token as a repo secret. Read the setup notes in the README.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="status">
+  <div class="ages">
+    <span>Market <b id="age-market">never</b></span>
+    <span>News <b id="age-news">never</b></span>
+    <span>Social <b id="age-social">never</b></span>
+  </div>
+  <div id="lanes" class="lanes"></div>
+</footer>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

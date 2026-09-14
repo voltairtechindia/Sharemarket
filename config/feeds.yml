@@ -1,0 +1,62 @@
+# Every feed here is free, needs no key and no signup.
+# Delete any that go stale, add your own. The dashboard shows which ones are alive.
+
+news:
+  - { name: "Moneycontrol markets",  url: "https://www.moneycontrol.com/rss/marketreports.xml" }
+  - { name: "Moneycontrol top",      url: "https://www.moneycontrol.com/rss/MCtopnews.xml" }
+  - { name: "Moneycontrol business", url: "https://www.moneycontrol.com/rss/business.xml" }
+  - { name: "ET markets",            url: "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms" }
+  - { name: "ET economy",            url: "https://economictimes.indiatimes.com/news/economy/rssfeeds/1373380680.cms" }
+  - { name: "Livemint markets",      url: "https://www.livemint.com/rss/markets" }
+  - { name: "Livemint companies",    url: "https://www.livemint.com/rss/companies" }
+  - { name: "Business Standard",     url: "https://www.business-standard.com/rss/markets-106.rss" }
+  - { name: "Financial Express",     url: "https://www.financialexpress.com/market/feed/" }
+  - { name: "The Hindu BusinessLine",url: "https://www.thehindubusinessline.com/markets/feeder/default.rss" }
+  - { name: "RBI press releases",    url: "https://www.rbi.org.in/pressreleases_rss.xml" }
+
+# Google News search feeds. Change the q= value to watch anything you want.
+# This is the most useful lane: it catches wire stories within a minute or two,
+# including reaction pieces to a tweet, usually faster than scraping X itself.
+google_news:
+  - { name: "Nifty / Sensex",   q: "nifty OR sensex OR \"bank nifty\"" }
+  - { name: "RBI policy",       q: "RBI repo rate OR monetary policy India" }
+  - { name: "FII DII flows",    q: "FII DII flows Indian equities" }
+  - { name: "Crude and rupee",  q: "crude oil price OR rupee dollar India" }
+  - { name: "Tariffs / Trump",  q: "Trump tariff India OR trade deal India" }
+  - { name: "US Fed",           q: "Federal Reserve rate decision" }
+  - { name: "Earnings India",   q: "Q results India quarterly earnings Nifty company" }
+  - { name: "SEBI",             q: "SEBI regulation markets" }
+  - { name: "Geopolitics Asia", q: "India China OR India Pakistan border tension" }
+
+google_news_params: "hl=en-IN&gl=IN&ceid=IN:en"
+
+# ------------------------------------------------------------------ social
+# Reddit .rss is free, stable, no key. These are the most active Indian FNO subs.
+reddit:
+  - { name: "r/IndianStreetBets", url: "https://www.reddit.com/r/IndianStreetBets/new/.rss" }
+  - { name: "r/NSEbets",          url: "https://www.reddit.com/r/NSEbets/new/.rss" }
+  - { name: "r/IndiaInvestments", url: "https://www.reddit.com/r/IndiaInvestments/new/.rss" }
+  - { name: "r/DalalStreetTalks", url: "https://www.reddit.com/r/DalalStreetTalks/new/.rss" }
+
+# X handles, read through Nitter-fork RSS. This lane is expected to break sometimes.
+# X Corp sent takedown letters to Nitter instances in Aug 2026, so public mirrors
+# come and go. The dashboard keeps working when this returns nothing.
+# Add more mirror hosts as you find them, they are tried in order.
+x_mirrors:
+  - "https://xcancel.com"
+
+x_handles:
+  - realDonaldTrump
+  - RBI
+  - nsitharaman
+  - FinMinIndia
+  - NSEIndia
+  - zerodhaonline
+  - deepakshenoy
+  - Nifty_Banknifty
+
+# Public Telegram channels, read from the t.me web preview. No key, no account.
+# Put the channel handle without the @.
+telegram:
+  - stockmarketnewsindia
+  - nsebseupdates

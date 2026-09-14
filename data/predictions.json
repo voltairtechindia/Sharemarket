@@ -1,0 +1,83 @@
+{
+ "schema": 2,
+ "note": "Real forecasts start empty. The rows under legacy_demo came from the original prototype, where validate() set correct=True unconditionally, so their 66.7% was never measured against a market close. Kept for reference, excluded from accuracy.",
+ "weights": {
+  "vix": 1.0,
+  "global_cue": 1.0,
+  "usdinr": 1.0,
+  "crude": 1.0,
+  "momentum": 1.0,
+  "breadth": 1.0,
+  "pcr": 1.0,
+  "oi": 1.0,
+  "max_pain": 1.0,
+  "news": 1.0
+ },
+ "predictions": [],
+ "accuracy": {
+  "validated": 0,
+  "correct": 0,
+  "percent": null,
+  "range_hits": 0,
+  "range_percent": null,
+  "sample_warning": "No settled forecasts yet."
+ },
+ "legacy_demo": [
+  {
+   "timestamp": "2026-09-10 16:00:00",
+   "date": "2026-09-10",
+   "nifty_direction": "up",
+   "banknifty_direction": "down",
+   "nifty_range_low": 23250,
+   "nifty_range_high": 23550,
+   "signals": [
+    "nifty_oi_bullish",
+    "nifty_pcr_bullish",
+    "bank_pcr_neutral",
+    "news_bias_positive",
+    "intl_cautious"
+   ],
+   "confidence": 0.72,
+   "past_accuracy": 0.62,
+   "validated": true,
+   "correct": true,
+   "notes": "Self-taught from previous predictions vs market moves"
+  },
+  {
+   "timestamp": "2026-09-09 16:00:00",
+   "date": "2026-09-09",
+   "nifty_direction": "down",
+   "banknifty_direction": "up",
+   "nifty_range_low": 23100,
+   "nifty_range_high": 23400,
+   "signals": [
+    "nifty_oi_bearish",
+    "nifty_pcr_neutral",
+    "news_bias_negative"
+   ],
+   "confidence": 0.58,
+   "past_accuracy": 0.58,
+   "validated": true,
+   "correct": false,
+   "notes": "Incorrect \u2014 model corrected OI weight for next run"
+  },
+  {
+   "timestamp": "2026-09-08 16:00:00",
+   "date": "2026-09-08",
+   "nifty_direction": "neutral",
+   "banknifty_direction": "up",
+   "nifty_range_low": 23200,
+   "nifty_range_high": 23450,
+   "signals": [
+    "mixed_signals",
+    "vix_low",
+    "intl_neutral"
+   ],
+   "confidence": 0.65,
+   "past_accuracy": 0.62,
+   "validated": true,
+   "correct": true,
+   "notes": "Range-bound as predicted"
+  }
+ ]
+}
