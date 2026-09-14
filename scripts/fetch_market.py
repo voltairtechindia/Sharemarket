@@ -1,269 +1,242 @@
-"""Pull index, stock and macro quotes from Yahoo Finance. No API key required.
+"""Pull real Nifty / Sensex OHLC from Yahoo and compute the seasonal study.
 
-Optionally pulls an F&O option chain from NSE (local runs) or Dhan (needs a free
-account token in repo secrets). Both are best effort and never fail the run.
+Writes:
+  data/candles_<SYM>_<TF>.json   OHLC per timeframe, compact arrays
+  data/quote.json                latest snapshot for both indices
+  data/seasonality.json          month-of-year, day-of-week and expiry-week stats
+  data/market.json               kept for backward compatibility with the old page
+
+Yahoo is fetched directly (this runs server side, no CORS). If Yahoo rate limits
+the runner, the same URL is retried through r.jina.ai and allorigins.
 """
-import os
+import json
+import statistics
+import sys
 import time
+from datetime import datetime, timezone
+from urllib.parse import quote
 
 import requests
 
-from common import Lanes, ON_ACTIONS, get, load_cfg, now_ist, now_iso, write_json
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+from common import DATA, IST, UA, now_iso, write_json  # noqa: E402
 
-YF_HOSTS = ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"]
+SYMBOLS = {
+    "NIFTY": {"yahoo": "^NSEI", "label": "NIFTY 50", "exchange": "NSE"},
+    "SENSEX": {"yahoo": "^BSESN", "label": "SENSEX", "exchange": "BSE"},
+}
+
+# (timeframe id, yahoo interval, yahoo range) - matches the UI's timeframe buttons.
+TIMEFRAMES = [
+    ("1H", "1m", "5d"),     # hourly view: minute candles, reasons every 10 min
+    ("1D", "5m", "1mo"),    # daily view: 5m candles, reasons every 1 hour
+    ("1M", "1d", "6mo"),    # monthly view: daily candles, reasons every 1 day
+    ("1Y", "1d", "2y"),     # yearly view
+    ("ALL", "1wk", "max"),  # till date
+]
+
+SEASONAL_SOURCES = [("1mo", "max"), ("1d", "10y")]
+
+CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval={iv}&range={rg}"
 
 
-def yahoo_quote(session, symbol, label):
-    last_err = None
-    for host in YF_HOSTS:
-        url = f"{host}/v8/finance/chart/{symbol}"
+def _try(url, timeout=25):
+    heads = {"User-Agent": UA, "Accept": "application/json,text/plain,*/*"}
+    attempts = [
+        (url, heads),
+        ("https://r.jina.ai/" + url, dict(heads, **{"x-return-format": "text"})),
+        ("https://api.allorigins.win/raw?url=" + quote(url, safe=""), heads),
+    ]
+    last = ""
+    for target, h in attempts:
         try:
-            r = get(
-                url,
-                session=session,
-                retries=1,
-                params={"range": "1d", "interval": "5m", "includePrePost": "false"},
-            )
-            j = r.json()["chart"]["result"][0]
+            r = requests.get(target, headers=h, timeout=timeout)
+            if r.status_code == 200 and r.text.lstrip().startswith("{"):
+                return r.json()
+            last = f"HTTP {r.status_code}"
         except Exception as exc:  # noqa: BLE001
-            last_err = exc
-            continue
-
-        meta = j.get("meta", {})
-        closes = []
-        try:
-            closes = [c for c in j["indicators"]["quote"][0]["close"] if c is not None]
-        except Exception:  # noqa: BLE001
-            pass
-
-        price = meta.get("regularMarketPrice")
-        if price is None and closes:
-            price = closes[-1]
-        prev = meta.get("chartPreviousClose") or meta.get("previousClose")
-        if price is None or prev is None:
-            last_err = RuntimeError("no price in response")
-            continue
-
-        change = price - prev
-        spark = closes[-78:]
-        if len(spark) > 60:  # thin it out so the JSON stays small
-            step = len(spark) / 60
-            spark = [spark[int(i * step)] for i in range(60)]
-
-        return {
-            "symbol": symbol,
-            "label": label,
-            "price": round(float(price), 2),
-            "prev_close": round(float(prev), 2),
-            "change": round(float(change), 2),
-            "change_pct": round(float(change) / float(prev) * 100, 2) if prev else 0.0,
-            "day_high": meta.get("regularMarketDayHigh"),
-            "day_low": meta.get("regularMarketDayLow"),
-            "currency": meta.get("currency", ""),
-            "exchange_state": meta.get("marketState", ""),
-            "spark": [round(float(x), 2) for x in spark],
-        }
-    raise last_err or RuntimeError("yahoo failed")
+            last = type(exc).__name__
+        time.sleep(1)
+    raise RuntimeError(f"all fetch routes failed: {last}")
 
 
-def fetch_group(session, entries):
-    out = []
-    for e in entries:
-        try:
-            out.append(yahoo_quote(session, e["symbol"], e["label"]))
-        except Exception as exc:  # noqa: BLE001
-            print(f"  skip {e['symbol']}: {exc!r}")
-        time.sleep(0.25)  # stay polite, Yahoo throttles bursts
-    if not out:
-        raise RuntimeError("every symbol in group failed")
-    return out
-
-
-# ---------------------------------------------------------------- option chain
-
-def nse_option_chain(symbols, width):
-    """Unofficial NSE endpoint. Needs a cookie handshake and a real browser UA.
-    NSE firewalls cloud IPs, so this is skipped on GitHub runners by default."""
-    if ON_ACTIONS and os.environ.get("FORCE_NSE") != "1":
-        raise RuntimeError("skipped on GitHub runner, NSE blocks datacenter IPs")
-
-    s = requests.Session()
-    get("https://www.nseindia.com/option-chain", session=s, timeout=15,
-        headers={"Accept": "text/html,application/xhtml+xml"})
-    time.sleep(1)
-
-    out = {}
-    for sym in symbols:
-        r = get(
-            "https://www.nseindia.com/api/option-chain-indices",
-            session=s,
-            timeout=15,
-            params={"symbol": sym},
-            headers={"Accept": "application/json", "Referer": "https://www.nseindia.com/option-chain"},
-        )
-        out[sym] = shape_nse_chain(r.json(), width)
-        time.sleep(1.2)  # NSE rate limit is roughly 3 req/sec, stay well under
-    return out
-
-
-def shape_nse_chain(raw, width):
-    records = raw.get("records", {})
-    spot = records.get("underlyingValue")
-    expiry = (records.get("expiryDates") or [None])[0]
-    rows = [r for r in records.get("data", []) if r.get("expiryDate") == expiry]
-    if spot and rows:
-        atm = min(rows, key=lambda r: abs(r["strikePrice"] - spot))["strikePrice"]
-        rows.sort(key=lambda r: abs(r["strikePrice"] - atm))
-        rows = sorted(rows[: width * 2 + 1], key=lambda r: r["strikePrice"])
-
-    strikes, ce_oi, pe_oi = [], 0, 0
-    for r in rows:
-        ce, pe = r.get("CE", {}), r.get("PE", {})
-        ce_oi += ce.get("openInterest", 0)
-        pe_oi += pe.get("openInterest", 0)
-        strikes.append({
-            "strike": r["strikePrice"],
-            "ce_ltp": ce.get("lastPrice"), "ce_oi": ce.get("openInterest"),
-            "ce_oi_chg": ce.get("changeinOpenInterest"), "ce_iv": ce.get("impliedVolatility"),
-            "pe_ltp": pe.get("lastPrice"), "pe_oi": pe.get("openInterest"),
-            "pe_oi_chg": pe.get("changeinOpenInterest"), "pe_iv": pe.get("impliedVolatility"),
-        })
-
-    max_pain = None
-    if strikes:
-        def pain(k):
-            return sum(
-                max(0, k - s["strike"]) * (s["ce_oi"] or 0)
-                + max(0, s["strike"] - k) * (s["pe_oi"] or 0)
-                for s in strikes
-            )
-        max_pain = min((s["strike"] for s in strikes), key=pain)
-
-    return {
-        "spot": spot,
-        "expiry": expiry,
-        "pcr": round(pe_oi / ce_oi, 2) if ce_oi else None,
-        "total_ce_oi": ce_oi,
-        "total_pe_oi": pe_oi,
-        "max_pain": max_pain,
-        "strikes": strikes,
-        "source": "nse",
-    }
-
-
-def dhan_option_chain(symbols, width):
-    """Free with a Dhan account. Token lives ~30 days so it survives in Actions."""
-    token = os.environ.get("DHAN_ACCESS_TOKEN")
-    client = os.environ.get("DHAN_CLIENT_ID")
-    if not token or not client:
-        raise RuntimeError("DHAN_ACCESS_TOKEN / DHAN_CLIENT_ID not set")
-
-    scrip = {"NIFTY": 13, "BANKNIFTY": 25, "FINNIFTY": 27}
-    headers = {"access-token": token, "client-id": client, "Content-Type": "application/json"}
-    out = {}
-    for sym in symbols:
-        sid = scrip.get(sym)
-        if sid is None:
-            continue
-        body = {"UnderlyingScrip": sid, "UnderlyingSeg": "IDX_I"}
-        r = requests.post("https://api.dhan.co/v2/optionchain/expirylist",
-                          json=body, headers=headers, timeout=20)
-        r.raise_for_status()
-        expiry = r.json()["data"][0]
-        body["Expiry"] = expiry
-        r = requests.post("https://api.dhan.co/v2/optionchain",
-                          json=body, headers=headers, timeout=20)
-        r.raise_for_status()
-        out[sym] = shape_dhan_chain(r.json().get("data", {}), expiry, width)
-        time.sleep(3.2)  # Dhan option chain is rate limited to 1 call per 3 sec
-    return out
-
-
-def shape_dhan_chain(data, expiry, width):
-    spot = data.get("last_price")
-    oc = data.get("oc", {}) or {}
+def fetch_chart(yahoo_symbol, interval, rng):
+    url = CHART.format(sym=quote(yahoo_symbol, safe=""), iv=interval, rg=rng)
+    data = _try(url)
+    res = data["chart"]["result"][0]
+    ts = res.get("timestamp") or []
+    q = res["indicators"]["quote"][0]
     rows = []
-    for k, v in oc.items():
-        ce, pe = v.get("ce", {}) or {}, v.get("pe", {}) or {}
-        rows.append({
-            "strike": float(k),
-            "ce_ltp": ce.get("last_price"), "ce_oi": ce.get("oi"),
-            "ce_oi_chg": (ce.get("oi") or 0) - (ce.get("previous_oi") or 0),
-            "ce_iv": ce.get("implied_volatility"),
-            "pe_ltp": pe.get("last_price"), "pe_oi": pe.get("oi"),
-            "pe_oi_chg": (pe.get("oi") or 0) - (pe.get("previous_oi") or 0),
-            "pe_iv": pe.get("implied_volatility"),
-        })
-    rows = [r for r in rows if (r["ce_oi"] or r["pe_oi"])]
-    if spot and rows:
-        atm = min(rows, key=lambda r: abs(r["strike"] - spot))["strike"]
-        rows.sort(key=lambda r: abs(r["strike"] - atm))
-        rows = sorted(rows[: width * 2 + 1], key=lambda r: r["strike"])
+    for i, t in enumerate(ts):
+        o, h, l, c = q["open"][i], q["high"][i], q["low"][i], q["close"][i]
+        if None in (o, h, l, c):
+            continue
+        v = (q.get("volume") or [None] * len(ts))[i] or 0
+        rows.append([int(t), round(o, 2), round(h, 2), round(l, 2), round(c, 2), int(v)])
+    return res["meta"], rows
 
-    ce_oi = sum(r["ce_oi"] or 0 for r in rows)
-    pe_oi = sum(r["pe_oi"] or 0 for r in rows)
-    max_pain = None
-    if rows:
-        def pain(k):
-            return sum(
-                max(0, k - r["strike"]) * (r["ce_oi"] or 0)
-                + max(0, r["strike"] - k) * (r["pe_oi"] or 0)
-                for r in rows
-            )
-        max_pain = min((r["strike"] for r in rows), key=pain)
+
+def pct(a, b):
+    return None if not b else round((a - b) / b * 100.0, 4)
+
+
+def seasonality(monthly, daily):
+    """Real seasonal statistics computed from history, not assumed."""
+    # --- month of year, from monthly closes
+    by_month = {m: [] for m in range(1, 13)}
+    for i in range(1, len(monthly)):
+        prev_c, cur = monthly[i - 1][4], monthly[i]
+        r = pct(cur[4], prev_c)
+        if r is None:
+            continue
+        month = datetime.fromtimestamp(cur[0], IST).month
+        by_month[month].append(r)
+
+    months = []
+    names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    for m in range(1, 13):
+        vals = by_month[m]
+        if not vals:
+            months.append({"m": m, "name": names[m - 1], "n": 0, "avg": 0.0, "median": 0.0,
+                           "win": 0.0, "best": 0.0, "worst": 0.0})
+            continue
+        wins = sum(1 for v in vals if v > 0)
+        months.append({
+            "m": m, "name": names[m - 1], "n": len(vals),
+            "avg": round(statistics.fmean(vals), 2),
+            "median": round(statistics.median(vals), 2),
+            "win": round(wins / len(vals) * 100, 1),
+            "best": round(max(vals), 2), "worst": round(min(vals), 2),
+        })
+
+    # --- day of week, from daily closes
+    dow = {i: [] for i in range(7)}
+    for i in range(1, len(daily)):
+        r = pct(daily[i][4], daily[i - 1][4])
+        if r is None:
+            continue
+        dow[datetime.fromtimestamp(daily[i][0], IST).weekday()].append(r)
+    dnames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    days = []
+    for i in range(5):
+        vals = dow[i]
+        if not vals:
+            continue
+        days.append({"d": i, "name": dnames[i], "n": len(vals),
+                     "avg": round(statistics.fmean(vals), 3),
+                     "win": round(sum(1 for v in vals if v > 0) / len(vals) * 100, 1)})
+
+    # --- expiry week (week containing the last Thursday of the month)
+    expiry_week, other_week = [], []
+    for i in range(1, len(daily)):
+        d = datetime.fromtimestamp(daily[i][0], IST)
+        r = pct(daily[i][4], daily[i - 1][4])
+        if r is None:
+            continue
+        # last Thursday: a Thursday with fewer than 7 days left in the month
+        import calendar
+        last_day = calendar.monthrange(d.year, d.month)[1]
+        last_thu = max(day for day in range(1, last_day + 1)
+                       if datetime(d.year, d.month, day).weekday() == 3)
+        (expiry_week if abs(d.day - last_thu) <= 3 else other_week).append(r)
+
+    # --- realised volatility, for the forecast cone
+    rets = [pct(daily[i][4], daily[i - 1][4]) for i in range(1, len(daily))]
+    rets = [r for r in rets if r is not None]
+    vol_20 = round(statistics.pstdev(rets[-20:]), 3) if len(rets) >= 20 else 0.8
+    vol_250 = round(statistics.pstdev(rets[-250:]), 3) if len(rets) >= 250 else vol_20
+
+    now = datetime.now(IST)
+    cur = next((m for m in months if m["m"] == now.month), None)
+    nxt = next((m for m in months if m["m"] == (now.month % 12) + 1), None)
 
     return {
-        "spot": spot, "expiry": expiry,
-        "pcr": round(pe_oi / ce_oi, 2) if ce_oi else None,
-        "total_ce_oi": ce_oi, "total_pe_oi": pe_oi,
-        "max_pain": max_pain, "strikes": rows, "source": "dhan",
+        "updated_iso": now_iso(),
+        "history_months": len(monthly),
+        "history_days": len(daily),
+        "months": months,
+        "days_of_week": days,
+        "expiry_week": {
+            "n": len(expiry_week),
+            "avg": round(statistics.fmean(expiry_week), 3) if expiry_week else 0.0,
+            "other_avg": round(statistics.fmean(other_week), 3) if other_week else 0.0,
+        },
+        "volatility": {"daily_20d": vol_20, "daily_250d": vol_250},
+        "current_month": cur,
+        "next_month": nxt,
     }
 
 
 def main():
-    cfg = load_cfg("watchlist.yml")
-    lanes = Lanes()
-    session = requests.Session()
+    out_quote = {}
+    generated = now_iso()
 
-    groups = {}
-    for group in ("headline", "india", "global", "macro", "movers"):
-        entries = cfg.get(group) or []
-        groups[group] = lanes.run(f"yahoo:{group}", lambda e=entries: fetch_group(session, e))
+    for key, meta_cfg in SYMBOLS.items():
+        ysym = meta_cfg["yahoo"]
+        meta_latest = None
+        for tf, interval, rng in TIMEFRAMES:
+            try:
+                meta, rows = fetch_chart(ysym, interval, rng)
+                meta_latest = meta_latest or meta
+                write_json(
+                    f"candles_{key}_{tf}.json",
+                    {
+                        "symbol": key, "yahoo": ysym, "timeframe": tf,
+                        "interval": interval, "range": rng,
+                        "generated_at": generated, "count": len(rows),
+                        "fields": ["t", "o", "h", "l", "c", "v"],
+                        "candles": rows,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [FAIL] {key} {tf}: {exc}")
 
-    opt_cfg = cfg.get("options", {}) or {}
-    symbols = opt_cfg.get("symbols", [])
-    width = int(opt_cfg.get("strikes_around_atm", 10))
-    chains = {}
+        if meta_latest:
+            out_quote[key] = {
+                "symbol": key,
+                "label": meta_cfg["label"],
+                "exchange": meta_cfg["exchange"],
+                "price": meta_latest.get("regularMarketPrice"),
+                "prev_close": meta_latest.get("chartPreviousClose"),
+                "day_high": meta_latest.get("regularMarketDayHigh"),
+                "day_low": meta_latest.get("regularMarketDayLow"),
+                "week52_high": meta_latest.get("fiftyTwoWeekHigh"),
+                "week52_low": meta_latest.get("fiftyTwoWeekLow"),
+                "market_time": meta_latest.get("regularMarketTime"),
+                "currency": meta_latest.get("currency", "INR"),
+            }
+            p, pc = out_quote[key]["price"], out_quote[key]["prev_close"]
+            if p and pc:
+                out_quote[key]["change"] = round(p - pc, 2)
+                out_quote[key]["change_pct"] = pct(p, pc)
 
-    if opt_cfg.get("dhan"):
-        try:
-            chains = dhan_option_chain(symbols, width)
-            lanes.record("options:dhan", True, len(chains))
-        except Exception as exc:  # noqa: BLE001
-            lanes.record("options:dhan", False, 0, repr(exc))
+    write_json("quote.json", {"generated_at": generated, "quotes": out_quote})
 
-    if not chains and opt_cfg.get("nse_direct"):
-        try:
-            chains = nse_option_chain(symbols, width)
-            lanes.record("options:nse", True, len(chains))
-        except Exception as exc:  # noqa: BLE001
-            lanes.record("options:nse", False, 0, repr(exc))
+    # ------------------------------------------------------------ seasonality
+    try:
+        _, monthly = fetch_chart("^NSEI", *SEASONAL_SOURCES[0])
+        _, daily = fetch_chart("^NSEI", *SEASONAL_SOURCES[1])
+        write_json("seasonality.json", seasonality(monthly, daily))
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [FAIL] seasonality: {exc}")
 
-    movers = sorted(groups.get("movers", []), key=lambda q: q["change_pct"], reverse=True)
-
-    write_json("market.json", {
-        "generated_at": now_iso(),
-        "generated_at_ist": now_ist(),
-        "headline": groups.get("headline", []),
-        "india": groups.get("india", []),
-        "global": groups.get("global", []),
-        "macro": groups.get("macro", []),
-        "gainers": movers[:6],
-        "losers": list(reversed(movers[-6:])),
-        "options": chains,
-        "lanes": lanes.as_list(),
+    # -------------------------------------- keep the old market.json contract
+    try:
+        old = json.loads((DATA / "market.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        old = {}
+    old.update({
+        "generated_at": generated,
+        "generated_at_ist": datetime.now(IST).isoformat(timespec="seconds"),
+        "headline": [
+            {"symbol": k, "label": v["label"], "price": v.get("price"),
+             "change": v.get("change"), "change_pct": v.get("change_pct")}
+            for k, v in out_quote.items()
+        ],
     })
+    write_json("market.json", old)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

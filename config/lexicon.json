@@ -1,0 +1,111 @@
+{
+  "_note": "Single source of truth for news scoring. Read by scripts/fetch_news.py (server side) and assets/js/sentiment.js (browser), so both lanes score identically. Weights are on a -4..+4 scale.",
+  "version": 2,
+
+  "bullish": {
+    "record high": 4, "all-time high": 4, "lifetime high": 4, "surges": 3, "surge": 3,
+    "soars": 3, "soar": 3, "rallies": 3, "rally": 3, "jumps": 3, "jump": 2, "spikes": 2,
+    "climbs": 2, "gains": 2, "gain": 2, "rises": 2, "rise": 2, "advances": 2, "up": 1,
+    "higher": 2, "outperform": 3, "beats estimates": 4, "beats expectations": 4,
+    "tops estimates": 4, "strong results": 3, "record profit": 4, "profit jumps": 4,
+    "revenue growth": 3, "margin expansion": 3, "order win": 3, "bags order": 3,
+    "wins contract": 3, "deal win": 3, "upgrade": 3, "upgrades": 3, "buy rating": 3,
+    "target price raised": 3, "raises guidance": 4, "upbeat": 2, "optimistic": 2,
+    "bullish": 3, "recovery": 2, "rebound": 3, "bounce": 2, "inflows": 3, "buying": 2,
+    "rate cut": 3, "liquidity boost": 3, "stimulus": 3, "dovish": 3, "easing": 2,
+    "tax relief": 3, "incentive": 2, "approval": 2, "approved": 2, "expansion": 2,
+    "demand revival": 3, "cools": 2, "eases": 2, "better than expected": 3,
+    "fii buying": 3, "dii buying": 2, "block deal": 1, "bonus issue": 2, "dividend": 1,
+    "buyback": 3, "stake buy": 2, "green": 1, "positive": 2, "boost": 2, "revival": 2,
+    "momentum": 1, "breakout": 3, "support holds": 2, "undervalued": 2
+  },
+
+  "bearish": {
+    "crash": -4, "crashes": -4, "plunges": -4, "plunge": -4, "tumbles": -3, "tumble": -3,
+    "slumps": -3, "slump": -3, "sinks": -3, "dives": -3, "drops": -2, "drop": -2,
+    "falls": -2, "fall": -2, "declines": -2, "decline": -2, "slides": -2, "down": -1,
+    "lower": -2, "selloff": -4, "sell-off": -4, "sell off": -3, "correction": -3,
+    "bear market": -4, "bearish": -3, "underperform": -3, "misses estimates": -4,
+    "misses expectations": -4, "profit falls": -4, "loss widens": -4, "posts loss": -4,
+    "weak results": -3, "margin pressure": -3, "downgrade": -3, "downgrades": -3,
+    "sell rating": -3, "target price cut": -3, "cuts guidance": -4, "warns": -3,
+    "warning": -3, "outflows": -3, "fii selling": -3, "selling pressure": -3,
+    "rate hike": -3, "hawkish": -3, "tightening": -2, "inflation rises": -3,
+    "inflation surges": -4, "deficit widens": -3, "downside": -2, "recession": -4,
+    "slowdown": -3, "contraction": -3, "layoffs": -2, "job cuts": -2, "default": -4,
+    "fraud": -4, "probe": -3, "investigation": -2, "penalty": -2, "fine": -2,
+    "ban": -3, "restriction": -2, "tariff": -3, "tariffs": -3, "sanctions": -3,
+    "war": -3, "conflict": -3, "attack": -3, "tension": -2, "escalation": -3,
+    "disruption": -2, "shortage": -2, "crisis": -3, "risk": -1, "concern": -2,
+    "concerns": -2, "worries": -2, "fears": -3, "uncertainty": -2, "volatility": -1,
+    "pressure": -2, "drag": -2, "weak": -2, "weakness": -2, "negative": -2,
+    "red": -1, "cautious": -1, "overvalued": -2, "breakdown": -3, "resistance": -1
+  },
+
+  "impact_high": [
+    "rbi", "repo rate", "monetary policy", "mpc", "federal reserve", "fed", "fomc",
+    "interest rate", "inflation", "cpi", "gdp", "budget", "gst", "sebi",
+    "fii", "dii", "crude oil", "brent", "rupee", "dollar index", "us tariff",
+    "trade deal", "war", "geopolitical", "nifty", "sensex", "bank nifty",
+    "index rejig", "msci", "expiry", "circuit", "bond yield", "downgrade", "upgrade",
+    "election", "government", "parliament", "policy", "regulation"
+  ],
+
+  "impact_medium": [
+    "results", "earnings", "quarterly", "q1", "q2", "q3", "q4", "guidance",
+    "order", "contract", "merger", "acquisition", "ipo", "listing", "stake",
+    "dividend", "buyback", "bonus", "split", "capex", "expansion", "plant",
+    "pmi", "iip", "exports", "imports", "deficit", "reserves", "auction",
+    "monsoon", "demand", "sales", "production", "output", "prices"
+  ],
+
+  "relevance": [
+    "market", "markets", "stock", "stocks", "share", "shares", "equity", "equities",
+    "nifty", "sensex", "bse", "nse", "index", "sector", "trading", "trade",
+    "investor", "investors", "economy", "economic", "gdp", "inflation", "rbi",
+    "fed", "rate", "rates", "bond", "yield", "rupee", "dollar", "currency",
+    "crude", "oil", "gold", "commodity", "commodities", "earnings", "results",
+    "profit", "loss", "revenue", "sales", "order", "contract", "ipo", "fund",
+    "funds", "flows", "fii", "dii", "bank", "banks", "banking", "finance",
+    "financial", "company", "companies", "business", "industry", "sebi", "budget",
+    "tax", "gst", "policy", "tariff", "export", "import", "deficit", "growth",
+    "demand", "supply", "price", "prices", "valuation", "analyst", "brokerage",
+    "target", "rating", "futures", "options", "derivatives", "expiry", "volatility",
+    "portfolio", "capital", "debt", "credit", "loan", "npa", "merger", "acquisition"
+  ],
+
+  "noise": [
+    "horoscope", "astrology", "zodiac", "rashifal", "numerology", "tarot",
+    "cricket", "ipl", "football", "kabaddi", "olympics", "wrestling", "tennis",
+    "bollywood", "tollywood", "box office", "movie review", "film review",
+    "celebrity", "actress", "actor ", "singer", "web series", "netflix show",
+    "recipe", "fashion", "beauty tips", "weight loss", "viral video", "viral post",
+    "photos", "pics", "watch video", "trailer", "teaser", "birthday", "wedding",
+    "divorce", "dating", "gossip", "meme", "troll", "obituary", "weather forecast",
+    "rainfall alert", "heatwave alert", "traffic", "lottery", "sarkari result",
+    "admit card", "exam result", "answer key", "recruitment notification",
+    "match preview", "playing xi", "vs live score", "quiz", "puzzle",
+    "sponsored", "advertorial", "partner content", "brand connect",
+    "deals of the day", "amazon sale", "flipkart sale", "discount offer",
+    "best phones under", "smartphone launch", "gadget review", "car review",
+    "bike launch", "travel guide", "tourist", "health tips", "yoga", "diet plan"
+  ],
+
+  "sector_map": {
+    "banking": ["bank", "banking", "hdfc", "icici", "sbi", "axis", "kotak", "indusind", "nbfc", "credit", "loan", "npa", "deposit", "rbi"],
+    "it": ["infosys", "tcs", "wipro", "hcl", "tech mahindra", "it services", "software", "coforge", "persistent", "ltimindtree", "mphasis"],
+    "auto": ["maruti", "tata motors", "mahindra", "bajaj auto", "hero motocorp", "eicher", "tvs", "ashok leyland", "auto sales", "vehicle", "ev "],
+    "pharma": ["pharma", "sun pharma", "cipla", "dr reddy", "lupin", "aurobindo", "divis", "usfda", "drug", "healthcare", "hospital"],
+    "metal": ["steel", "tata steel", "jsw", "hindalco", "vedanta", "sail", "jindal", "aluminium", "copper", "zinc", "metal", "coal"],
+    "energy": ["reliance", "ongc", "oil", "gas", "bpcl", "hpcl", "ioc", "gail", "crude", "refinery", "petrol", "diesel", "lng"],
+    "fmcg": ["hindustan unilever", "itc", "nestle", "britannia", "dabur", "marico", "godrej consumer", "fmcg", "consumer goods"],
+    "realty": ["dlf", "godrej properties", "oberoi realty", "prestige", "lodha", "real estate", "housing", "property"],
+    "power": ["ntpc", "power grid", "tata power", "adani power", "adani green", "nhpc", "sjvn", "electricity", "renewable", "solar", "wind"],
+    "infra": ["larsen", "l&t", "infrastructure", "construction", "cement", "ultratech", "ambuja", "shree cement", "road", "railway", "port"],
+    "telecom": ["bharti airtel", "vodafone idea", "jio", "telecom", "arpu", "spectrum", "5g"],
+    "defence": ["defence", "hal", "bel", "bharat dynamics", "mazagon", "shipbuilders", "drone", "missile"],
+    "index": ["nifty", "sensex", "bank nifty", "index", "market", "dalal street", "benchmark"],
+    "macro": ["gdp", "inflation", "cpi", "wpi", "iip", "pmi", "fiscal", "budget", "deficit", "gst", "trade", "exports", "imports", "forex"],
+    "global": ["fed", "federal reserve", "wall street", "nasdaq", "s&p 500", "dow", "china", "europe", "ecb", "yen", "dollar", "treasury", "tariff"]
+  }
+}

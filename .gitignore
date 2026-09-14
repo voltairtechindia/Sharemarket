@@ -1,0 +1,12 @@
+# Your own OpenRouter key lives here and must never reach the public repo.
+assets/local-config.js
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
+Thumbs.db
+data/*.tmp
+.vscode/
+.idea/

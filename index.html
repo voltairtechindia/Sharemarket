@@ -1,230 +1,308 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Kite Market Terminal - NIFTY & SENSEX AI Forecast</title>
-  <link rel="stylesheet" href="assets/style.css" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NIFTY Terminal &mdash; news-driven forecast</title>
+<meta name="description" content="Internal NIFTY / SENSEX terminal: live chart, 24x7 RSS news intelligence, seasonal study and a news-driven forecast." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23387ed1'/><path d='M7 21l5-7 4 4 9-11' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="assets/style.css" />
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 </head>
-<body class="kite-theme">
-  <!-- Top Header Bar (Zerodha Kite Style) -->
-  <header class="top-nav">
-    <div class="nav-left">
-      <div class="kite-logo">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <path d="M12 2L2 12L12 22L22 12L12 2Z" fill="#ff5722"/>
-        </svg>
-        <span class="brand-text">KITE</span>
+<body>
+
+<!-- ============================================================== TOPBAR -->
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">N</div>
+    <div>
+      <span class="brand-name">NIFTY Terminal</span>
+      <span class="brand-sub">Voltairtech &middot; internal</span>
+    </div>
+  </div>
+
+  <div class="ticker-strip" id="ticker-strip" role="tablist" aria-label="Index quick switch">
+    <div class="tick" role="tab" data-symbol="NIFTY" aria-selected="true" tabindex="0">
+      <span class="tick-name">NIFTY 50</span>
+      <span class="tick-ltp num" data-field="ltp">&mdash;</span>
+      <span class="tick-chg num" data-field="chg">&mdash;</span>
+    </div>
+    <div class="tick" role="tab" data-symbol="SENSEX" aria-selected="false" tabindex="0">
+      <span class="tick-name">SENSEX</span>
+      <span class="tick-ltp num" data-field="ltp">&mdash;</span>
+      <span class="tick-chg num" data-field="chg">&mdash;</span>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <div class="clock">
+      <span class="dot" id="market-dot"></span>
+      <span class="clock-time" id="market-clock">--:--:--</span>
+      <span class="clock-state" id="market-state">&mdash;</span>
+    </div>
+    <button class="icon-btn" id="btn-insight" title="Show forecast panel" aria-label="Show forecast panel">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3v18h18"/><path d="M7 14l4-5 3 3 5-7"/></svg>
+    </button>
+    <button class="icon-btn" id="btn-theme" title="Toggle dark mode" aria-label="Toggle dark mode">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+    <button class="icon-btn" id="btn-settings" title="Model and data settings" aria-label="Model and data settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+  </div>
+</header>
+
+<!-- =========================================================== WORKSPACE -->
+<div class="workspace">
+
+  <!-- ------------------------------------------------- MARKETWATCH (left) -->
+  <aside class="panel mw-panel" aria-label="Market watch">
+    <div class="mw-search">
+      <input type="search" id="mw-search" placeholder="Search nifty, sensex, vix" autocomplete="off" />
+    </div>
+
+    <div class="panel-scroll">
+      <ul class="mw-list" id="mw-list" role="listbox" aria-label="Instruments"></ul>
+
+      <!-- Today's numbers for the selected index -->
+      <div class="section">
+        <div class="section-head"><span class="label">Today</span><span class="label num" id="ohlc-updated">&mdash;</span></div>
+        <div class="stat-grid">
+          <div class="stat"><span class="stat-k">Open</span><span class="stat-v" id="st-open">&mdash;</span></div>
+          <div class="stat"><span class="stat-k">Prev close</span><span class="stat-v" id="st-prev">&mdash;</span></div>
+          <div class="stat"><span class="stat-k">High</span><span class="stat-v up" id="st-high">&mdash;</span></div>
+          <div class="stat"><span class="stat-k">Low</span><span class="stat-v down" id="st-low">&mdash;</span></div>
+        </div>
+        <div class="kv" style="margin-top:8px"><span class="kv-k">52 week range</span><span class="kv-v" id="st-52w">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Distance from 52w high</span><span class="kv-v" id="st-from-high">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Above 50 / 200 DMA</span><span class="kv-v" id="st-dma">&mdash;</span></div>
       </div>
-      <div class="header-indices">
-        <div class="index-pill" id="head-nifty" onclick="switchAsset('NIFTY')">
-          <span class="idx-name">NIFTY 50</span>
-          <span class="idx-val" id="head-nifty-val">25,380.20</span>
-          <span class="idx-chg pos" id="head-nifty-chg">+84.15 (+0.33%)</span>
+
+      <!-- Market breadth -->
+      <div class="section" id="breadth-section">
+        <div class="section-head"><span class="label">Breadth</span><span class="label" id="breadth-note">advances / declines</span></div>
+        <div class="kv"><span class="kv-k">Advances</span><span class="kv-v up" id="br-adv">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Declines</span><span class="kv-v down" id="br-dec">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Unchanged</span><span class="kv-v" id="br-unc">&mdash;</span></div>
+        <div class="breadth" role="img" aria-label="Advance decline split">
+          <div class="breadth-a" id="br-bar-a" style="width:50%"></div>
+          <div class="breadth-u" id="br-bar-u" style="width:0%"></div>
+          <div class="breadth-d" id="br-bar-d" style="width:50%"></div>
         </div>
-        <div class="index-pill" id="head-sensex" onclick="switchAsset('SENSEX')">
-          <span class="idx-name">SENSEX</span>
-          <span class="idx-val" id="head-sensex-val">82,920.45</span>
-          <span class="idx-chg pos" id="head-sensex-chg">+245.80 (+0.30%)</span>
-        </div>
+      </div>
+
+      <!-- Returns ladder -->
+      <div class="section">
+        <div class="section-head"><span class="label">Returns</span></div>
+        <div class="kv"><span class="kv-k">1 week</span><span class="kv-v" id="rt-1w">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">1 month</span><span class="kv-v" id="rt-1m">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">3 months</span><span class="kv-v" id="rt-3m">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">6 months</span><span class="kv-v" id="rt-6m">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">1 year</span><span class="kv-v" id="rt-1y">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Year to date</span><span class="kv-v" id="rt-ytd">&mdash;</span></div>
       </div>
     </div>
-    <div class="nav-right">
-      <div class="market-clock">
-        <span class="status-dot live" id="market-status-dot"></span>
-        <span id="market-time">IST 09:15:00</span>
-        <span class="session-badge" id="session-badge">LIVE 1s</span>
+  </aside>
+
+  <!-- ------------------------------------------------------ CHART (centre) -->
+  <main class="panel chart-panel" aria-label="Chart">
+    <div class="chart-toolbar">
+      <div class="asset-block">
+        <h1 class="asset-name" id="asset-name">NIFTY 50</h1>
+        <span class="asset-exch" id="asset-exch">NSE index</span>
       </div>
-      <button class="btn-settings" id="open-settings-btn" title="API & Model Settings">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="3"></circle>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-        </svg>
-        <span>Model Config</span>
+      <div class="asset-block">
+        <span class="asset-ltp" id="asset-ltp">&mdash;</span>
+        <span class="asset-chg" id="asset-chg">&mdash;</span>
+      </div>
+
+      <div class="toolbar-spacer"></div>
+
+      <div class="tf-group" id="tf-group" role="group" aria-label="Timeframe">
+        <button class="tf-btn" data-tf="1H"  aria-pressed="false" title="Hourly view &middot; reasons every 10 minutes">1H</button>
+        <button class="tf-btn" data-tf="1D"  aria-pressed="true"  title="Daily view &middot; reasons every 1 hour">1D</button>
+        <button class="tf-btn" data-tf="1M"  aria-pressed="false" title="Monthly view &middot; reasons every 1 day">1M</button>
+        <button class="tf-btn" data-tf="1Y"  aria-pressed="false" title="1 year">1Y</button>
+        <button class="tf-btn" data-tf="ALL" aria-pressed="false" title="Till date">TILL DATE</button>
+      </div>
+
+      <div class="chart-legend">
+        <span class="lg"><span class="lg-swatch hist"></span> Past &amp; current &middot; 4/5</span>
+        <span class="lg"><span class="lg-swatch fc"></span> Forecast &middot; 1/5</span>
+        <span class="lg"><span class="lg-swatch cone"></span> Likely range</span>
+        <span class="lg" id="reason-granularity">Reason points: every 1 hour</span>
+      </div>
+    </div>
+
+    <div class="chart-stage" id="chart-stage">
+      <div id="chart"></div>
+      <div class="forecast-zone" id="forecast-zone" hidden></div>
+      <div class="now-divider" id="now-divider" hidden></div>
+      <div class="reason-card hidden" id="reason-card" role="status">
+        <div class="reason-head">
+          <span class="reason-when" id="rc-when">&mdash;</span>
+          <span class="reason-move num" id="rc-move">&mdash;</span>
+        </div>
+        <p class="reason-text" id="rc-text">&mdash;</p>
+        <div class="reason-foot">
+          <span class="chip" id="rc-impact">&mdash;</span>
+          <span id="rc-source">&mdash;</span>
+        </div>
+      </div>
+      <div class="chart-empty" id="chart-empty">
+        <strong>Loading NIFTY candles&hellip;</strong>
+        <span class="muted">Pulling live OHLC, then overlaying the news-driven forecast.</span>
+      </div>
+    </div>
+
+    <!-- ---------------------------------------------------- NEWS CONSOLE -->
+    <section class="news-console" aria-label="News stream">
+      <div class="news-head">
+        <span class="label">Live news intelligence</span>
+        <span class="chip brand" id="feed-count">&mdash; feeds</span>
+        <span class="chip" id="news-updated">&mdash;</span>
+        <div class="news-filters" role="group" aria-label="News filter">
+          <button class="filter-btn" data-filter="all"    aria-pressed="true">All</button>
+          <button class="filter-btn" data-filter="high"   aria-pressed="false">High impact</button>
+          <button class="filter-btn" data-filter="pos"    aria-pressed="false">Positive</button>
+          <button class="filter-btn" data-filter="neg"    aria-pressed="false">Negative</button>
+          <button class="filter-btn" data-filter="india"  aria-pressed="false">India</button>
+          <button class="filter-btn" data-filter="world"  aria-pressed="false">Global</button>
+        </div>
+      </div>
+      <ul class="news-list" id="news-list"></ul>
+    </section>
+  </main>
+
+  <!-- ------------------------------------------------- INSIGHT (right) -->
+  <aside class="panel insight-panel" id="insight-panel" aria-label="Forecast and study">
+    <div class="panel-scroll">
+
+      <!-- Forecast verdict -->
+      <div class="section">
+        <div class="section-head">
+          <span class="label">Forecast &mdash; next <span id="fc-horizon">&mdash;</span></span>
+          <button class="btn btn-sm" id="btn-reforecast">Refresh</button>
+        </div>
+        <div class="verdict">
+          <div class="verdict-dir" id="fc-direction">&mdash;</div>
+          <div class="verdict-range num" id="fc-range">&mdash;</div>
+          <div class="verdict-conf" id="fc-confidence">&mdash;</div>
+        </div>
+        <div class="gauge-wrap">
+          <div class="gauge-track" role="img" aria-label="Bias gauge">
+            <div class="gauge-pin" id="fc-pin" style="left:50%"></div>
+          </div>
+          <div class="gauge-scale"><span>Bearish</span><span>Neutral</span><span>Bullish</span></div>
+        </div>
+        <p style="font-size:11.5px;line-height:1.5;color:var(--ink);margin:6px 0 0" id="fc-narrative">&mdash;</p>
+      </div>
+
+      <!-- Driver breakdown -->
+      <div class="section">
+        <div class="section-head"><span class="label">What is driving it</span><span class="label" id="fc-weights-note">weighted</span></div>
+        <div class="drivers" id="fc-drivers"></div>
+      </div>
+
+      <!-- Seasonal study -->
+      <div class="section">
+        <div class="section-head"><span class="label">Seasonal study</span><span class="label" id="season-years">&mdash;</span></div>
+        <div class="kv"><span class="kv-k" id="season-month-k">This month</span><span class="kv-v" id="season-month-v">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Win rate</span><span class="kv-v" id="season-win">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Best day of week</span><span class="kv-v" id="season-dow">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Expiry week vs rest</span><span class="kv-v" id="season-expiry">&mdash;</span></div>
+        <div class="season-bars" id="season-bars" role="img" aria-label="Average monthly return by calendar month"></div>
+        <div style="display:flex;justify-content:space-between;font-size:9.5px;color:var(--ink-faint);margin-top:2px">
+          <span>Average monthly return by calendar month</span><span id="season-scale">&mdash;</span>
+        </div>
+      </div>
+
+      <!-- Sector sentiment -->
+      <div class="section">
+        <div class="section-head"><span class="label">Sector news bias</span><span class="label">last 24h</span></div>
+        <div class="sector-list" id="sector-list"></div>
+      </div>
+
+      <!-- Data sources -->
+      <div class="section">
+        <div class="section-head"><span class="label">Data lanes</span><span class="label" id="lane-updated">&mdash;</span></div>
+        <div id="source-lanes"></div>
+      </div>
+
+    </div>
+  </aside>
+</div>
+
+<!-- ============================================================= SETTINGS -->
+<div class="modal-backdrop hidden" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="settings-title">Settings</h2>
+      <button class="icon-btn" id="btn-close-settings" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
       </button>
     </div>
-  </header>
-
-  <!-- Main Application Workspace -->
-  <div class="workspace">
-    <!-- Left MarketWatch Sidebar -->
-    <aside class="marketwatch-sidebar">
-      <div class="mw-search">
-        <input type="text" id="mw-search-input" placeholder="Search eg: nifty, sensex, bank" />
-        <span class="search-count">2/50</span>
-      </div>
-      <ul class="mw-list" id="watchlist-items">
-        <li class="mw-item active" data-symbol="NIFTY" onclick="switchAsset('NIFTY')">
-          <div class="mw-col-left">
-            <span class="mw-title">NIFTY 50</span>
-            <span class="mw-sub">NSE INDEX</span>
-          </div>
-          <div class="mw-col-right">
-            <span class="mw-ltp" id="mw-nifty-ltp">25,380.20</span>
-            <span class="mw-pct pos" id="mw-nifty-pct">+0.33%</span>
-          </div>
-        </li>
-        <li class="mw-item" data-symbol="SENSEX" onclick="switchAsset('SENSEX')">
-          <div class="mw-col-left">
-            <span class="mw-title">SENSEX</span>
-            <span class="mw-sub">BSE INDEX</span>
-          </div>
-          <div class="mw-col-right">
-            <span class="mw-ltp" id="mw-sensex-ltp">82,920.45</span>
-            <span class="mw-pct pos" id="mw-sensex-pct">+0.30%</span>
-          </div>
-        </li>
-      </ul>
-
-      <!-- Watchlist Footer Numbers -->
-      <div class="mw-footer-pages">
-        <span class="page-num active">1</span>
-        <span class="page-num">2</span>
-        <span class="page-num">3</span>
-        <span class="page-num">4</span>
-        <span class="page-num">5</span>
+    <div class="modal-body">
+      <div class="notice" id="key-notice">
+        This site is public, so no API key is stored in the repository. Paste your OpenRouter
+        key once &mdash; it is saved in this browser only and never leaves it except to call OpenRouter.
       </div>
 
-      <!-- Macro Sentiment & Seasonal Outlook Card -->
-      <div class="seasonal-card">
-        <div class="card-header">
-          <span class="card-title">SEASONAL & NEWS BIAS</span>
-          <span class="confidence-badge" id="ai-confidence">84% AI</span>
-        </div>
-        <div class="gauge-container">
-          <div class="gauge-bar">
-            <div class="gauge-fill" id="sentiment-fill" style="width: 65%;"></div>
-          </div>
-          <div class="gauge-labels">
-            <span>Bearish</span>
-            <span id="sentiment-label" class="pos">Bullish Trend</span>
-            <span>Bullish</span>
-          </div>
-        </div>
-        <div class="seasonal-details">
-          <div class="s-row">
-            <span>Historical Seasonality:</span>
-            <strong id="season-stat">Bullish (Sept/Q3: +1.8%)</strong>
-          </div>
-          <div class="s-row">
-            <span>RSS Filtered Feeds:</span>
-            <strong id="feed-count-display">1,024 Active</strong>
-          </div>
-          <div class="s-row">
-            <span>Interval Reason Window:</span>
-            <strong id="reason-window-display">1 Hour Markers</strong>
-          </div>
-        </div>
-      </div>
-    </aside>
-
-    <!-- Center Chart and Forecast Canvas -->
-    <main class="chart-viewport">
-      <!-- Toolbar for Timeframes and Views -->
-      <div class="chart-toolbar">
-        <div class="asset-info">
-          <h2 id="current-asset-title">NIFTY 50</h2>
-          <span class="current-price" id="main-ltp">25,380.20</span>
-          <span class="current-change pos" id="main-chg">+84.15 (+0.33%)</span>
-        </div>
-
-        <div class="timeframe-selector">
-          <button class="tf-btn" data-tf="1m" onclick="setTimeframe('1m')">1m</button>
-          <button class="tf-btn active" data-tf="1h" onclick="setTimeframe('1h')">1H</button>
-          <button class="tf-btn" data-tf="1d" onclick="setTimeframe('1d')">1D</button>
-          <button class="tf-btn" data-tf="1M" onclick="setTimeframe('1M')">1M</button>
-          <button class="tf-btn" data-tf="1Y" onclick="setTimeframe('1Y')">1Y</button>
-          <button class="tf-btn" data-tf="ALL" onclick="setTimeframe('ALL')">TILL DATE</button>
-        </div>
-
-        <div class="chart-legend">
-          <span class="legend-item"><span class="box past"></span> 4/5 Historical & Status</span>
-          <span class="legend-item"><span class="box future"></span> 1/5 AI Forecast Trajectory</span>
-        </div>
+      <div class="field">
+        <label for="cfg-key">OpenRouter API key</label>
+        <input type="password" id="cfg-key" placeholder="sk-or-v1-&hellip;" autocomplete="off" spellcheck="false" />
+        <small>Optional. Without it the forecast still runs on the local rule engine; with it, a free model writes the plain-English reasoning.</small>
       </div>
 
-      <!-- TV Lightweight Chart Container -->
-      <div id="tradingview-chart-box" class="chart-box"></div>
-
-      <!-- Annotation Tooltip / Reason Hover Info -->
-      <div id="annotation-tooltip" class="chart-annotation-card hidden">
-        <div class="ann-header">
-          <span class="ann-tag" id="ann-tag">1-HOUR INTERVAL REASON</span>
-          <span class="ann-time" id="ann-time">--:--</span>
-        </div>
-        <p class="ann-text" id="ann-text">Loading market catalyst...</p>
-        <div class="ann-footer">
-          <span id="ann-impact">Impact: Neutral</span>
-          <span id="ann-source">Source: RSS Feed Aggregate</span>
-        </div>
+      <div class="field">
+        <label for="cfg-model">Free model</label>
+        <select id="cfg-model"></select>
+        <small>Only models on OpenRouter's free tier are listed.</small>
       </div>
 
-      <!-- Bottom Realtime News Stream & 1-Min Poll Status -->
-      <div class="news-console">
-        <div class="news-console-header">
-          <div class="nc-title">
-            <span class="pulse-icon"></span>
-            <span>24/7 LIVE RSS INTELLIGENCE (1000+ GLOBAL & INDIAN FEEDS)</span>
-          </div>
-          <div class="nc-meta">
-            <span id="last-poll-time">Last update: Just now</span>
-            <button class="btn-refresh" onclick="triggerManualAnalysis()" title="Refresh AI Forecast Now">Analyze Now</button>
-          </div>
-        </div>
-        <div class="news-stream" id="news-stream-box">
-          <div class="news-item">
-            <span class="news-badge macro">MACRO</span>
-            <span class="news-time">09:14</span>
-            <span class="news-headline">RBI liquidity intervention supports banking sector as inflation stays within target band.</span>
-            <span class="news-tag pos">+0.4% Impact</span>
-          </div>
-        </div>
+      <div class="field">
+        <label for="cfg-tick">Chart tick interval</label>
+        <select id="cfg-tick">
+          <option value="1000">1 second (as fast as the feed allows)</option>
+          <option value="2000">2 seconds</option>
+          <option value="5000">5 seconds</option>
+          <option value="15000">15 seconds</option>
+        </select>
+        <small>Applies while the market is open. Outside market hours the chart holds the last close.</small>
       </div>
-    </main>
-  </div>
 
-  <!-- OpenRouter & Free Model Configuration Modal -->
-  <div class="modal-overlay hidden" id="settings-modal">
-    <div class="modal-window">
-      <div class="modal-header">
-        <h3>Model & API Configuration</h3>
-        <button class="btn-close" onclick="toggleSettingsModal(false)">&times;</button>
+      <div class="field">
+        <label for="cfg-news">News refresh</label>
+        <select id="cfg-news">
+          <option value="60000">Every 1 minute</option>
+          <option value="180000">Every 3 minutes</option>
+          <option value="300000">Every 5 minutes</option>
+        </select>
+        <small>Fast lane only. The deep lane (all configured feeds) refreshes on the schedule in GitHub Actions.</small>
       </div>
-      <div class="modal-body">
-        <div class="form-group">
-          <label for="cfg-api-key">OpenRouter API Key (Saved in Browser Storage)</label>
-          <input type="password" id="cfg-api-key" placeholder="sk-or-v1-..." />
-          <small>Embedded default key is pre-loaded. Override anytime.</small>
-        </div>
-        <div class="form-group">
-          <label for="cfg-model-select">Selected Free Model</label>
-          <select id="cfg-model-select">
-            <option value="google/gemini-2.0-flash-exp:free" selected>google/gemini-2.0-flash-exp:free (Fastest & Fresh)</option>
-            <option value="meta-llama/llama-3.3-70b-instruct:free">meta-llama/llama-3.3-70b-instruct:free (High Reasoning)</option>
-            <option value="mistralai/mistral-7b-instruct:free">mistralai/mistral-7b-instruct:free (Lightweight)</option>
-            <option value="qwen/qwen-2.5-coder-32b-instruct:free">qwen/qwen-2.5-coder-32b-instruct:free</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Forecast Interval Annotations</label>
-          <div class="radio-row">
-            <label><input type="radio" name="reason-interval" value="1h" checked> 1 Hour (Daily)</label>
-            <label><input type="radio" name="reason-interval" value="10m"> 10 Min (Intraday)</label>
-            <label><input type="radio" name="reason-interval" value="1d"> 1 Day (Monthly)</label>
-          </div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn-secondary" onclick="toggleSettingsModal(false)">Cancel</button>
-        <button class="btn-primary" onclick="saveConfiguration()">Save & Re-Forecast</button>
+
+      <div class="field">
+        <label>Stored data</label>
+        <small id="storage-note">&mdash;</small>
+        <button class="btn btn-sm" id="btn-clear-cache" style="justify-self:start">Clear cached news</button>
       </div>
     </div>
+    <div class="modal-foot">
+      <button class="btn" id="btn-cancel-settings">Cancel</button>
+      <button class="btn btn-primary" id="btn-save-settings">Save</button>
+    </div>
   </div>
+</div>
 
-  <script src="assets/app.js"></script>
+<script src="assets/js/config.js"></script>
+<script src="assets/local-config.js" onerror="void 0"></script>
+<script src="assets/js/core.js"></script>
+<script src="assets/js/data.js"></script>
+<script src="assets/js/engine.js"></script>
+<script src="assets/js/chart.js"></script>
+<script src="assets/js/app.js"></script>
 </body>
 </html>
