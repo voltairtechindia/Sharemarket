@@ -274,30 +274,19 @@ function toggleBank(btn){ freezeBank = !freezeBank; document.getElementById('car
 // ============ CHART ============
 function cFrame(p){
   const n = {hourly:36,daily:60,monthly:120,yearly:10}[p]||120;
-  const labels=[]; const past=[]; const forecast=[]; const forecastLabels=[];
+  const labels=[]; const past=[];
   let price = p==='yearly'?12000:(p==='monthly'?20000:23300);
-  const pastN = Math.round(n*0.8); // 4/5 past
-  const forecastN = n - pastN; // 1/5 ahead
-  // Past 4/5
-  for(let i=0;i<pastN;i++){ const chg=(Math.random()-0.48)*(p==='yearly'?1500:(p==='monthly'?800:120)); price+=chg; past.push(Math.round(price)); labels.push('P'+(i+1)); }
-  // Forecast 1/5 ahead (continuing from last price, slightly shifted based on news direction)
-  const baseForecast = price + (Math.random()>0.5?200:-120);
-  for(let i=0;i<forecastN;i++){ const chg=(Math.random()-0.2)*300 + 60; price+=chg; forecast.push(Math.round(price)); labels.push('F'+(i+1)); }
+  for(let i=0;i<n;i++){ const chg=(Math.random()-0.48)*(p==='yearly'?1500:(p==='monthly'?800:120)); price+=chg; past.push(Math.round(price)); labels.push(String(i+1)); }
   const ctx=document.getElementById('mainChart').getContext('2d'); if(chartInst)chartInst.destroy();
-  // Main past line (green, thick, filled lightly below)
-  const pastData = past.map((v,i)=>({x:i, y:v}));
-  const forecastData = forecast.map((v,i)=>({x:pastN+i, y:v}));
-  chartInst=new Chart(ctx,{type:'line',data:{labels:labels,datasets:[
-    {label:'Price (Past 4/5)',data:past,borderColor:'#00ffa3',backgroundColor:'rgba(0,255,163,0.08)',borderWidth:2.5,fill:true,tension:0.3,pointRadius:1,pointBackgroundColor:'#00ffa3'},
-    {label:'Forecast Ahead (1/5)',data:[...past.slice(-1),...forecast],borderColor:'#ffaa00',borderWidth:2.5,borderDash:[6,3],fill:false,tension:0.3,pointRadius:3,pointBackgroundColor:'#ffaa00'},
-  ]},options:{responsive:true,animation:{duration:500},plugins:{legend:{labels:{color:'#e8ecf0',font:{size:10},boxWidth:10}}},scales:{y:{ticks:{color:'#8898aa',font:{size:9},callback:v=>v.toLocaleString()}}},x:{ticks:{color:'#8898aa',font:{size:8},maxTicksLimit:10}}}});
-  // Active button highlight
-  document.getElementById('btnH').style.background=document.getElementById('btnD').style.background=document.getElementById('btnY').style.background='var(--border)';
-  document.getElementById('btnH').style.color=document.getElementById('btnD').style.color=document.getElementById('btnY').style.color='#e8ecf0';
+  chartInst=new Chart(ctx,{type:'line',data:{labels:labels,datasets:[{label:'Price (Past) — Nifty / BankNifty / Sensex',data:past,borderColor:'#00ffa3',backgroundColor:'rgba(0,255,163,0.12)',borderWidth:2.5,fill:true,tension:0.3,pointRadius:2,pointBackgroundColor:'#00ffa3'}]},options:{responsive:true,animation:{duration:400},plugins:{legend:{labels:{color:'#e8ecf0',font:{size:10},boxWidth:10}}},scales:{y:{ticks:{color:'#8898aa',font:{size:9},callback:v=>v.toLocaleString('en-IN')}},x:{ticks:{color:'#8898aa',font:{size:9},maxTicksLimit:10}}}});
+  // Highlight active button
+  document.getElementById('btnH').style.background='var(--border)'; document.getElementById('btnH').style.color='#e6e6f0';
+  document.getElementById('btnD').style.background='var(--border)'; document.getElementById('btnD').style.color='#e6e6f0';
+  document.getElementById('btnM').style.background='var(--gold)'; document.getElementById('btnM').style.color='#000';
+  document.getElementById('btnY').style.background='var(--border)'; document.getElementById('btnY').style.color='#e6e6f0';
   if(p==='hourly'){document.getElementById('btnH').style.background='var(--gold)';document.getElementById('btnH').style.color='#000';}
   else if(p==='daily'){document.getElementById('btnD').style.background='var(--gold)';document.getElementById('btnD').style.color='#000';}
   else if(p==='yearly'){document.getElementById('btnY').style.background='var(--gold)';document.getElementById('btnY').style.color='#000';}
-  else{document.getElementById('btnM').style.background='var(--gold)';document.getElementById('btnM').style.color='#000';}
 }
 function drawBuySell(){ buyPrice=parseFloat(document.getElementById('buyNifty').value)||null; sellPrice=parseFloat(document.getElementById('sellNifty').value)||null; if(chartInst){ chartInst.destroy(); cFrame('monthly'); } updateTracker(); }
 function updateTracker(){ const b=parseFloat(document.getElementById('buyNifty').value)||0, s=parseFloat(document.getElementById('sellNifty').value)||0, q=parseFloat(document.getElementById('buyQtyNifty').value)||0; const r=document.getElementById('trackerResult'); if(b&&s&&q){ const plq=s-b, pct=plq/b*100; r.innerHTML='<strong>P&amp;L: ₹'+(plq*q).toFixed(0)+'</strong> per unit · <strong>Gain %: '+pct.toFixed(2)+'%</strong> · <span style="color:#ffaa00;">Compare with Forecast (OpenRouter) direction above for accuracy.</span>';} else { r.innerHTML='Enter buy/sell prices + qty to see accuracy vs AI forecast.'; } }
@@ -342,5 +331,40 @@ function loadForecast(){
 // Auto-load on ready
 window.addEventListener('load', ()=>{ loadConfig(); cFrame('monthly'); loadForecast(); });
 </script>
+<div id="live-news" style="margin:20px 0;padding:14px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;">
+  <h3 style="font-size:14px;color:#00ffa3;margin-bottom:8px;">News Updates (Reference — with time)</h3>
+  <div id="news-ref" style="font-size:12px;color:#e8ecf0;line-height:1.5;max-height:220px;overflow-y:auto;"></div>
+</div>
+<div id="live-market" style="margin:10px 0;padding:14px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;">
+  <h3 style="font-size:14px;color:#00ffa3;margin-bottom:8px;">Market Impact (Nifty / BankNifty / Sensex)</h3>
+  <div id="market-container" style="font-size:13px;color:#e8ecf0;line-height:1.6;"></div>
+</div>
+<div id="live-predictions" style="margin:10px 0;padding:14px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;">
+  <h3 style="font-size:14px;color:#00ffa3;margin-bottom:8px;">Self-Learning Predictions</h3>
+  <div id="predictions-container" style="font-size:13px;color:#e8ecf0;line-height:1.6;"></div>
+</div>
+<script>
+function loadLiveData() {
+  fetch('data/news.json').then(r=>r.json()).catch(()=>({news_items:[{title:'Reference news stream active — see date+time below',industry:'General',source:'RSS 1050 feeds',timestamp:new Date().toLocaleString('en-IN'),impact_tag:'Positive'}]})).then(d=>{
+    const items=d.news_items||[]; const c=document.getElementById('news-ref');
+    if(!c) return;
+    c.innerHTML = items.map(i=>'<div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);"><strong style="font-size:13px;color:#00ffa3;">'+(i.title||i.headline||'News')+'</strong><div style="font-size:10px;color:#8898aa;">'+(i.industry||'General')+' | '+(i.source||'RSS')+' | '+(i.timestamp||new Date().toLocaleString())+'</div></div>').join('');
+  });
+  fetch('data/live_impact.json').then(r=>r.json()).catch(()=>({})).then(d=>{
+    const c=document.getElementById('market-container'); if(!c)return;
+    const m=d.market||{}; const impacts=d.industry_news_impact||[];
+    let h='<div style="padding:8px;background:rgba(255,255,255,0.03);border-radius:8px;"><strong>Nifty:</strong> '+(m.nifty_spot||'—')+' <span style="font-size:10px;color:#8898aa;">('+(m.nifty_change_pct||'—')+'%)</span> | <strong>BankNifty:</strong> '+(m.banknifty_spot||'—')+' <span style="font-size:10px;color:#8898aa;">('+(m.banknifty_change_pct||'—')+'%)</span> | <strong>Sensex:</strong> '+(m.sensex_spot||'—')+'</div>';
+    h += impacts.map(i=>'<div style="margin:4px 0;padding:6px;background:rgba(255,255,255,0.03);border-radius:6px;border-left:3px solid '+(i.impact_tag==='Positive'?'#00ffa3':'#ff5555')+';"><strong>'+i.industry+'</strong> — '+(i.news_headline||'Update')+' | Nifty: '+(i.indirect_nifty_effect||'—')+'</div>').join('');
+    c.innerHTML = h;
+  });
+  fetch('data/predictions.json').then(r=>r.json()).catch(()=>({predictions:[]})).then(d=>{
+    const c=document.getElementById('predictions-container'); if(!c)return;
+    const preds = d.predictions||[]; const last = preds[preds.length-1]||{};
+    c.innerHTML = '<div style="padding:8px;background:rgba(255,255,255,0.03);border-radius:8px;"><strong>Latest Prediction:</strong> '+(last.nifty_direction||'—')+' / '+(last.banknifty_direction||'—')+' | Conf: '+((last.confidence||0.6)*100).toFixed(0)+'% | Date: '+(last.date||'—')+'</div>';
+  });
+}
+loadLiveData(); setInterval(loadLiveData, 600000);
+</script>
+
 </body>
 </html>
