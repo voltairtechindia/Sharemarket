@@ -77,7 +77,7 @@ def update_sensex():
     return {'sensex_spot': 78945.67, 'sensex_change_pct': -0.15, 'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 def update_nifty():
-    # Simulated/live Nifty update every 5 sec (replace with broker feed when token available)
+    # Simulated/live Chart data refresh simulated every 5 sec (UI loop) (replace with broker feed when token available)
     nifty_spot = 23398.10 + random.uniform(-15, 15)
     bank_spot = 56606.55 + random.uniform(-25, 25)
     live_data = {

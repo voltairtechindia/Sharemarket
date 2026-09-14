@@ -265,6 +265,26 @@ hr{border:none;border-top:1px solid var(--border);margin:10px 0;}
 </div>
 
 <!-- LIVE DATA SECTIONS -->
+
+<section style="margin-top:24px;padding:16px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:14px;">
+  <h2 style="font-size:15px;color:#00ffa3;">💼 Your Investment Tracker (Manual Entry — Accuracy Check)</h2>
+  <p style="font-size:11px;color:#8898aa;">Enter your Nifty / Bank Nifty / Sensex buy/sell prices and quantities. Compare with AI predictions for accuracy tracking.</p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:10px;">
+    <div><label style="font-size:11px;color:#8898aa;">Buy Price (Nifty)</label><br><input id="buyNifty" type="number" style="width:100%;padding:8px;background:#0b0f14;border:1px solid #232436;border-radius:8px;color:#e6e6f0;font-family:inherit;" placeholder="e.g. 23398" oninput="updateTracker()"></div>
+    <div><label style="font-size:11px;color:#8898aa;">Buy Qty</label><br><input id="buyQtyNifty" type="number" style="width:100%;padding:8px;background:#0b0f14;border:1px solid #232436;border-radius:8px;color:#e6e6f0;font-family:inherit;" placeholder="Qty" oninput="updateTracker()"></div>
+    <div><label style="font-size:11px;color:#8898aa;">Sell Price (Nifty)</label><br><input id="sellNifty" type="number" style="width:100%;padding:8px;background:#0b0f14;border:1px solid #232436;border-radius:8px;color:#e6e6f0;font-family:inherit;" placeholder="e.g. 23450" oninput="updateTracker()"></div>
+    <div><label style="font-size:11px;color:#8898aa;">Sell Qty</label><br><input id="sellQtyNifty" type="number" style="width:100%;padding:8px;background:#0b0f14;border:1px solid #232436;border-radius:8px;color:#e6e6f0;font-family:inherit;" placeholder="Qty" oninput="updateTracker()"></div>
+  </div>
+  <div id="trackerResult" style="margin-top:10px;padding:10px;background:rgba(0,212,170,0.08);border-radius:8px;border-left:3px solid #00ffa3;font-size:13px;color:#00ffa3;"></div>
+  <script>
+    function updateTracker(){
+      const b=parseFloat(document.getElementById('buyNifty').value)||0; const s=parseFloat(document.getElementById('sellNifty').value)||0; const q=parseFloat(document.getElementById('buyQtyNifty').value)||0;
+      if(b&&s&&q){ const plq=s-b; const pct=plq/b*100; document.getElementById('trackerResult').innerHTML='<strong>P&amp;L: ₹'+(plq*q).toFixed(0)+'</strong> per unit · <strong>Gain %: '+pct.toFixed(2)+'%</strong> · Compare with AI prediction direction to verify accuracy.'; }
+      else { document.getElementById('trackerResult').innerHTML='Enter buy/sell values to see accuracy vs AI predictions.'; }
+    }
+    updateTracker();
+  </script>
+</section>
 <section id="live-news" style="margin-top:30px;padding:16px;border-top:1px solid rgba(255,255,255,0.08);">
   <h2>📰 Live News Updates (RSS — Indian + International)</h2>
   <div id="news-container" style="line-height:1.6;font-size:14px;color:#e8ecf0;"></div>
@@ -329,7 +349,7 @@ function loadLiveData() {
   }).catch(function() { document.getElementById('predictions-container').innerHTML = '<p style="color:#8898aa;">Predictions loading...</p>'; });
 }
 loadLiveData();
-setInterval(loadLiveData, 30000);
+setInterval(loadLiveData, 600000); // news refresh every 10 min
 </script>
 
 <!-- COMBINED SINGLE PAGE -->
@@ -393,7 +413,7 @@ function loadAll(){
     future.map(f=>'<div style="margin-top:6px;padding:6px;background:rgba(255,255,255,0.02);border-radius:6px;border-left:3px solid #ffaa00;"><strong>'+f.industry+'</strong> — '+f.news_trend+' | '+f.predicted_effect+' | Sources: '+f.news_sources.join(', ')+'</div>').join('');
   });
 }
-loadAll(); cFrame('monthly');
+loadAll(); cFrame('monthly'); setInterval(function(){cFrame('monthly');}, 5000);
 
 // Info icons + timestamp formatting
 (function(){
