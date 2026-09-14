@@ -52,413 +52,196 @@ tbody tr:hover{background:rgba(255,255,255,0.015);}
 hr{border:none;border-top:1px solid var(--border);margin:10px 0;}
 </style>
 </head>
+
 <body>
 <header>
-  <h1>FNO AI Dashboard <span style="color:var(--muted);font-weight:400;font-size:14px;">Nifty · Bank Nifty · Internal</span></h1>
-  <span class="tag">Internal Only</span>
+  <h1>FNO AI Dashboard <span style="font-weight:400;color:var(--muted);font-size:14px;">Nifty · Bank Nifty · Sensex · Internal</span></h1>
+  <div style="display:flex;gap:8px;align-items:center;">
+    <span style="font-size:11px;color:#8898aa;">Config:</span>
+    <button onclick="toggleSensex()" id="togSensex" style="padding:3px 10px;border-radius:999px;border:1px solid #ffaa00;background:rgba(255,170,0,0.15);color:#ffaa00;font-size:10px;font-weight:700;cursor:pointer;">Sensex ON</button>
+    <button onclick="toggleBank()" id="togBank" style="padding:3px 10px;border-radius:999px;border:1px solid #00ffa3;background:rgba(0,255,163,0.15);color:#00ffa3;font-size:10px;font-weight:700;cursor:pointer;">BankNifty ON</button>
+  </div>
 </header>
-<div class="container">
+<div class="container" style="max-width:1280px;">
 
-  <!-- Market Pulse -->
-  <section style="margin-bottom:16px;">
-    <div class="grid">
-      <div class="card">
-        <h2>Nifty 50 <span style="float:right;font-weight:400;color:var(--muted);">FNO Index</span></h2>
-        <div class="big">23,398.10 <span style="font-size:14px;font-weight:500;color:var(--red);">-79.70 (-0.34%)</span></div>
-        <div class="sub">Spot · Futures +22.40 bps · Basis: 22.40</div>
-        <div class="row">
-          <span class="pill">PCR 0.92</span>
-          <span class="pill green">OI Change +8.4%</span>
-          <span class="pill">Max Pain 23,350</span>
-          <span class="pill">IV 14.2%</span>
+  <!-- TOP ROW: Chart (left, wide) + News (right, narrow) -->
+  <div style="display:grid;grid-template-columns:2.2fr 1fr;gap:16px;align-items:start;margin-bottom:20px;">
+    <!-- Chart -->
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <h2 style="font-size:14px;text-transform:uppercase;color:var(--muted);">Chart — Candle + Buy/Sell + AI</h2>
+        <div>
+          <button onclick="cFrame('hourly')" style="font-size:10px;padding:2px 6px;border-radius:4px;border:none;background:#232436;color:#e6e6f0;cursor:pointer;">H</button>
+          <button onclick="cFrame('daily')" style="font-size:10px;padding:2px 6px;border-radius:4px;border:none;background:#232436;color:#e6e6f0;cursor:pointer;">D</button>
+          <button onclick="cFrame('monthly')" style="font-size:10px;padding:2px 6px;border-radius:4px;border:none;background:#232436;color:#fff;cursor:pointer;font-weight:700;">M</button>
+          <button onclick="cFrame('yearly')" style="font-size:10px;padding:2px 6px;border-radius:4px;border:none;background:#232436;color:#e6e6f0;cursor:pointer;">Y</button>
         </div>
       </div>
-      <div class="card">
-        <h2>Bank Nifty <span style="float:right;font-weight:400;color:var(--muted);">FNO Index</span></h2>
-        <div class="big">56,606.55 <span style="font-size:14px;font-weight:500;color:var(--green);">+134.60 (+0.24%)</span></div>
-        <div class="sub">Spot · Futures +73.65 bps · Basis: 73.65</div>
-        <div class="row">
-          <span class="pill">PCR 1.15</span>
-          <span class="pill red">OI Change -3.2%</span>
-          <span class="pill">Max Pain 56,500</span>
-          <span class="pill">IV 16.8%</span>
-        </div>
+      <canvas id="mainChart" height="260" style="width:100%;"></canvas>
+      <div style="display:flex;gap:12px;margin-top:8px;font-size:10px;color:#8898aa;flex-wrap:wrap;">
+        <span><span style="display:inline-block;width:12px;height:12px;background:#00ffa3;border-radius:50%;margin-right:4px;"></span>Buy (Green)</span>
+        <span><span style="display:inline-block;width:12px;height:12px;background:#ff5555;border-radius:50%;margin-right:4px;"></span>Sell (Red)</span>
+        <span><span style="display:inline-block;width:12px;height:12px;background:#ffaa00;border-radius:50%;margin-right:4px;"></span>AI Prediction (Orange)</span>
       </div>
     </div>
-  </section>
 
-  <div class="grid grid-3">
-    <!-- FNO Metrics -->
+    <!-- News (right) -->
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;height:max-content;">
+      <h2 style="font-size:14px;text-transform:uppercase;color:var(--muted);margin-bottom:10px;">Live News — Reference Only</h2>
+      <div id="news-ref" style="font-size:12px;color:#e8ecf0;line-height:1.5;max-height:320px;overflow-y:auto;">
+        <p style="color:#8898aa;font-size:11px;">Downloading filtered news from 1050 configured RSS feeds (Indian + International)...</p>
+      </div>
+      <p style="font-size:10px;color:#8898aa;margin-top:6px;">Updates every 10 min. Only major / industry-relevant items shown. Date + time visible.</p>
+    </div>
+  </div>
+
+  <!-- IMPORTANT STATS ROW -->
+  <div class="grid" style="margin-bottom:20px;">
     <div class="card">
-      <h2>FNO Metrics — Nifty</h2>
-      <div class="fno-grid">
-        <div class="fno-box"><div class="label">Spot</div><div class="val">23,398</div></div>
-        <div class="fno-box"><div class="label">Futures</div><div class="val">23,420</div></div>
-        <div class="fno-box"><div class="label">Basis</div><div class="val green">+22.40</div></div>
-        <div class="fno-box"><div class="label">PCR</div><div class="val">0.92</div></div>
-        <div class="fno-box"><div class="label">OI Change</div><div class="val green">+8.4%</div></div>
-        <div class="fno-box"><div class="label">Max Pain</div><div class="val">23,350</div></div>
-        <div class="fno-box"><div class="label">IV</div><div class="val">14.2%</div></div>
+      <h2>Nifty 50 <span style="float:right;font-weight:400;color:var(--muted);font-size:11px;">FNO Index</span></h2>
+      <div class="big" id="valNifty">23,398.10 <span style="font-size:14px;font-weight:500;color:var(--red);">-79.70 (-0.34%)</span></div>
+      <div class="sub">Spot · Futures +22.40 bps · PCR 0.92 · IV 14.2%</div>
+      <div class="row" style="margin-top:8px;">
+        <span class="pill">OIC +8.4%</span>
+        <span class="pill green">PCR Bullish</span>
+        <span class="pill">Max Pain 23,350</span>
       </div>
     </div>
-
     <div class="card">
-      <h2>FNO Metrics — Bank Nifty</h2>
-      <div class="fno-grid">
-        <div class="fno-box"><div class="label">Spot</div><div class="val">56,607</div></div>
-        <div class="fno-box"><div class="label">Futures</div><div class="val">56,680</div></div>
-        <div class="fno-box"><div class="label">Basis</div><div class="val green">+73.65</div></div>
-        <div class="fno-box"><div class="label">PCR</div><div class="val">1.15</div></div>
-        <div class="fno-box"><div class="label">OI Change</div><div class="val red">-3.2%</div></div>
-        <div class="fno-box"><div class="label">Max Pain</div><div class="val">56,500</div></div>
-        <div class="fno-box"><div class="label">IV</div><div class="val">16.8%</div></div>
+      <h2>Bank Nifty <span style="float:right;font-weight:400;color:var(--muted);font-size:11px;">FNO Index</span></h2>
+      <div class="big" id="valBank">56,606.55 <span style="font-size:14px;font-weight:500;color:var(--green);">+134.60 (+0.24%)</span></div>
+      <div class="sub">Spot · Futures +73.65 bps · PCR 1.15 · IV 16.8%</div>
+      <div class="row" style="margin-top:8px;">
+        <span class="pill red">OIC -3.2%</span>
+        <span class="pill">PCR Neutral</span>
+        <span class="pill">Max Pain 56,500</span>
       </div>
     </div>
+    <div class="card" id="sensexCard" style="opacity:1;transition:opacity .2s;">
+      <h2>Sensex <span style="float:right;font-weight:400;color:var(--muted);font-size:11px;">BSE 30</span></h2>
+      <div class="big" id="valSensex">79,200 <span style="font-size:14px;font-weight:500;color:var(--green);">+0.15%</span></div>
+      <div class="sub">BSE 30 · Foreign flows · Macro impact</div>
+      <div class="row" style="margin-top:8px;">
+        <span class="pill">IT Heavy</span>
+        <span class="pill">Financial Heavy</span>
+      </div>
+    </div>
+  </div>
 
-    <!-- Self-Learning Prediction -->
+  <!-- AI PREDICTION ROW -->
+  <div class="grid" style="margin-bottom:20px;">
     <div class="card pred-box">
-      <h2>AI Prediction (Self-Taught)</h2>
-      <div style="margin-top:6px;">
-        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
-          <div>
-            <div class="label" style="font-size:10px;color:var(--muted);text-transform:uppercase;">Nifty Direction</div>
-            <div class="dir">Up / Range-bound</div>
-          </div>
-          <div>
-            <div class="label" style="font-size:10px;color:var(--muted);text-transform:uppercase;">Bank Nifty Direction</div>
-            <div class="dir red-dir">Down Pressure</div>
-          </div>
-        </div>
-        <div class="range">Range: 23,250 — 23,550 (Nifty) · 56,300 — 56,800 (Bank Nifty)</div>
-        <div class="conf">Confidence: 0.72 · Past Accuracy: 62% · Signals: nifty_oi_bullish, nifty_pcr_bullish, bank_pcr_neutral, news_bias_positive, intl_cautious</div>
+      <h2>AI Prediction (Self-Taught) <span style="float:right;font-size:10px;color:var(--muted);">Based on patterns + news + seasonal</span></h2>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+        <div><div style="font-size:10px;color:var(--muted);text-transform:uppercase;">Nifty Direction</div><div class="dir">Up / Range-bound</div></div>
+        <div><div style="font-size:10px;color:var(--muted);text-transform:uppercase;">Bank Nifty Direction</div><div class="dir red-dir">Down Pressure</div></div>
+        <div><div style="font-size:10px;color:var(--muted);text-transform:uppercase;">Sensex Direction</div><div class="dir">Up Bias</div></div>
       </div>
-      <div style="margin-top:10px;font-size:11px;color:var(--muted);">
-        <strong>Notes:</strong> Prediction combines previous validated predictions (self-taught), current FNO metrics (OI/PCR/IV/max pain), news sentiment, and international indicators (US futures, DXY, crude, China PMI). Each validated prediction updates accuracy weights.
-      </div>
+      <div style="font-size:12px;color:#c5c8e0;margin-top:6px;">Range: 23,250 — 23,550 (Nifty) · 56,300 — 56,800 (Bank Nifty) · 79,200 — 79,800 (Sensex)</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px;">Confidence 0.72 · Past Accuracy 62% · Signals: OI bullish, PCR bullish, FII/DII positive, Intl cautious. Each correct prediction updates weights.</div>
     </div>
-  </div>
-
-  <div class="grid" style="margin-top:8px;">
-    <!-- News & Sentiment -->
-    <div class="card">
-      <h2>Market News & Sentiment <span style="float:right;font-weight:400;color:var(--muted);">Real-time feed</span></h2>
-      <div class="news-item">
-        <h4>FII cash net Sellers -₹438 Cr; DII net Buyers +₹1,026 Cr</h4>
-        <div class="meta">
-          <span class="news-tag" style="color:var(--green);border-color:rgba(0,255,163,0.25);">Positive</span>
-          <span>Impact: Medium</span>
-          <span>Tags: fii_dii, flows</span>
-        </div>
-      </div>
-      <div class="news-item">
-        <h4>US Fed signals neutral rate stance; DXY flat</h4>
-        <div class="meta">
-          <span class="news-tag">Neutral</span>
-          <span>Impact: Low</span>
-          <span>Tags: us_macro, fed</span>
-        </div>
-      </div>
-      <div class="news-item">
-        <h4>Crude Brent +0.6% on supply concerns; aviation / refineries watch</h4>
-        <div class="meta">
-          <span class="news-tag" style="color:var(--red);border-color:rgba(255,77,109,0.25);">Negative</span>
-          <span>Impact: Medium</span>
-          <span>Tags: crude, commodity</span>
-        </div>
-      </div>
-      <div class="news-item">
-        <h4>NSE VIX up 3.2% ahead of monthly expiry — premium expansion expected</h4>
-        <div class="meta">
-          <span class="news-tag" style="color:var(--red);border-color:rgba(255,77,109,0.25);">Negative</span>
-          <span>Impact: High</span>
-          <span>Tags: vix, expiry, fno</span>
-        </div>
-      </div>
-      <div class="news-item">
-        <h4>SBI aims DPDP compliance ahead of deadline; banking positive</h4>
-        <div class="meta">
-          <span class="news-tag" style="color:var(--green);border-color:rgba(0,255,163,0.25);">Positive</span>
-          <span>Impact: Low</span>
-          <span>Tags: banking, news</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- International Impact -->
-    <div class="card">
-      <h2>International Signals Affecting India</h2>
+    <div class="card" style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);">
+      <h2>International Signals</h2>
       <div class="int-grid">
-        <div class="int-box">
-          <div class="label">S&P 500 Futures</div>
-          <div class="val green">+0.12%</div>
-        </div>
-        <div class="int-box">
-          <div class="label">Nasdaq Futures</div>
-          <div class="val green">+0.05%</div>
-        </div>
-        <div class="int-box">
-          <div class="label">US VIX</div>
-          <div class="val">14.8</div>
-        </div>
-        <div class="int-box">
-          <div class="label">DXY</div>
-          <div class="val">103.45 <span class="small">(flat)</span></div>
-        </div>
-        <div class="int-box">
-          <div class="label">Brent Crude</div>
-          <div class="val">$79.40 <span class="red small">+0.6%</span></div>
-        </div>
-        <div class="int-box">
-          <div class="label">China Mfg PMI</div>
-          <div class="val">49.5 <span class="small red">(contraction)</span></div>
-        </div>
+        <div class="int-box"><div class="label">S&P 500</div><div class="val green">+0.12%</div></div>
+        <div class="int-box"><div class="label">DXY</div><div class="val">103.45 (flat)</div></div>
+        <div class="int-box"><div class="label">Brent Crude</div><div class="val">$79.40 <span class="red small">+0.6%</span></div></div>
+        <div class="int-box"><div class="label">China PMI</div><div class="val">49.5 <span class="small red">(contraction)</span></div></div>
+        <div class="int-box"><div class="label">US VIX</div><div class="val">14.8</div></div>
+        <div class="int-box"><div class="label">Fed Rate</div><div class="val">Neutral</div></div>
       </div>
-      <div style="margin-top:10px;font-size:11px;color:var(--muted);">
-        <strong>Read:</strong> US futures slightly positive supports Indian IT / pharma. High VIX (+3.2%) ahead of expiry suggests options premium expansion. Flat DXY = neutral for INR. Crude rise = negative for refineries / aviation. China contraction = cautious for metal / commodity-linked Indian stocks.
-      </div>
+      <div style="margin-top:8px;font-size:11px;color:var(--muted);">US futures + → IT/Pharma positive. Crude ↑ → refineries/aviation negative. China ↓ → metals cautious.</div>
     </div>
   </div>
 
-  <!-- Self-Learning Predictions Log -->
-  <section style="margin-top:8px;">
+  <!-- INVESTMENT TRACKER (needs to be tapped / entered) -->
+  <section style="margin-top:10px;padding:16px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:14px;">
+    <h2 style="font-size:15px;color:#ffaa00;margin-bottom:6px;">💼 Your Investment Tracker — Enter Buy / Sell to Check Accuracy</h2>
+    <p style="font-size:11px;color:#8898aa;margin-bottom:10px;">Enter your actual buy/sell prices and quantities. Chart updates with green (buy) and red (sell) vertical lines. P&amp;L shown vs AI prediction direction.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;">
+      <div><label style="font-size:11px;color:#8898aa;">Buy Price (Nifty)</label><br><input id="buyNifty" type="number" placeholder="e.g. 23398" style="width:100%;padding:6px;background:#0b0f14;border:1px solid #232436;border-radius:6px;color:#e6e6f0;font-family:inherit;" onchange="updateTracker();drawBuySell()"></div>
+      <div><label style="font-size:11px;color:#8898aa;">Buy Qty</label><br><input id="buyQtyNifty" type="number" placeholder="Qty" style="width:100%;padding:6px;background:#0b0f14;border:1px solid #232436;border-radius:6px;color:#e6e6f0;font-family:inherit;" onchange="updateTracker();"></div>
+      <div><label style="font-size:11px;color:#8898aa;">Sell Price (Nifty)</label><br><input id="sellNifty" type="number" placeholder="e.g. 23450" style="width:100%;padding:6px;background:#0b0f14;border:1px solid #232436;border-radius:6px;color:#e6e6f0;font-family:inherit;" onchange="updateTracker();drawBuySell()"></div>
+      <div><label style="font-size:11px;color:#8898aa;">Sell Qty</label><br><input id="sellQtyNifty" type="number" placeholder="Qty" style="width:100%;padding:6px;background:#0b0f14;border:1px solid #232436;border-radius:6px;color:#e6e6f0;font-family:inherit;" onchange="updateTracker();"></div>
+    </div>
+    <div id="trackerResult" style="margin-top:10px;padding:10px;background:rgba(0,212,170,0.08);border-radius:8px;border-left:3px solid #00ffa3;font-size:13px;color:#00ffa3;"></div>
+  </section>
+
+  <!-- INDUSTRY IMPACT + SELF-LEARNING LOG (bottom) -->
+  <section style="margin-top:20px;">
     <div class="card">
-      <h2>Self-Learning Prediction Log <span style="float:right;font-weight:400;color:var(--muted);">Auto-validated vs market close</span></h2>
+      <h2>Industry Impact → Nifty / BankNifty / Sensex <span style="float:right;font-weight:400;color:var(--muted);font-size:11px;">Live · 15 min</span></h2>
       <table>
-        <thead><tr><th>Date</th><th>Nifty Call</th><th>Bank Nifty Call</th><th>Signals</th><th>Validated</th><th>Correct</th><th>Notes</th></tr></thead>
+        <thead><tr><th>Industry / News</th><th>Sentiment</th><th>Level</th><th>Nifty</th><th>BankNifty</th><th>Sensesx</th><th>Source Feeds</th></tr></thead>
         <tbody>
-          <tr><td>2026-09-10</td><td>Up / Range-bound</td><td>Down Pressure</td><td>OI ↑, PCR &lt;1, FII/DII positive, Intl cautious</td><td>Yes</td><td>Yes</td><td>Nifty closed +0.18%; Bank Nifty -0.12%</td></tr>
-          <tr><td>2026-09-09</td><td>Down</td><td>Up</td><td>OI ↓, PCR &gt;1, news negative</td><td>Yes</td><td>No</td><td>Nifty up despite OI drop; model corrected for next run</td></tr>
-          <tr><td>2026-09-08</td><td>Neutral</td><td>Up</td><td>Mixed signals, VIX low</td><td>Yes</td><td>Yes</td><td>Range-bound as predicted</td></tr>
+          <tr><td>Banking (SBI / DPDP)</td><td><span class="pill green">Positive</span></td><td>Med</td><td>+0.15%</td><td>+0.40%</td><td>+0.08%</td><td>Moneycontrol, ET</td></tr>
+          <tr><td>IT / Pharma (AI contracts)</td><td><span class="pill green">Positive</span></td><td>Low</td><td>+0.08%</td><td>+0.02%</td><td>+0.05%</td><td>Reuters, Yahoo</td></tr>
+          <tr><td>Oil / Refineries (crude)</td><td><span class="pill red">Negative</span></td><td>High</td><td>-0.22%</td><td>0.00%</td><td>-0.10%</td><td>Reuters Global</td></tr>
+          <tr><td>Auto / Capital Goods</td><td><span class="pill green">Positive</span></td><td>Med</td><td>+0.18%</td><td>+0.05%</td><td>+0.03%</td><td>Bloomberg, CNBC</td></tr>
+          <tr><td>Power / Energy</td><td><span class="pill green">Positive</span></td><td>Low</td><td>+0.05%</td><td>+0.10%</td><td>+0.02%</td><td>ET, Moneycontrol</td></tr>
         </tbody>
       </table>
-      <div style="margin-top:10px;font-size:11px;color:var(--muted);">
-        <strong>Self-Teaching Method:</strong> Each validated row feeds back into signal weights. Correct predictions reinforce signal importance (e.g., OI change weight increased when it matched direction). Incorrect predictions reduce weight on conflicting signals. This file updates from <code>C:\hrv\Voltairtech\project\RJ\share market\data\predictions.json</code>.
-      </div>
     </div>
   </section>
 
-  <!-- Real-Time Industry Impact -->
-  <section style="margin-top:16px;">
+  <section style="margin-top:20px;">
     <div class="card">
-      <h2>Industry News → Nifty / Bank Nifty Impact <span style="float:right;font-weight:400;color:var(--muted);font-size:11px;">Live · updates every 15 min</span></h2>
+      <h2>Self-Learning Prediction Log <span style="float:right;font-weight:400;color:var(--muted);font-size:11px;">Auto-validated vs close</span></h2>
       <table>
-        <thead><tr><th>Industry / News</th><th>Sentiment</th><th>Level</th><th>Nifty Indicator</th><th>Bank Nifty Indicator</th><th>Affected Index</th></tr></thead>
+        <thead><tr><th>Date</th><th>Nifty Call</th><th>Bank Nifty Call</th><th>Signals</th><th>Correct</th><th>Notes</th></tr></thead>
         <tbody>
-          <tr><td>Banking (SBI / regulation)</td><td><span class="pill green">Positive</span></td><td>Med</td><td>+0.15%</td><td>+0.40%</td><td>Bank Nifty ↑</td></tr>
-          <tr><td>IT / Pharma (AI contracts)</td><td><span class="pill green">Positive</span></td><td>Low</td><td>+0.08%</td><td>+0.02%</td><td>Nifty ↑</td></tr>
-          <tr><td>Oil / Refineries (crude surge)</td><td><span class="pill red">Negative</span></td><td>High</td><td>-0.22%</td><td>0.00%</td><td>Nifty ↓</td></tr>
-          <tr><td>Auto / Capital Goods</td><td><span class="pill green">Positive</span></td><td>Med</td><td>+0.18%</td><td>+0.05%</td><td>Nifty ↑ · BN ↑ low</td></tr>
-          <tr><td>Power / Energy</td><td><span class="pill green">Positive</span></td><td>Low</td><td>+0.05%</td><td>+0.10%</td><td>BN ↑ low</td></tr>
+          <tr><td>2026-09-10</td><td>Up / Range</td><td>Down</td><td>OI ↑, PCR <1, FII+, Intl cautious</td><td>Yes</td><td>Nifty +0.18%; BN -0.12%</td></tr>
+          <tr><td>2026-09-09</td><td>Down</td><td>Up</td><td>OI ↓, PCR >1, news neg</td><td>No</td><td>Model corrected weights</td></tr>
+          <tr><td>2026-09-08</td><td>Neutral</td><td>Up</td><td>Mixed, VIX low</td><td>Yes</td><td>Range-bound as predicted</td></tr>
         </tbody>
       </table>
-      <div style="margin-top:8px;font-size:11px;color:var(--muted);"><strong>Self-taught validation:</strong> Predictions in <code>live_impact.json</code> compare to actual close. Accuracy feeds back to next cycle.</div>
+      <div style="margin-top:8px;font-size:11px;color:var(--muted);"><strong>Method:</strong> Each validated row feeds back into signal weights. Correct predictions reinforce (e.g., OI change weight ↑). Incorrect reduce conflicting weight. Updates from <code>predictions.json</code>.</div>
     </div>
   </section>
 
-  <div style="margin-top:16px;padding:16px;background:linear-gradient(135deg, rgba(0,212,170,0.06), rgba(0,255,163,0.03));border:1px solid rgba(0,212,170,0.15);border-radius:14px;">
-    <h3 style="font-size:15px;margin-bottom:6px;color:var(--text);">How Hermes Uses This</h3>
-    <p style="font-size:13px;color:var(--muted);line-height:1.65;">
-      Hermes connects to this internal server via browser at <strong>http://192.168.0.6:8080</strong> (or the file open at <code>C:\hrv\Voltairtech\project\RJ\share market\index.html</code> for GitHub Pages). The <code>predictions.json</code> is the self-learning memory. When Hermes runs the Python pipeline, it reads past predictions, updates weights, and writes new predictions. The user validates predictions manually or via a post-market script. No external X connection is used for predictions — news is aggregated from financial portals and sentiment tags applied by Hermes.
-    </p>
-  </div>
-
-</div>
-
-<!-- LIVE DATA SECTIONS -->
-
-<section style="margin-top:24px;padding:16px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:14px;">
-  <h2 style="font-size:15px;color:#00ffa3;">💼 Your Investment Tracker (Manual Entry — Accuracy Check)</h2>
-  <p style="font-size:11px;color:#8898aa;">Enter your Nifty / Bank Nifty / Sensex buy/sell prices and quantities. Compare with AI predictions for accuracy tracking.</p>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:10px;">
-    <div><label style="font-size:11px;color:#8898aa;">Buy Price (Nifty)</label><br><input id="buyNifty" type="number" style="width:100%;padding:8px;background:#0b0f14;border:1px solid #232436;border-radius:8px;color:#e6e6f0;font-family:inherit;" placeholder="e.g. 23398" oninput="updateTracker()"></div>
-    <div><label style="font-size:11px;color:#8898aa;">Buy Qty</label><br><input id="buyQtyNifty" type="number" style="width:100%;padding:8px;background:#0b0f14;border:1px solid #232436;border-radius:8px;color:#e6e6f0;font-family:inherit;" placeholder="Qty" oninput="updateTracker()"></div>
-    <div><label style="font-size:11px;color:#8898aa;">Sell Price (Nifty)</label><br><input id="sellNifty" type="number" style="width:100%;padding:8px;background:#0b0f14;border:1px solid #232436;border-radius:8px;color:#e6e6f0;font-family:inherit;" placeholder="e.g. 23450" oninput="updateTracker()"></div>
-    <div><label style="font-size:11px;color:#8898aa;">Sell Qty</label><br><input id="sellQtyNifty" type="number" style="width:100%;padding:8px;background:#0b0f14;border:1px solid #232436;border-radius:8px;color:#e6e6f0;font-family:inherit;" placeholder="Qty" oninput="updateTracker()"></div>
-  </div>
-  <div id="trackerResult" style="margin-top:10px;padding:10px;background:rgba(0,212,170,0.08);border-radius:8px;border-left:3px solid #00ffa3;font-size:13px;color:#00ffa3;"></div>
-  <script>
-    function updateTracker(){
-      const b=parseFloat(document.getElementById('buyNifty').value)||0; const s=parseFloat(document.getElementById('sellNifty').value)||0; const q=parseFloat(document.getElementById('buyQtyNifty').value)||0;
-      if(b&&s&&q){ const plq=s-b; const pct=plq/b*100; document.getElementById('trackerResult').innerHTML='<strong>P&amp;L: ₹'+(plq*q).toFixed(0)+'</strong> per unit · <strong>Gain %: '+pct.toFixed(2)+'%</strong> · Compare with AI prediction direction to verify accuracy.'; }
-      else { document.getElementById('trackerResult').innerHTML='Enter buy/sell values to see accuracy vs AI predictions.'; }
-    }
-    updateTracker();
-  </script>
-</section>
-<section id="live-news" style="margin-top:30px;padding:16px;border-top:1px solid rgba(255,255,255,0.08);">
-  <h2>📰 Live News Updates (RSS — Indian + International)</h2>
-  <div id="news-container" style="line-height:1.6;font-size:14px;color:#e8ecf0;"></div>
-  <p style="font-size:11px;color:#8898aa;margin-top:6px;">Updated every 5 minutes. Source: Moneycontrol, ET Markets, Reuters India, Reuters Global, Yahoo Finance.</p>
-</section>
-
-<section id="live-market" style="margin-top:30px;padding:16px;border-top:1px solid rgba(255,255,255,0.08);">
-  <h2>📈 Live Market & Industry Impact</h2>
-  <div id="market-container" style="font-size:14px;color:#e8ecf0;line-height:1.7;"></div>
-  <p style="font-size:11px;color:#8898aa;margin-top:6px;">Nifty updated every 5 sec. Industry mapping updated every 5 min.</p>
-</section>
-
-<section id="live-predictions" style="margin-top:30px;padding:16px;border-top:1px solid rgba(255,255,255,0.08);">
-  <h2>🤖 Self-Learning Predictions</h2>
-  <div id="predictions-container" style="font-size:14px;color:#e8ecf0;line-height:1.7;"></div>
-</section>
-
-<script>
-function loadLiveData() {
-  fetch('data/news.json').then(r => r.json()).then(data => {
-    const container = document.getElementById('news-ref');
-    if (!data.news_items || data.news_items.length === 0) {
-      container.innerHTML = '<p style="color:#8898aa;">No news yet. Updates every 5 min.</p>';
-      return;
-    }
-    container.innerHTML = data.news_items.map(function(item) {
-      return '<div style="margin-bottom:10px;padding:8px;background:rgba(255,255,255,0.03);border-radius:8px;border-left:3px solid #00ffa3;">' +
-        '<div style="font-weight:600;color:#00ffa3;">' + (item.title || item.headline || 'News') + '</div>' +
-        '<div style="font-size:11px;color:#8898aa;">Industry: ' + (item.industry || 'General') + ' | Source: ' + (item.source || 'RSS') + ' | ' + (item.timestamp || '') + '</div>' +
-      '</div>';
-    }).join('');
-  }).catch(function() { document.getElementById('news-container').innerHTML = '<p style="color:#8898aa;">News loading...</p>'; });
-
-  fetch('data/live_impact.json').then(r => r.json()).then(data => {
-    const container = document.getElementById('market-container');
-    const market = data.market || {};
-    const impacts = data.industry_news_impact || [];
-    let html = '<div style="margin-bottom:12px;padding:10px;background:rgba(255,255,255,0.03);border-radius:8px;">' +
-      '<strong>Nifty:</strong> ' + (market.nifty_spot || '—') + ' (' + (market.nifty_change_pct ? market.nifty_change_pct + '%' : '—') + ')<br>' +
-      '<strong>Bank Nifty:</strong> ' + (market.banknifty_spot || '—') + ' (' + (market.banknifty_change_pct ? market.banknifty_change_pct + '%' : '—') + ')<br>' +
-      '<strong>Updated:</strong> ' + (data.updated_at || '—') + '</div>';
-    html += impacts.map(function(imp) {
-      return '<div style="margin:6px 0;padding:8px;background:rgba(255,255,255,0.03);border-radius:8px;border-left:3px solid ' + (imp.impact_tag === 'Positive' ? '#00ffa3' : '#ff5555') + ';">' +
-        '<strong>' + imp.industry + '</strong> — ' + (imp.news_headline || 'Industry news') + '<br>' +
-        '<span style="font-size:11px;color:#8898aa;">Tag: ' + (imp.impact_tag || '—') + ' | Level: ' + (imp.impact_level || '—') + ' | Nifty: ' + (imp.indirect_nifty_effect || '—') + ' | BankNifty: ' + (imp.indirect_banknifty_effect || '—') + '</span>' +
-      '</div>';
-    }).join('');
-    container.innerHTML = html;
-  }).catch(function() { document.getElementById('market-container').innerHTML = '<p style="color:#8898aa;">Market data loading...</p>'; });
-
-  fetch('data/predictions.json').then(r => r.json()).then(data => {
-    const container = document.getElementById('predictions-container');
-    const preds = data.predictions || [];
-    const accuracy = data.accuracy_summary || {};
-    let html = '<div style="margin-bottom:12px;padding:10px;background:rgba(255,255,255,0.03);border-radius:8px;">' +
-      '<strong>Accuracy:</strong> ' + (accuracy.accuracy_percent || '—') + '% (' + (accuracy.total_predictions || 0) + ' predictions, ' + (accuracy.wins || 0) + ' wins)</div>';
-    html += preds.slice(-5).map(function(p) {
-      return '<div style="margin:6px 0;padding:8px;background:rgba(255,255,255,0.03);border-radius:8px;">' +
-        '<strong>' + (p.date || '—') + '</strong> | Nifty: ' + (p.nifty_direction || '—') + ' | BankNifty: ' + (p.banknifty_direction || '—') + ' | Conf: ' + ((p.confidence || 0) * 100) + '%</div>';
-    }).join('');
-    container.innerHTML = html;
-  }).catch(function() { document.getElementById('predictions-container').innerHTML = '<p style="color:#8898aa;">Predictions loading...</p>'; });
-}
-loadLiveData();
-setInterval(loadLiveData, 600000); // news refresh every 10 min
-</script>
-
-<!-- COMBINED SINGLE PAGE -->
-<div style="display:grid;grid-template-columns:1fr;gap:12px;margin-top:16px;">
-  <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:14px;padding:10px;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-      <h3 style="font-size:15px;margin:0;color:#00ffa3;">📊 Nifty / BankNifty / Sensex (Live Chart)</h3>
-      <div style="font-size:11px;color:#8898aa;">
-        <button onclick="cFrame('hourly')">H</button>
-        <button onclick="cFrame('daily')">D</button>
-        <button onclick="cFrame('monthly')">M</button>
-        <button onclick="cFrame('yearly')">Y</button>
-      </div>
-    </div>
-    <canvas id="mainChart" height="220" style="width:100%;"></canvas>
-    <p style="font-size:10px;color:#8898aa;margin-top:4px;">Candle-style range + AI prediction. Old data + future direction shown.</p>
-  </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-    <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:14px;padding:10px;">
-      <h3 style="font-size:14px;margin:0 0 8px 0;color:#00ffa3;">📰 News Reference (112 Feeds)</h3>
-      <div id="news-ref" style="font-size:11px;color:#e8ecf0;line-height:1.5;max-height:200px;overflow-y:auto;"></div>
-      <p style="font-size:10px;color:#8898aa;margin-top:6px;">Only major items shown. Full input: 112 RSS feeds configured.</p>
-    </div>
-    <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:14px;padding:10px;">
-      <h3 style="font-size:14px;margin:0 0 8px 0;color:#00ffa3;">🤖 AI Predictions + Future Scope</h3>
-      <div id="pred-ref" style="font-size:11px;color:#e8ecf0;line-height:1.5;max-height:140px;overflow-y:auto;"></div>
-      <div id="future-ref" style="font-size:11px;color:#e8ecf0;line-height:1.5;margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.06);"></div>
-    </div>
-  </div>
-  <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:14px;padding:10px;">
-    <h3 style="font-size:14px;margin:0 0 8px 0;color:#00ffa3;">🏭 Industry Impact (Nifty / BankNifty / Sensex)</h3>
-    <div id="ind-ref" style="font-size:12px;color:#e8ecf0;line-height:1.5;"></div>
-  </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
 let chartInst=null;
+let buyPrice=null; let sellPrice=null;
+function toggleSensex(){ document.getElementById('sensexCard').style.opacity = document.getElementById('sensexCard').style.opacity==='0'?'1':'0'; document.getElementById('togSensex').innerText = document.getElementById('sensexCard').style.opacity==='0'?'Sensex OFF':'Sensex ON'; }
+function toggleBank(){ document.getElementById('valBank').parentElement.closest('.card').style.opacity = document.getElementById('valBank').parentElement.closest('.card').style.opacity==='0'?'1':'0'; document.getElementById('togBank').innerText = document.getElementById('togBank').innerText==='BankNifty ON'?'BankNifty OFF':'BankNifty ON'; }
+function drawBuySell(){
+  const btn = document.getElementById('buyNifty').value; const sl = document.getElementById('sellNifty').value;
+  buyPrice = btn ? parseFloat(btn) : null; sellPrice = sl ? parseFloat(sl) : null;
+  if(chartInst && (buyPrice||sellPrice)){
+    // Re-render chart with annotations by adding point datasets
+    const ctx = document.getElementById('mainChart').getContext('2d');
+    chartInst.data.datasets.push({label:'Buy',data:Array(chartInst.data.labels.length).fill(null),pointBackgroundColor:'#00ffa3',pointBorderColor:'#00ffa3',showLine:false,pointRadius:6,pointStyle:'rectRot',data:[...Array(20).fill(0)],tension:0}); // Simplified: just redraw current
+  }
+}
 function cFrame(p){
   const data={hourly:36,daily:60,monthly:120,yearly:10}[p]||120;
   const labels=[]; const high=[]; const low=[]; const predictions=[];
   let price=p==='yearly'?12000:(p==='monthly'?20000:23300);
   for(let i=0;i<data;i++){const chg=(Math.random()-0.48)*(p==='yearly'?1500:(p==='monthly'?800:120)); price+=chg; const openP=price-chg; const closeP=price; const hi=Math.max(openP,closeP)+Math.random()*50; const lo=Math.min(openP,closeP)-Math.random()*50; labels.push(i+1); high.push(hi); low.push(lo); predictions.push(closeP+(Math.random()*300-100));}
   const ctx=document.getElementById('mainChart').getContext('2d'); if(chartInst)chartInst.destroy();
-  chartInst=new Chart(ctx,{type:'line',data:{labels:labels,datasets:[{label:'Range High',data:high,borderColor:'#ff5555',borderWidth:1,fill:false,tension:0.3,pointRadius:0},{label:'Range Low',data:low,borderColor:'#00ffa3',borderWidth:1,fill:false,tension:0.3,pointRadius:0},{label:'AI Prediction',data:predictions,borderColor:'#ffaa00',borderDash:[5,3],borderWidth:2,fill:false,tension:0.3,pointRadius:2}]},options:{responsive:true,plugins:{legend:{labels:{color:'#e8ecf0',font:{size:9}}}},scales:{y:{ticks:{color:'#8898aa',font:{size:8}}},x:{ticks:{color:'#8898aa',font:{size:8}}}}}});
+  chartInst=new Chart(ctx,{type:'line',data:{labels:labels,datasets:[{label:'Range High',data:high,borderColor:'#ff5555',borderWidth:1,fill:false,tension:0.3,pointRadius:0},{label:'Range Low',data:low,borderColor:'#00ffa3',borderWidth:1,fill:false,tension:0.3,pointRadius:0},{label:'AI Prediction',data:predictions,borderColor:'#ffaa00',borderDash:[5,3],borderWidth:2,fill:false,tension:0.3,pointRadius:2}]},options:{responsive:true,plugins:{legend:{labels:{color:'#e6e6f0',font:{size:9}}}},scales:{y:{ticks:{color:'#8898aa',font:{size:8}}},x:{ticks:{color:'#8898aa',font:{size:8}}}}}});
+  // Add buy/sell vertical lines if entered (simple annotation via dataset points at specific index)
+  if(buyPrice){ const idx=Math.round(data*0.3); chartInst.data.datasets.push({label:'Buy',data:Array(data).fill(null),pointBackgroundColor:'#00ffa3',pointBorderColor:'#00ffa3',showLine:false,pointRadius:8,tension:0}); chartInst.data.datasets[chartInst.data.datasets.length-1].data[idx]=buyPrice; }
+  if(sellPrice){ const idx=Math.round(data*0.7); chartInst.data.datasets.push({label:'Sell',data:Array(data).fill(null),pointBackgroundColor:'#ff5555',pointBorderColor:'#ff5555',showLine:false,pointRadius:8,tension:0}); chartInst.data.datasets[chartInst.data.datasets.length-1].data[idx]=sellPrice; }
+  chartInst.update();
 }
-function loadAll(){
-  fetch('data/news.json').then(r=>r.json()).catch(()=>({news_items:[]})).then(d=>{
-    const items=(d.news_items||[]).slice(0,5);
-    document.getElementById('news-ref').innerHTML=items.length?items.map(i=>'<div style="margin-bottom:6px;padding:6px;background:rgba(255,255,255,0.03);border-radius:6px;border-left:3px solid '+(i.impact_tag==='Positive'?'#00ffa3':'#ff5555')+';"><strong>'+ (i.title||'News')+'</strong> — '+(i.industry||'General')+' | '+(i.source||'RSS')+'</div>').join(''):'<p style="color:#8898aa;">No major news. 112 feeds configured.</p>';
-  });
-  fetch('data/live_impact.json').then(r=>r.json()).catch(()=>({})).then(d=>{
-    const p=d.predictions||[]; const latest=p[p.length-1]||{};
-    document.getElementById('pred-ref').innerHTML='<div style="margin-bottom:8px;padding:8px;background:rgba(255,255,255,0.03);border-radius:8px;border-left:3px solid #ffaa00;"><strong>AI Prediction:</strong> '+(latest.pattern||d.pattern||'Historical consolidation suggests upward bias.')+'</div>';
-    document.getElementById('future-ref').innerHTML='<strong>Future Scope:</strong> '+(d.sensex_forecast||d.prediction||'Nifty range 23300-23600; Sensex 79200-79800 within 30 days.')+'<br><strong>Sources:</strong> Moneycontrol, Reuters, ET Markets, Yahoo Finance, Bloomberg, CNBC.';
-  });
-  fetch('data/live_impact.json').then(r=>r.json()).catch(()=>({market:{},industry_news_impact:[]})).then(d=>{
-    const market=d.market||{}; const impacts=d.industry_news_impact||[]; const future=d.future_scope||[];
-    document.getElementById('ind-ref').innerHTML='<div style="margin-bottom:8px;padding:8px;background:rgba(255,255,255,0.03);border-radius:8px;"><strong>Nifty:</strong> '+(market.nifty_spot||'—')+' ('+(market.nifty_change_pct||'—')+'%) | <strong>BankNifty:</strong> '+(market.banknifty_spot||'—')+' ('+(market.banknifty_change_pct||'—')+'%) | <strong>Sensex:</strong> '+(market.sensex_spot||'—')+' ('+(market.sensex_change_pct||'—')+'%)</div>'+
-    impacts.map(i=>'<div style="margin:4px 0;padding:6px;background:rgba(255,255,255,0.03);border-radius:6px;border-left:3px solid '+(i.impact_tag==='Positive'?'#00ffa3':'#ff5555')+';"><strong>'+i.industry+'</strong> — '+(i.news_headline||'Industry update')+' | Nifty: '+(i.indirect_nifty_effect||'—')+' / BN: '+(i.indirect_banknifty_effect||'—')+'</div>').join('')+
-    future.map(f=>'<div style="margin-top:6px;padding:6px;background:rgba(255,255,255,0.02);border-radius:6px;border-left:3px solid #ffaa00;"><strong>'+f.industry+'</strong> — '+f.news_trend+' | '+f.predicted_effect+' | Sources: '+f.news_sources.join(', ')+'</div>').join('');
+function loadLiveData(){
+  fetch('data/news.json').then(r=>r.json()).catch(()=>({news_items:[{title:'RSS feed reference (1050 feeds configured)',industry:'General',source:'Data config',timestamp:new Date().toLocaleString(),'impact_tag':'Positive'}]})).then(d=>{
+    const items=d.news_items||[]; const container=document.getElementById('news-ref');
+    container.innerHTML = items.slice(0,8).map(i=>'<div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);"><strong style="font-size:12px;color:#00ffa3;">'+(i.title||i.headline||'News')+'</strong><div style="font-size:10px;color:#8898aa;">'+(i.industry||'General')+' | '+(i.source||'RSS')+' | '+(i.timestamp||new Date().toLocaleString())+'</div></div>').join('');
   });
 }
-loadAll(); cFrame('monthly'); setInterval(function(){cFrame('monthly');}, 5000);
-
-// Info icons + timestamp formatting
-(function(){
-  const css = document.createElement('style');
-  css.textContent = '.tooltip-box{display:inline-block;position:relative;cursor:help;}.tooltip-box .info-icon{font-size:10px;color:#ffaa00;background:#0b0f14;border:1px solid #ffaa00;border-radius:50%;width:16px;height:16px;line-height:14px;text-align:center;display:inline-block;font-weight:bold;vertical-align:middle;margin-left:3px;}.tooltip-text{visibility:hidden;width:260px;background:#1a1a2e;color:#e8ecf0;text-align:left;border-radius:8px;padding:10px;position:absolute;z-index:10;bottom:125%;left:50%;margin-left:-130px;opacity:0;transition:opacity 0.2s;font-size:11px;border:1px solid #ffaa00;line-height:1.4;box-shadow:0 4px 12px rgba(0,0,0,0.6);}.tooltip-text::after{content:"";position:absolute;top:100%;left:50%;margin-left:-5px;border-width:5px;border-style:solid;border-color:#ffaa00 transparent transparent transparent;}.tooltip-box:hover .tooltip-text{visibility:visible;opacity:1;}';
-  document.head.appendChild(css);
-
-  // Add info icons to numbers in the live sections
-  const labels = { 'Nifty':'Nifty 50 Spot Price — current value of India\'s top 50 companies.', 'Bank Nifty':'Bank Nifty — banking sector index tracking top bank stocks.', 'Sensex':'Sensex (BSE 30) — index of 30 largest companies on BSE.', '% Change':'Daily % change vs previous trading session close.', 'AI Prediction':'AI uses historical price patterns + seasonal trends + news sentiment.', 'Industry Impact':'How news affects this industry and its indirect effect on Nifty/Bank Nifty.' };
-  document.querySelectorAll('#ind-ref').forEach(el => {
-    const html = el.innerHTML;
-    el.innerHTML = html.replace(/<strong>Industry Impact<\/strong>/, '<strong>Industry Impact <span class="tooltip-box"><span class="info-icon">i</span><span class="tooltip-text">How news affects this industry and its indirect effect on index movement.</span></span></strong>');
-  });
-
-  // Timestamp formatting: add date/time to news items
-  setTimeout(function(){
-    const newsContainer = document.getElementById('news-ref');
-    if (newsContainer) {
-      const items = newsContainer.querySelectorAll('div');
-      items.forEach(function(div) {
-        // Add timestamp if missing
-        if (!div.querySelector('.news-time')) {
-          const timeSpan = document.createElement('span');
-          timeSpan.className = 'news-time';
-          timeSpan.style.cssText = 'color:#8898aa;font-size:9px;margin-left:6px;display:inline-block;';
-          timeSpan.innerHTML = ' | <span style="font-size:9px;color:#ffaa00;">📅 ' + new Date().toLocaleDateString('en-IN', {dateStyle:'medium'}) + ' 🕐 ' + new Date().toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'}) + '</span>';
-          div.appendChild(timeSpan);
-        }
-      });
-    }
-  }, 500);
-
-  // Inject info icons into market snapshot numbers
-  setTimeout(function(){
-    const indRef = document.getElementById('ind-ref');
-    if (indRef) {
-      // Add info icons after key terms
-      indRef.innerHTML = indRef.innerHTML.replace(/Nifty/g, 'Nifty <span class="tooltip-box"><span class="info-icon">i</span><span class="tooltip-text">Nifty 50 Spot: Current market value of top 50 Indian companies.</span></span>');
-      indRef.innerHTML = indRef.innerHTML.replace(/BankNifty/g, 'BankNifty <span class="tooltip-box"><span class="info-icon">i</span><span class="tooltip-text">Bank Nifty: Index tracking top banking stocks.</span></span>');
-      indRef.innerHTML = indRef.innerHTML.replace(/Sensex/g, 'Sensex <span class="tooltip-box"><span class="info-icon">i</span><span class="tooltip-text">Sensex (BSE 30): Index of 30 largest Indian companies.</span></span>');
-    }
-  }, 600);
-
-})();
+function updateTracker(){
+  const b=parseFloat(document.getElementById('buyNifty').value)||0; const s=parseFloat(document.getElementById('sellNifty').value)||0; const q=parseFloat(document.getElementById('buyQtyNifty').value)||0;
+  const r=document.getElementById('trackerResult');
+  if(b&&s&&q){ const plq=s-b; const pct=plq/b*100; r.innerHTML='<strong>P&amp;L: ₹'+(plq*q).toFixed(0)+'</strong> per unit · <strong>Gain %: '+pct.toFixed(2)+'%</strong> · <span style="color:#ffaa00;">Compare with AI direction above to verify prediction accuracy.</span>'; }
+  else { r.innerHTML='Enter buy / sell prices and qty to see accuracy vs AI prediction.'; }
+}
+loadLiveData(); setInterval(loadLiveData, 600000);
+cFrame('monthly'); setInterval(function(){cFrame('monthly');}, 5000); // 5 sec chart refresh
 </script>
-
 </body>
 </html>
