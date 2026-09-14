@@ -69,7 +69,7 @@ button.small{padding:4px 10px;font-size:10px;}
 <div class="container">
 
   <!-- EMBEDDED CONFIG (top, small, self-sufficient) -->
-  <section style="margin-bottom:18px;padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;">
+  <div id="gearPanel" style="display:block;"><section style="margin-bottom:18px;padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;">
     <h2 style="font-size:12px;color:var(--muted);letter-spacing:0.08em;margin-bottom:8px;">⚙ Settings <span style="font-weight:400;font-size:11px;color:var(--muted);">— configure once, never touch again</span></h2>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;align-items:end;">
       <div>
@@ -99,10 +99,17 @@ button.small{padding:4px 10px;font-size:10px;}
       </div>
     </div>
     <div id="configMsg" style="font-size:11px;color:var(--muted);margin-top:6px;"></div>
-  </section>
+  </section></div></div>
 
   <!-- MAIN: Chart (past) + Forecast (future, same chart) -->
-  <div style="display:grid;grid-template-columns:2.2fr 1fr;gap:14px;margin-bottom:14px;align-items:start;">
+  
+  <!-- GEAR / SETTINGS COLLAPSIBLE -->
+  <div style="margin-bottom:10px;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:10px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="document.getElementById('gearPanel').style.display=document.getElementById('gearPanel').style.display==='none'?'block':'none'; this.style.opacity='0.9';">
+    <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);font-weight:600;"><span style="font-size:18px;">⚙</span> Settings & Config — Add / Change / Hide (click to open)</div>
+    <span id="gearArrow" style="font-size:12px;color:var(--muted);">▼</span>
+  </div>
+  <div id="gearPanel" style="display:block;">
+<div style="display:grid;grid-template-columns:2.2fr 1fr;gap:14px;margin-bottom:14px;align-items:start;">
     <div class="card chart-wrap">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
         <h2 style="font-size:13px;text-transform:uppercase;color:var(--muted);margin:0;"><span class="dot" style="background:var(--accent);"></span> Chart — Past + Forecast (News Based)</h2>
