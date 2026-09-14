@@ -80,12 +80,12 @@ button.small{padding:4px 10px;font-size:10px;}
       <div>
         <label style="font-size:10px;color:var(--muted);">Security</label><br>
         <button onclick="clearKey()" class="small secondary" style="font-size:10px;padding:4px 8px;">Clear Key (Erase from Browser)</button>
-        <div style="font-size:9px;color:var(--gold);margin-top:2px;">Key never touches GitHub. Only your browser sends it to openrouter.ai when Forecast is clicked.</div>
+        <div style="font-size:9px;color:var(--gold);margin-top:2px;">Key never touches GitHub. Uses only free OpenRouter models (no cost). Only your browser sends it to openrouter.ai when Forecast is clicked.</div>
       </div>
       <div>
         <label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px;">Update Frequency</label>
         <div style="display:flex;gap:6px;">
-          <button onclick="setIntervalMs(600000)" id="btn10" class="small active-int" style="background:var(--accent);color:#000;">10 min</button>
+          <button onclick="setIntervalMs(600000)" id="btn10" class="small active-int" style="background:var(--accent);color:#000;">10 min</button><button onclick="setModel('openai/gpt-4o-mini')" id="btnModelMini" class="small active-int" style="background:var(--accent);color:#000;">Free: gpt-4o-mini</button><button onclick="setModel('google/gemini-flash-1.5')" id="btnModelGemini" class="small secondary">Free: gemini</button><button onclick="setModel('meta-llama/llama-3.1-8b-instruct')" id="btnModelLlama" class="small secondary">Free: Llama-3.1</button>
           <button onclick="setIntervalMs(300000)" id="btn5" class="small secondary">5 min</button>
           <button onclick="setIntervalMs(1800000)" id="btn30" class="small secondary">30 min</button>
         </div>
@@ -249,12 +249,12 @@ let refreshMs = 600000; // 10 min default
 
 function clearKey(){ localStorage.removeItem('or_config'); document.getElementById('orKey').value=''; document.getElementById('keyStatus').innerHTML='<span style="color:var(--red);">✓ Cleared from browser.</span>'; document.getElementById('configMsg').innerHTML='<span class="ok-msg">Security: key erased. Refresh page to confirm.</span>'; }
 function loadConfig() {
-  try { const s = localStorage.getItem(LS_KEY); if(s){ const d=JSON.parse(s); if(d.key) document.getElementById('orKey').value=d.key; if(d.interval) { refreshMs = d.interval; setIntervalMs(d.interval); } if(d.hideSensex) toggleSensex(document.getElementById('btnSensex')); if(d.hideBank) toggleBank(document.getElementById('btnBank')); } } catch(e){}
+  try { const s = localStorage.getItem(LS_KEY); if(s){ const d=JSON.parse(s); if(d.key) document.getElementById('orKey').value=d.key; if(d.interval) { refreshMs = d.interval; setIntervalMs(d.interval); } if(d.hideSensex) toggleSensex(document.getElementById('btnSensex')); if(d.hideBank) toggleBank(document.getElementById('btnBank')); if(d.model) { selectedModel = d.model; setModel(d.model); } } } catch(e){}
   checkConfig();
 }
 function saveConfig() {
   const d = { key: document.getElementById('orKey').value.trim(), interval: refreshMs, hideSensex: freezeSensex, hideBank: freezeBank };
-  localStorage.setItem(LS_KEY, JSON.stringify(d));
+  d.model = selectedModel; localStorage.setItem(LS_KEY, JSON.stringify(d));
   document.getElementById('configMsg').innerHTML = '<span class="ok-msg">Config saved to browser (localStorage). Key never leaves your device.</span>';
   checkConfig();
 }
@@ -265,6 +265,8 @@ function checkConfig() {
   else if(k){ status.innerHTML='<span style="color:var(--gold);">⚠ Key present but format looks off — check copy/paste.</span>'; }
   else { status.innerHTML='<span style="color:var(--red);">✗ No OpenRouter key. Add in settings above to unlock forecast.</span>'; }
 }
+let selectedModel = 'openai/gpt-4o-mini';
+function setModel(m){ selectedModel = m; localStorage.setItem('or_model', m); ['btnModelMini','btnModelGemini','btnModelLlama'].forEach(id=>{ const b=document.getElementById(id); if(b){ b.style.background = (m===b.innerText.replace('Free: ','') || (m==='openai/gpt-4o-mini' && id==='btnModelMini')||(m==='google/gemini-flash-1.5' && id==='btnModelGemini')||(m==='meta-llama/llama-3.1-8b-instruct' && id==='btnModelLlama'))?'var(--accent)':'#23243d'; b.style.color = (b.style.background==='var(--accent)')?'#000':'#e6e6f0'; } }); document.getElementById('configMsg').innerHTML='<span class="ok-msg">Model set to free tier: '+m+'</span>'; }
 function setIntervalMs(ms){ refreshMs = ms; ['btn10','btn5','btn30'].forEach(id=>document.getElementById(id).classList.remove('active-int','secondary')); const btn = ms===600000?'btn10':ms===300000?'btn5':'btn30'; document.getElementById(btn).classList.add('active-int'); document.getElementById(btn).style.background='var(--accent)'; document.getElementById(btn).style.color='#000'; document.getElementById(btn).classList.remove('secondary'); }
 function toggleSensex(btn){ freezeSensex = !freezeSensex; document.getElementById('cardSensex').style.opacity = freezeSensex ? '0.35' : '1'; btn.innerText = freezeSensex ? 'Sensex OFF' : 'Sensex ON'; btn.style.background = freezeSensex ? '#23243d' : 'var(--accent)'; btn.style.color = freezeSensex ? '#e6e6f0' : '#000'; }
 function toggleBank(btn){ freezeBank = !freezeBank; document.getElementById('cardBank').style.opacity = freezeBank ? '0.35' : '1'; btn.innerText = freezeBank ? 'BankNifty OFF' : 'BankNifty ON'; btn.style.background = freezeBank ? '#23243d' : 'var(--accent)'; btn.style.color = freezeBank ? '#e6e6f0' : '#000'; }
@@ -301,7 +303,7 @@ function loadForecast(){
   fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {'Content-Type':'application/json', 'Authorization':'Bearer '+key},
-    body: JSON.stringify({model:'openai/gpt-4o-mini', messages:[{role:'system',content:'You are a concise market analyst. Return ONLY valid JSON with keys: direction (UP/DOWN/RANGE), reason (1-2 sentences, mention news factors), confidence (0-1), range_low (number), range_high (number). No extra text.'},{role:'user',content:context}]})
+    body: JSON.stringify({model:selectedModel, messages:[{role:'system',content:'You are a concise market analyst. Return ONLY valid JSON with keys: direction (UP/DOWN/RANGE), reason (1-2 sentences, mention news factors), confidence (0-1), range_low (number), range_high (number). No extra text.'},{role:'user',content:context}]})
   }).then(r=>r.json()).then(data=>{
     try{
       const text = (data.choices&&data.choices[0]&&data.choices[0].message&&data.choices[0].message.content)||'';
