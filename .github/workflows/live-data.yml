@@ -1,0 +1,65 @@
+name: Live market and news data
+
+# Every 5 minutes is the practical floor on GitHub's scheduler, and it is often
+# a few minutes late under load. That is fine: this workflow is the deep lane
+# (the ~85% of feeds a browser cannot reach because of CORS). The page itself
+# polls the CORS-friendly feeds directly every 60 seconds for the fast lane.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - "config/**"
+      - "scripts/**"
+      - ".github/workflows/live-data.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: live-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Rebuild feed index if config changed
+        run: python scripts/feeds_build.py
+        continue-on-error: true
+
+      - name: Fetch market data and seasonality
+        run: python scripts/fetch_market.py
+        continue-on-error: true
+
+      - name: Fetch and score news
+        run: python scripts/fetch_news.py
+        continue-on-error: true
+
+      - name: Commit refreshed data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A data/
+          if git diff --staged --quiet; then
+            echo "no data change"
+            exit 0
+          fi
+          git commit -m "data: refresh $(date -u +'%Y-%m-%d %H:%M UTC')"
+          # Another run may have landed while this one was fetching.
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && break || sleep 5
+          done
+          git push origin "HEAD:${GITHUB_REF_NAME}"
