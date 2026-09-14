@@ -1,0 +1,83 @@
+{
+  "updated_at": "2026-09-14 15:42:06",
+  "market": {
+    "timestamp": "2026-09-14 15:42:06",
+    "nifty_spot": 23398.1,
+    "banknifty_spot": 56606.55,
+    "nifty_change_pct": -0.34,
+    "banknifty_change_pct": 0.24,
+    "vix": 14.2,
+    "us_futures": "mixed",
+    "dxy": 104.5,
+    "crude_brent": 78.3
+  },
+  "industry_news_impact": [
+    {
+      "news": "SBI aims DPDP compliance by Dec; banking regulations loosening",
+      "industry": "Banking",
+      "sentiment": "positive",
+      "impact_level": "medium",
+      "nifty_impact": "positive",
+      "banknifty_impact": "high_positive",
+      "predicted_move_nifty": "+0.15%",
+      "predicted_move_bank": "+0.40%",
+      "validated_at": "2026-09-14 15:42:06",
+      "validated": false
+    },
+    {
+      "news": "IT sector sees new AI contracts from US clients",
+      "industry": "IT / Pharma",
+      "sentiment": "positive",
+      "impact_level": "low",
+      "nifty_impact": "positive",
+      "banknifty_impact": "low_positive",
+      "predicted_move_nifty": "+0.08%",
+      "predicted_move_bank": "+0.02%",
+      "validated_at": "2026-09-14 15:42:06",
+      "validated": false
+    },
+    {
+      "news": "Oil prices surge on Middle East supply concerns",
+      "industry": "Oil / Refineries",
+      "sentiment": "negative",
+      "impact_level": "high",
+      "nifty_impact": "negative",
+      "banknifty_impact": "neutral",
+      "predicted_move_nifty": "-0.22%",
+      "predicted_move_bank": "0.00%",
+      "validated_at": "2026-09-14 15:42:06",
+      "validated": false
+    },
+    {
+      "news": "Auto sales up 12% in Aug; capital goods orders rise",
+      "industry": "Auto / Capital Goods",
+      "sentiment": "positive",
+      "impact_level": "medium",
+      "nifty_impact": "positive",
+      "banknifty_impact": "low_positive",
+      "predicted_move_nifty": "+0.18%",
+      "predicted_move_bank": "+0.05%",
+      "validated_at": "2026-09-14 15:42:06",
+      "validated": false
+    },
+    {
+      "news": "Power generation hits record; grid stability improves",
+      "industry": "Power / Energy",
+      "sentiment": "positive",
+      "impact_level": "low",
+      "nifty_impact": "neutral",
+      "banknifty_impact": "low_positive",
+      "predicted_move_nifty": "+0.05%",
+      "predicted_move_bank": "+0.10%",
+      "validated_at": "2026-09-14 15:42:06",
+      "validated": false
+    }
+  ],
+  "self_learning_accuracy": {
+    "total_predictions": 3,
+    "validated": 3,
+    "wins": 2,
+    "accuracy_percent": 66.7
+  },
+  "next_validation": "Tomorrow 09:30 AM"
+}
