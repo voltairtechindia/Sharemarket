@@ -273,8 +273,7 @@ function cFrame(p){
   const ctx=document.getElementById('mainChart').getContext('2d'); if(chartInst)chartInst.destroy();
   // Clean chart: one past price line + forecast overlay + buy/sell markers only if entered
   const datasets=[
-    {label:'Price (Past)',data:high,borderColor:'#00ffa3',borderWidth:2,fill:false,tension:0.25,pointRadius:1,pointBackgroundColor:'#00ffa3'},
-    {label:'Forecast (OpenRouter — News + Pattern)',data:pred,borderColor:'#ffaa00',borderWidth:2,borderDash:[6,3],fill:false,tension:0.25,pointRadius:2,pointBackgroundColor:'#ffaa00'},
+    {label:'Price (Past — actual)',data:high,borderColor:'#00ffa3',borderWidth:2,fill:false,tension:0.25,pointRadius:1,pointBackgroundColor:'#00ffa3'},
   ];
   // Buy/Sell markers — shown only when user enters values (small points at fixed positions)
   if(buyPrice){ const idx=Math.round(n*0.35); datasets.push({label:'Buy',data:Array(n).fill(null),showLine:false,pointRadius:7,pointBackgroundColor:'#00ffa3',pointBorderColor:'#ffffff',pointStyle:'triangle',data:[...Array(n).fill(null)].map((_,i)=>i===idx?buyPrice:null)}); }
@@ -308,6 +307,11 @@ function loadForecast(){
       document.getElementById('forecastConf').innerText = 'Confidence: '+Math.round((f.confidence||0.7)*100)+'%';
       document.getElementById('forecastReason').innerText = 'Reasoning (news-based): '+(f.reason||'Market shows mixed signals — banking regulation + AI contracts positive, crude + VIX negative.');
       document.getElementById('predNifty').innerText = (f.range_low||23200)+' — '+(f.range_high||23600);
+      document.getElementById('forecastDirAhead') && (document.getElementById('forecastDirAhead').innerText = 'Direction: '+(f.direction||'Range / Mixed'));
+      document.getElementById('forecastReasonAhead') && (document.getElementById('forecastReasonAhead').innerText = (f.reason||'Based on latest news + market patterns.'));
+      document.getElementById('confAhead') && (document.getElementById('confAhead').innerText = Math.round((f.confidence||0.7)*100)+'%');
+      document.getElementById('predNiftyAhead') && (document.getElementById('predNiftyAhead').innerText = (f.range_low||23200)+' — '+(f.range_high||23600));
+      document.getElementById('predBankAhead') && (document.getElementById('predBankAhead').innerText = (f.range_low||56300)+' — '+(f.range_high||56800));
       document.getElementById('predBank').innerText = (f.range_low||56300)+' — '+(f.range_high||56800); // rough for BN
       document.getElementById('predSensex').innerText = (f.range_low||79000)+' — '+(f.range_high||80000);
       okBox.innerHTML = '<span style="color:var(--accent);">✓ OpenRouter forecast loaded from latest news + patterns.</span>';
