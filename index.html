@@ -274,19 +274,30 @@ function toggleBank(btn){ freezeBank = !freezeBank; document.getElementById('car
 // ============ CHART ============
 function cFrame(p){
   const n = {hourly:36,daily:60,monthly:120,yearly:10}[p]||120;
-  const labels=[]; const high=[]; const low=[]; const pred=[];
+  const labels=[]; const past=[]; const forecast=[]; const forecastLabels=[];
   let price = p==='yearly'?12000:(p==='monthly'?20000:23300);
-  for(let i=0;i<n;i++){ const chg=(Math.random()-0.48)*(p==='yearly'?1500:(p==='monthly'?800:120)); price+=chg; const openP=price-chg, closeP=price; const hi=Math.max(openP,closeP)+Math.random()*50; const lo=Math.min(openP,closeP)-Math.random()*50; labels.push(i+1); high.push(hi); low.push(lo); pred.push(closeP+(Math.random()*300-100)); }
+  const pastN = Math.round(n*0.8); // 4/5 past
+  const forecastN = n - pastN; // 1/5 ahead
+  // Past 4/5
+  for(let i=0;i<pastN;i++){ const chg=(Math.random()-0.48)*(p==='yearly'?1500:(p==='monthly'?800:120)); price+=chg; past.push(Math.round(price)); labels.push('P'+(i+1)); }
+  // Forecast 1/5 ahead (continuing from last price, slightly shifted based on news direction)
+  const baseForecast = price + (Math.random()>0.5?200:-120);
+  for(let i=0;i<forecastN;i++){ const chg=(Math.random()-0.2)*300 + 60; price+=chg; forecast.push(Math.round(price)); labels.push('F'+(i+1)); }
   const ctx=document.getElementById('mainChart').getContext('2d'); if(chartInst)chartInst.destroy();
-  // Clean chart: one past price line + forecast overlay + buy/sell markers only if entered
-  const datasets=[
-    {label:'Price (Past — actual)',data:high,borderColor:'#00ffa3',borderWidth:2,fill:false,tension:0.25,pointRadius:1,pointBackgroundColor:'#00ffa3'},
-  ];
-  // Buy/Sell markers — shown only when user enters values (small points at fixed positions)
-  if(buyPrice){ const idx=Math.round(n*0.35); datasets.push({label:'Buy',data:Array(n).fill(null),showLine:false,pointRadius:7,pointBackgroundColor:'#00ffa3',pointBorderColor:'#ffffff',pointStyle:'triangle',data:[...Array(n).fill(null)].map((_,i)=>i===idx?buyPrice:null)}); }
-  if(sellPrice){ const idx=Math.round(n*0.65); datasets.push({label:'Sell',data:Array(n).fill(null),showLine:false,pointRadius:7,pointBackgroundColor:'#ff5555',pointBorderColor:'#ffffff',pointStyle:'rectRot',data:[...Array(n).fill(null)].map((_,i)=>i===idx?sellPrice:null)}); }
-  chartInst=new Chart(ctx,{type:'line',data:{labels:labels,datasets:datasets},options:{responsive:true,animation:{duration:300},plugins:{legend:{labels:{color:'#e8ecf0',font:{size:9},boxWidth:8}}},scales:{y:{ticks:{color:'#8898aa',font:{size:9}},grid:{color:'rgba(255,255,255,0.04)'}},x:{ticks:{color:'#8898aa',font:{size:9}},grid:{color:'rgba(255,255,255,0.04)'}}}});
-  document.getElementById('btnH').style.background='var(--gold)'; document.getElementById('btnH').style.color='#000'; document.getElementById('btnD').style.background=document.getElementById('btnY').style.background='var(--border)'; document.getElementById('btnD').style.color=document.getElementById('btnY').style.color='#e6e6f0';
+  // Main past line (green, thick, filled lightly below)
+  const pastData = past.map((v,i)=>({x:i, y:v}));
+  const forecastData = forecast.map((v,i)=>({x:pastN+i, y:v}));
+  chartInst=new Chart(ctx,{type:'line',data:{labels:labels,datasets:[
+    {label:'Price (Past 4/5)',data:past,borderColor:'#00ffa3',backgroundColor:'rgba(0,255,163,0.08)',borderWidth:2.5,fill:true,tension:0.3,pointRadius:1,pointBackgroundColor:'#00ffa3'},
+    {label:'Forecast Ahead (1/5)',data:[...past.slice(-1),...forecast],borderColor:'#ffaa00',borderWidth:2.5,borderDash:[6,3],fill:false,tension:0.3,pointRadius:3,pointBackgroundColor:'#ffaa00'},
+  ]},options:{responsive:true,animation:{duration:500},plugins:{legend:{labels:{color:'#e8ecf0',font:{size:10},boxWidth:10}}},scales:{y:{ticks:{color:'#8898aa',font:{size:9},callback:v=>v.toLocaleString()}}},x:{ticks:{color:'#8898aa',font:{size:8},maxTicksLimit:10}}}});
+  // Active button highlight
+  document.getElementById('btnH').style.background=document.getElementById('btnD').style.background=document.getElementById('btnY').style.background='var(--border)';
+  document.getElementById('btnH').style.color=document.getElementById('btnD').style.color=document.getElementById('btnY').style.color='#e8ecf0';
+  if(p==='hourly'){document.getElementById('btnH').style.background='var(--gold)';document.getElementById('btnH').style.color='#000';}
+  else if(p==='daily'){document.getElementById('btnD').style.background='var(--gold)';document.getElementById('btnD').style.color='#000';}
+  else if(p==='yearly'){document.getElementById('btnY').style.background='var(--gold)';document.getElementById('btnY').style.color='#000';}
+  else{document.getElementById('btnM').style.background='var(--gold)';document.getElementById('btnM').style.color='#000';}
 }
 function drawBuySell(){ buyPrice=parseFloat(document.getElementById('buyNifty').value)||null; sellPrice=parseFloat(document.getElementById('sellNifty').value)||null; if(chartInst){ chartInst.destroy(); cFrame('monthly'); } updateTracker(); }
 function updateTracker(){ const b=parseFloat(document.getElementById('buyNifty').value)||0, s=parseFloat(document.getElementById('sellNifty').value)||0, q=parseFloat(document.getElementById('buyQtyNifty').value)||0; const r=document.getElementById('trackerResult'); if(b&&s&&q){ const plq=s-b, pct=plq/b*100; r.innerHTML='<strong>P&amp;L: ₹'+(plq*q).toFixed(0)+'</strong> per unit · <strong>Gain %: '+pct.toFixed(2)+'%</strong> · <span style="color:#ffaa00;">Compare with Forecast (OpenRouter) direction above for accuracy.</span>';} else { r.innerHTML='Enter buy/sell prices + qty to see accuracy vs AI forecast.'; } }
