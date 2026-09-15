@@ -877,6 +877,7 @@ html, body { max-width: 100%; overflow-x: clip; }
 #accuracy-section .kv-k { line-height: 1.35; }
 #accuracy-section .kv-k em { font-style: normal; color: var(--ink-faint); }
 #accuracy-section .kv-v { white-space: nowrap; font-family: var(--mono); }
+<<<<<<< HEAD
 
 
 /* ------------------------------------- news vs pattern forecast split */
@@ -914,3 +915,5 @@ html, body { max-width: 100%; overflow-x: clip; }
   font-size: 10px; line-height: 1.45; color: var(--ink-faint);
   margin: 8px 0 0; border-top: 1px dashed var(--border); padding-top: 7px;
 }
+=======
+>>>>>>> 7fab00c0bbdbc147a704816442adf3b2a664d8cd
