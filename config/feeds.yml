@@ -13,6 +13,51 @@ news:
   - { name: "Financial Express",     url: "https://www.financialexpress.com/market/feed/" }
   - { name: "The Hindu BusinessLine",url: "https://www.thehindubusinessline.com/markets/feeder/default.rss" }
   - { name: "RBI press releases",    url: "https://www.rbi.org.in/pressreleases_rss.xml" }
+  # --- added: Indian wires and business desks -------------------------------
+  - { name: "Moneycontrol latest",   url: "https://www.moneycontrol.com/rss/latestnews.xml" }
+  - { name: "Moneycontrol results",  url: "https://www.moneycontrol.com/rss/results.xml" }
+  - { name: "Moneycontrol buzzing",  url: "https://www.moneycontrol.com/rss/buzzingstocks.xml" }
+  - { name: "Moneycontrol IPO",      url: "https://www.moneycontrol.com/rss/iponews.xml" }
+  - { name: "Moneycontrol economy",  url: "https://www.moneycontrol.com/rss/economy.xml" }
+  - { name: "CNBC TV18 markets",     url: "https://www.cnbctv18.com/commonfeeds/v1/cne/rss/market.xml" }
+  - { name: "CNBC TV18 economy",     url: "https://www.cnbctv18.com/commonfeeds/v1/cne/rss/economy.xml" }
+  - { name: "CNBC TV18 business",    url: "https://www.cnbctv18.com/commonfeeds/v1/cne/rss/business.xml" }
+  - { name: "ET stocks",             url: "https://economictimes.indiatimes.com/markets/stocks/rssfeeds/2146842.cms" }
+  - { name: "ET IPO",                url: "https://economictimes.indiatimes.com/markets/ipos/fpos/rssfeeds/14655708.cms" }
+  - { name: "ET forex",              url: "https://economictimes.indiatimes.com/markets/forex/rssfeeds/1977021501.cms" }
+  - { name: "ET commodities",        url: "https://economictimes.indiatimes.com/markets/commodities/rssfeeds/1808152121.cms" }
+  - { name: "ET banking",            url: "https://economictimes.indiatimes.com/industry/banking/finance/rssfeeds/13358259.cms" }
+  - { name: "Livemint money",        url: "https://www.livemint.com/rss/money" }
+  - { name: "Livemint economy",      url: "https://www.livemint.com/rss/economy" }
+  - { name: "Livemint industry",     url: "https://www.livemint.com/rss/industry" }
+  - { name: "Business Standard top", url: "https://www.business-standard.com/rss/home_page_top_stories.rss" }
+  - { name: "Business Standard eco", url: "https://www.business-standard.com/rss/economy-102.rss" }
+  - { name: "Business Standard cos", url: "https://www.business-standard.com/rss/companies-101.rss" }
+  - { name: "Financial Express eco", url: "https://www.financialexpress.com/economy/feed/" }
+  - { name: "Financial Express cos", url: "https://www.financialexpress.com/industry/feed/" }
+  - { name: "Hindu BusinessLine eco",url: "https://www.thehindubusinessline.com/economy/feeder/default.rss" }
+  - { name: "Hindu BusinessLine cos",url: "https://www.thehindubusinessline.com/companies/feeder/default.rss" }
+  - { name: "NDTV Profit",           url: "https://feeds.feedburner.com/ndtvprofit-latest" }
+  - { name: "Zee Business",          url: "https://www.zeebiz.com/latest.xml/feed" }
+  - { name: "Trak.in business",      url: "https://trak.in/feed/" }
+  - { name: "SEBI press releases",   url: "https://www.sebi.gov.in/sebirss.xml" }
+  - { name: "PIB releases",          url: "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=3" }
+  # --- added: global desks, because the Indian open is priced overnight -----
+  - { name: "Yahoo Finance",         url: "https://finance.yahoo.com/news/rssindex" }
+  - { name: "CNBC US markets",       url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258" }
+  - { name: "CNBC US economy",       url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258" }
+  - { name: "CNBC world",            url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100727362" }
+  - { name: "MarketWatch top",       url: "https://feeds.content.dowjones.io/public/rss/mw_topstories" }
+  - { name: "MarketWatch markets",   url: "https://feeds.content.dowjones.io/public/rss/mw_marketpulse" }
+  - { name: "Reuters business",      url: "https://news.google.com/rss/search?q=when:1d+site:reuters.com+markets" }
+  - { name: "Bloomberg markets",     url: "https://news.google.com/rss/search?q=when:1d+site:bloomberg.com+markets" }
+  - { name: "Nasdaq markets",        url: "https://www.nasdaq.com/feed/rssoutbound?category=Markets" }
+  - { name: "Investing.com",         url: "https://www.investing.com/rss/news_25.rss" }
+  - { name: "Federal Reserve",       url: "https://www.federalreserve.gov/feeds/press_all.xml" }
+  - { name: "ECB press",             url: "https://www.ecb.europa.eu/rss/press.html" }
+  - { name: "IMF news",              url: "https://www.imf.org/en/News/RSS?Language=ENG" }
+  - { name: "OPEC press",            url: "https://www.opec.org/opec_web/en/press_room/28.htm?rss=1" }
+  - { name: "EIA today in energy",   url: "https://www.eia.gov/rss/todayinenergy.xml" }
 
 # Google News search feeds. Change the q= value to watch anything you want.
 # This is the most useful lane: it catches wire stories within a minute or two,
@@ -27,6 +72,23 @@ google_news:
   - { name: "Earnings India",   q: "Q results India quarterly earnings Nifty company" }
   - { name: "SEBI",             q: "SEBI regulation markets" }
   - { name: "Geopolitics Asia", q: "India China OR India Pakistan border tension" }
+  # --- added: the lanes that actually move an index intraday -----------------
+  - { name: "Bank Nifty",       q: "Bank Nifty OR HDFC Bank OR ICICI Bank OR SBI share price" }
+  - { name: "Nifty IT",         q: "Infosys OR TCS OR Wipro OR HCL Tech results guidance" }
+  - { name: "Block deals",      q: "block deal OR bulk deal NSE BSE" }
+  - { name: "Index rejig",      q: "Nifty index rebalancing OR MSCI India review" }
+  - { name: "Expiry",           q: "Nifty expiry OR options open interest India" }
+  - { name: "GST and budget",   q: "GST council OR union budget India tax" }
+  - { name: "Inflation prints", q: "India CPI inflation OR WPI OR IIP data" }
+  - { name: "US inflation",     q: "US CPI OR PCE inflation data" }
+  - { name: "US jobs",          q: "US nonfarm payrolls OR jobless claims" }
+  - { name: "China stimulus",   q: "China stimulus OR PBOC rate cut" }
+  - { name: "Rupee",            q: "rupee record low OR RBI intervention forex" }
+  - { name: "IPO India",        q: "IPO listing India subscription GMP" }
+  - { name: "Corporate actions",q: "dividend OR bonus OR stock split India record date" }
+  - { name: "Credit ratings",   q: "CRISIL OR ICRA OR Moody's India rating" }
+  - { name: "Monsoon",          q: "India monsoon rainfall IMD forecast" }
+  - { name: "Gold and silver",  q: "gold price today India MCX silver" }
 
 google_news_params: "hl=en-IN&gl=IN&ceid=IN:en"
 
@@ -37,6 +99,10 @@ reddit:
   - { name: "r/NSEbets",          url: "https://www.reddit.com/r/NSEbets/new/.rss" }
   - { name: "r/IndiaInvestments", url: "https://www.reddit.com/r/IndiaInvestments/new/.rss" }
   - { name: "r/DalalStreetTalks", url: "https://www.reddit.com/r/DalalStreetTalks/new/.rss" }
+  - { name: "r/StockMarketIndia", url: "https://www.reddit.com/r/StockMarketIndia/new/.rss" }
+  - { name: "r/IndianStockMarket",url: "https://www.reddit.com/r/IndianStockMarket/new/.rss" }
+  - { name: "r/options",          url: "https://www.reddit.com/r/options/new/.rss" }
+  - { name: "r/investing",        url: "https://www.reddit.com/r/investing/new/.rss" }
 
 # X handles, read through Nitter-fork RSS. This lane is expected to break sometimes.
 # X Corp sent takedown letters to Nitter instances in Aug 2026, so public mirrors

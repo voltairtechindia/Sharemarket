@@ -1,9 +1,23 @@
 name: Live market and news data
 
-# Every 5 minutes is the practical floor on GitHub's scheduler, and it is often
-# a few minutes late under load. That is fine: this workflow is the deep lane
-# (the ~85% of feeds a browser cannot reach because of CORS). The page itself
-# polls the CORS-friendly feeds directly every 60 seconds for the fast lane.
+# ---------------------------------------------------------------------------
+# Where the data goes, and why it is not the published branch.
+#
+# GitHub Pages rebuilds the site on every push to the branch it is built from,
+# and throttles those builds to roughly ten an hour. A five minute data cycle is
+# twelve an hour before you count code changes, so committing live data to the
+# published branch means the page you load is always several cycles behind the
+# commit that produced it. Pushing data faster does not help; it just queues.
+#
+# So data is force-pushed to a separate `live-data` branch that Pages never
+# builds, and the page reads it from raw.githubusercontent.com, which serves
+# with CORS headers within seconds of the push. The published branch keeps a
+# periodic snapshot (see snapshot.yml) purely as the offline fallback.
+#
+# The branch is rewritten as a single orphan commit each time. Fourteen hundred
+# commits a day of churned JSON would otherwise turn a small repo into a very
+# large one inside a month.
+# ---------------------------------------------------------------------------
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -24,7 +38,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 14
     steps:
       - uses: actions/checkout@v4
 
@@ -36,30 +50,58 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Seed data/ from the live branch so a lane that fails this run keeps the
+      # last good value instead of publishing an empty file.
+      - name: Seed from the live branch
+        run: |
+          git fetch origin live-data --depth=1 || exit 0
+          git checkout origin/live-data -- data/ 2>/dev/null || true
+          ls -la data/ | head -30
+
       - name: Rebuild feed index if config changed
         run: python scripts/feeds_build.py
+        continue-on-error: true
+
+      - name: Refresh the stock universe
+        run: python scripts/build_universe.py
         continue-on-error: true
 
       - name: Fetch market data and seasonality
         run: python scripts/fetch_market.py
         continue-on-error: true
 
+      - name: Fetch global cues
+        run: python scripts/fetch_global.py
+        continue-on-error: true
+
+      - name: Fetch breadth and institutional flows
+        run: python scripts/fetch_flows.py
+        continue-on-error: true
+
+      - name: Fetch stock quotes
+        run: python scripts/fetch_stocks.py
+        continue-on-error: true
+
+      - name: Fetch corporate filings
+        run: python scripts/fetch_filings.py
+        continue-on-error: true
+
       - name: Fetch and score news
         run: python scripts/fetch_news.py
         continue-on-error: true
 
-      - name: Commit refreshed data
+      - name: Publish to the live branch
+        run: bash scripts/publish_live.sh
+
+      # GitHub's scheduler fires this at best every five minutes and is often
+      # late. The rest of the window is covered here: four more news sweeps a
+      # minute apart, each published as it lands. News is the only lane that
+      # changes minute to minute, so it is the only one repeated.
+      - name: Minute lane
         run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A data/
-          if git diff --staged --quiet; then
-            echo "no data change"
-            exit 0
-          fi
-          git commit -m "data: refresh $(date -u +'%Y-%m-%d %H:%M UTC')"
-          # Another run may have landed while this one was fetching.
-          for i in 1 2 3; do
-            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && break || sleep 5
+          for i in 1 2 3 4; do
+            sleep 60
+            python scripts/fetch_news.py || true
+            python scripts/fetch_filings.py || true
+            bash scripts/publish_live.sh || true
           done
-          git push origin "HEAD:${GITHUB_REF_NAME}"

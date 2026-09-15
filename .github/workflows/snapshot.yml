@@ -1,0 +1,53 @@
+name: Snapshot live data to the published branch
+
+# The page reads live data from the `live-data` branch, which Pages never
+# builds. This copies that data back onto the published branch a few times a
+# day, for two reasons:
+#
+#   - it is the same-origin fallback the page uses when raw.githubusercontent
+#     is unreachable, so it must not be months old;
+#   - a fresh clone of the repository should open and show something.
+#
+# Four times a day is deliberately slow. Every push here does trigger a Pages
+# build, and Pages throttles those, so this must stay well under the limit and
+# leave the headroom for actual code changes.
+on:
+  schedule:
+    - cron: "17 1,7,13,19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: snapshot
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy data from the live branch
+        run: |
+          git fetch origin live-data --depth=1
+          git checkout origin/live-data -- data/
+          echo "--- snapshot contents ---"
+          ls -la data/
+
+      - name: Commit the snapshot
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A data/
+          if git diff --staged --quiet; then
+            echo "no change"
+            exit 0
+          fi
+          git commit -m "data: offline snapshot $(date -u +'%Y-%m-%d %H:%M UTC')"
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && break || sleep 5
+          done
+          git push origin "HEAD:${GITHUB_REF_NAME}"

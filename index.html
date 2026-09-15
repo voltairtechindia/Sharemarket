@@ -10,7 +10,16 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="assets/style.css" />
-<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+<!-- Charting library is vendored rather than pulled from a CDN. A terminal you
+     rely on should not stop drawing because a third-party host is having a bad
+     morning, and the file is 160 KB served from the same origin as the page.
+     The CDN stays as a fallback for the case where the local copy is missing. -->
+<script src="assets/vendor/lightweight-charts.standalone.production.js"></script>
+<script>
+  if (!window.LightweightCharts) {
+    document.write('<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"><\/script>');
+  }
+</script>
 </head>
 <body>
 
@@ -45,6 +54,13 @@
     </div>
     <button class="icon-btn" id="btn-insight" title="Show forecast panel" aria-label="Show forecast panel">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3v18h18"/><path d="M7 14l4-5 3 3 5-7"/></svg>
+    </button>
+    <button class="icon-btn alert-btn" id="btn-alerts" title="Alerts for your holdings" aria-label="Alerts">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+      <span class="alert-dot hidden" id="alert-dot">0</span>
+    </button>
+    <button class="icon-btn" id="btn-portfolio" title="Your holdings" aria-label="Your holdings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
     </button>
     <button class="icon-btn" id="btn-journal" title="Trade journal" aria-label="Trade journal">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h7M9 11h7"/></svg>
@@ -85,6 +101,20 @@
       </div>
 
       <!-- Market breadth -->
+      <!-- ========================================================= HOLDINGS -->
+      <div class="section" id="holdings-section">
+        <div class="section-head">
+          <span class="label">Your holdings</span>
+          <button class="btn btn-sm" id="btn-open-portfolio">Manage</button>
+        </div>
+        <div class="kv"><span class="kv-k">Invested</span><span class="kv-v" id="pf-invested">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Current value</span><span class="kv-v" id="pf-current">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Overall P&amp;L</span><span class="kv-v" id="pf-pl">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Today</span><span class="kv-v" id="pf-day">&mdash;</span></div>
+        <ul class="pf-mini" id="pf-mini"></ul>
+        <p class="fine" id="pf-empty">Add what you bought through your broker and this terminal will watch the news for those names. Nothing you type here leaves this browser.</p>
+      </div>
+
       <div class="section" id="breadth-section">
         <div class="section-head"><span class="label">Breadth</span><span class="label" id="breadth-note">advances / declines</span></div>
         <div class="kv"><span class="kv-k">Advances</span><span class="kv-v up" id="br-adv">&mdash;</span></div>
@@ -138,6 +168,14 @@
         <span class="lg"><span class="lg-swatch cone"></span> Likely range</span>
         <span class="lg" id="reason-granularity">Reason points: every 1 hour</span>
       </div>
+      <div class="overlay-group" id="overlay-group" role="group" aria-label="Chart overlays">
+        <button class="ov-btn is-on"  data-ov="patterns"   title="Draw detected pattern geometry">Patterns</button>
+        <button class="ov-btn is-on"  data-ov="levels"     title="Support and resistance price has respected">Levels</button>
+        <button class="ov-btn is-on"  data-ov="ema"        title="20 / 50 / 200 exponential moving averages">EMA</button>
+        <button class="ov-btn"        data-ov="bands"      title="Bollinger bands, 20 period 2 sigma">Bands</button>
+        <button class="ov-btn"        data-ov="supertrend" title="Supertrend 10 period, 3x ATR">Supertrend</button>
+        <button class="ov-btn"        data-ov="vwap"       title="Session VWAP (needs volume)">VWAP</button>
+      </div>
     </div>
 
     <div class="chart-stage" id="chart-stage">
@@ -175,6 +213,7 @@
           <button class="filter-btn" data-filter="neg"    aria-pressed="false">Negative</button>
           <button class="filter-btn" data-filter="india"  aria-pressed="false">India</button>
           <button class="filter-btn" data-filter="world"  aria-pressed="false">Global</button>
+          <button class="filter-btn" data-filter="mine"   aria-pressed="false" id="filter-mine">My stocks</button>
         </div>
       </div>
       <ul class="news-list" id="news-list"></ul>
@@ -218,6 +257,32 @@
         <p style="font-size:11.5px;line-height:1.5;color:var(--ink);margin:6px 0 0" id="fc-narrative">&mdash;</p>
       </div>
 
+      <!-- ============================================= WHERE IT GOES BY TIME -->
+      <div class="section" id="checkpoint-section">
+        <div class="section-head">
+          <span class="label">Where it goes, by the clock</span>
+          <span class="label" id="cp-basis">&mdash;</span>
+        </div>
+        <table class="cp-table" id="cp-table">
+          <thead><tr><th>Time</th><th class="num">Centre</th><th class="num">Likely range</th><th class="num">Up</th></tr></thead>
+          <tbody id="cp-rows"></tbody>
+        </table>
+        <p class="fine" id="cp-note">&mdash;</p>
+      </div>
+
+      <!-- ====================================================== HOW GOOD IS IT -->
+      <div class="section" id="accuracy-section">
+        <div class="section-head">
+          <span class="label">How good is this forecast</span>
+          <span class="label" id="acc-n">&mdash;</span>
+        </div>
+        <div class="kv"><span class="kv-k">Inside the 68% band <em>(target 68%)</em></span><span class="kv-v" id="acc-68">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Inside the 95% band <em>(target 95%)</em></span><span class="kv-v" id="acc-95">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Direction called right</span><span class="kv-v" id="acc-dir">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Versus a &ldquo;no change&rdquo; guess</span><span class="kv-v" id="acc-skill">&mdash;</span></div>
+        <p class="fine" id="acc-note">&mdash;</p>
+      </div>
+
       <!-- Driver breakdown -->
       <div class="section">
         <div class="section-head"><span class="label">What is driving it</span><span class="label" id="fc-weights-note">weighted</span></div>
@@ -225,6 +290,34 @@
       </div>
 
       <!-- Pattern recognition, with each pattern's own measured record -->
+      <!-- ======================================================== STRUCTURES -->
+      <div class="section" id="structure-section">
+        <div class="section-head">
+          <span class="label">Chart patterns on screen</span>
+          <span class="label" id="structure-count">&mdash;</span>
+        </div>
+        <div id="structure-list" class="structure-list"></div>
+        <p class="fine" id="structure-note">&mdash;</p>
+      </div>
+
+      <!-- ============================================================ LEVELS -->
+      <div class="section" id="levels-section">
+        <div class="section-head"><span class="label">Levels that matter</span><span class="label" id="levels-basis">&mdash;</span></div>
+        <div id="levels-list" class="levels-list"></div>
+      </div>
+
+      <!-- ====================================================== GLOBAL CUES -->
+      <div class="section" id="cues-section">
+        <div class="section-head"><span class="label">Global cues</span><span class="label" id="cues-updated">&mdash;</span></div>
+        <div id="cues-list" class="cues-list"></div>
+      </div>
+
+      <!-- ======================================================= INDICATORS -->
+      <div class="section" id="indicator-section">
+        <div class="section-head"><span class="label">Indicators</span><span class="label" id="ind-basis">&mdash;</span></div>
+        <div id="indicator-grid" class="ind-grid"></div>
+      </div>
+
       <div class="section" id="pattern-section">
         <div class="section-head">
           <span class="label">Pattern recognition</span>
@@ -269,6 +362,72 @@
 
     </div>
   </aside>
+</div>
+
+<!-- =============================================================== ALERTS -->
+<div class="drawer hidden" id="alerts-drawer" role="dialog" aria-modal="false" aria-labelledby="alerts-title">
+  <div class="drawer-head">
+    <h2 id="alerts-title">Alerts</h2>
+    <div class="drawer-actions">
+      <button class="btn btn-sm" id="btn-alerts-clear">Clear all</button>
+      <button class="icon-btn" id="btn-close-alerts" aria-label="Close alerts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </div>
+  <ul class="alert-list" id="alert-list"></ul>
+  <p class="fine" id="alerts-empty">No alerts. Add holdings and this fills up when a headline, a filing or a price move touches one of them.</p>
+</div>
+
+<!-- ============================================================ PORTFOLIO -->
+<div class="modal-backdrop hidden" id="portfolio-modal" role="dialog" aria-modal="true" aria-labelledby="portfolio-title">
+  <div class="modal modal-wide">
+    <div class="modal-head">
+      <h2 id="portfolio-title">Your holdings</h2>
+      <button class="icon-btn" id="btn-close-portfolio" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="notice">
+        Type in what you bought through your broker. It is kept in this browser only, never uploaded and never
+        written to the repository. Adding the same symbol twice averages it into one line, the way your broker shows it.
+      </div>
+      <form class="journal-form" id="portfolio-form">
+        <div class="field">
+          <label for="pf-symbol">Symbol</label>
+          <input type="text" id="pf-symbol" list="pf-universe" placeholder="RELIANCE" autocomplete="off" spellcheck="false" required />
+          <datalist id="pf-universe"></datalist>
+        </div>
+        <div class="field"><label for="pf-exchange">Exchange</label><select id="pf-exchange"><option value="NSE">NSE</option><option value="BSE">BSE</option></select></div>
+        <div class="field"><label for="pf-qty">Quantity</label><input type="number" id="pf-qty" step="any" required /></div>
+        <div class="field"><label for="pf-price">Average price</label><input type="number" id="pf-price" min="0" step="any" required /></div>
+        <div class="field"><label for="pf-date">Bought on</label><input type="date" id="pf-date" /></div>
+        <div class="field"><label for="pf-note">Note (optional)</label><input type="text" id="pf-note" maxlength="200" placeholder="why you bought it" /></div>
+        <div class="field field-wide"><button class="btn btn-primary" type="submit">Add holding</button></div>
+      </form>
+      <p class="fine" id="pf-error"></p>
+
+      <div class="stat-grid" id="pf-summary"></div>
+
+      <div class="table-wrap">
+        <table class="journal-table" id="pf-table">
+          <thead><tr><th>Symbol</th><th class="num">Qty</th><th class="num">Avg</th><th class="num">LTP</th><th class="num">Today</th><th class="num">P&amp;L</th><th></th></tr></thead>
+          <tbody id="pf-rows"></tbody>
+        </table>
+      </div>
+
+      <div class="section-head" style="margin-top:12px"><span class="label">News touching your holdings</span><span class="label" id="pf-news-count">&mdash;</span></div>
+      <ul class="news-list compact" id="pf-news"></ul>
+    </div>
+    <div class="modal-foot">
+      <span class="muted" style="margin-right:auto;font-size:11px" id="pf-count"></span>
+      <button class="btn" id="btn-pf-export">Export</button>
+      <button class="btn" id="btn-pf-import">Import</button>
+      <input type="file" id="pf-file" accept="application/json" class="hidden" />
+      <button class="btn" id="btn-pf-clear">Remove all</button>
+    </div>
+  </div>
 </div>
 
 <!-- ============================================================= SETTINGS -->
@@ -395,12 +554,20 @@
   </div>
 </div>
 
+<!-- Load order is a dependency order, not an alphabet. config and core come
+     first because everything reads them; indicators before levels, levels
+     before structures, structures before forecast, forecast before engine. -->
 <script src="assets/js/config.js"></script>
 <script src="assets/local-config.js" onerror="void 0"></script>
 <script src="assets/js/core.js"></script>
-<script src="assets/js/journal.js"></script>
+<script src="assets/js/indicators.js"></script>
+<script src="assets/js/levels.js"></script>
 <script src="assets/js/patterns.js"></script>
+<script src="assets/js/structures.js"></script>
+<script src="assets/js/journal.js"></script>
+<script src="assets/js/portfolio.js"></script>
 <script src="assets/js/data.js"></script>
+<script src="assets/js/forecast.js"></script>
 <script src="assets/js/engine.js"></script>
 <script src="assets/js/chart.js"></script>
 <script src="assets/js/app.js"></script>

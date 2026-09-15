@@ -1,22 +1,54 @@
 /* ============================================================================
-   Chart: candles for the past and present, a dashed projection and a likely
-   range band for the future, and a reason point wherever something actually
-   moved the index.
+   Chart: candles for the past and present, a dashed projection with two
+   confidence bands for the future, the geometry of every detected pattern
+   drawn where it actually sits, the levels price has respected, and a reason
+   point wherever something moved the index.
 
    The visible window is always 4 parts history to 1 part forecast, which is
    what makes the projection read as "the last fifth of the picture".
+
+   Series are pooled rather than created per redraw. Lightweight Charts keeps
+   every series you add until you remove it, and a terminal that repaints once
+   a second would otherwise accumulate thousands of invisible line series and
+   stall the tab inside an hour.
    ========================================================================== */
 (function (KT) {
   'use strict';
   var C = KT.CONFIG, core = KT.core;
 
-  var chart = null, candleSeries = null, fcSeries = null, upSeries = null, loSeries = null;
+  var chart = null, candleSeries = null;
+  var fcSeries = null, upSeries = null, loSeries = null, up2Series = null, lo2Series = null;
+  var pool = { structure: [], overlay: [] };     // reusable line series
+  var priceLines = [];                            // horizontal lines on the candle series
   var state = {
     candles: [], forecast: null, reasons: [], patternMarkers: [],
+    structures: [], levels: null, indicators: null,
+    overlays: { ema: true, bands: false, supertrend: false, vwap: false, levels: true, patterns: true },
     tf: C.defaultTimeframe, symbol: C.defaultSymbol,
     lastCandleTime: null, pinned: null, total: 0,
   };
   var els = {};
+
+  /* A pool hands back a line series with the requested options, creating one
+     only when the pool has run dry. Leftovers are blanked, not removed, so the
+     next repaint can reuse them. */
+  function take(kind, opts) {
+    var list = pool[kind];
+    if (!list.__used) list.__used = 0;
+    var s;
+    if (list.__used < list.length) s = list[list.__used];
+    else { s = chart.addLineSeries({ priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }); list.push(s); }
+    list.__used++;
+    s.applyOptions(opts);
+    return s;
+  }
+  function beginPool(kind) { pool[kind].__used = 0; }
+  function endPool(kind) {
+    var list = pool[kind];
+    for (var i = list.__used || 0; i < list.length; i++) {
+      try { list[i].setData([]); } catch (e) {}
+    }
+  }
 
   function css(name, fallback) {
     try {
@@ -35,6 +67,10 @@
       down: css('--down', '#ef4444'),
       forecast: css('--forecast', '#7c3aed'),
       now: css('--now-line', '#94a3b8'),
+      bull: css('--pattern-bull', '#0ea5e9'),
+      bear: css('--pattern-bear', '#d97706'),
+      neutral: css('--pattern-neutral', '#94a3b8'),
+      level: css('--level-line', '#64748b'),
     };
   }
 
@@ -89,6 +125,14 @@
       priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       title: '',
     });
+    up2Series = chart.addLineSeries({
+      color: p.forecast, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, title: '',
+    });
+    lo2Series = chart.addLineSeries({
+      color: p.forecast, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, title: '',
+    });
     fcSeries = chart.addLineSeries({
       color: p.forecast, lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed,
       priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
@@ -115,7 +159,8 @@
     var p = palette();
     chart.applyOptions(chartOptions());
     candleSeries.applyOptions({ upColor: p.up, downColor: p.down, borderUpColor: p.up, borderDownColor: p.down, wickUpColor: p.up, wickDownColor: p.down });
-    [fcSeries, upSeries, loSeries].forEach(function (s) { s.applyOptions({ color: p.forecast }); });
+    [fcSeries, upSeries, loSeries, up2Series, lo2Series].forEach(function (s) { s.applyOptions({ color: p.forecast }); });
+    drawStructures(); drawOverlays(); drawLevels();
     applyMarkers();
   }
 
@@ -138,12 +183,17 @@
       fcSeries.setData([anchor].concat(forecast.path));
       upSeries.setData([anchor].concat(forecast.upper));
       loSeries.setData([anchor].concat(forecast.lower));
+      up2Series.setData(forecast.upper2 ? [anchor].concat(forecast.upper2) : []);
+      lo2Series.setData(forecast.lower2 ? [anchor].concat(forecast.lower2) : []);
       state.total = state.candles.length + forecast.path.length;
     } else {
-      fcSeries.setData([]); upSeries.setData([]); loSeries.setData([]);
+      [fcSeries, upSeries, loSeries, up2Series, lo2Series].forEach(function (x) { x.setData([]); });
       state.total = state.candles.length;
     }
 
+    drawStructures();
+    drawOverlays();
+    drawLevels();
     applyMarkers();
     frameView();
     if (els.empty) els.empty.classList.add('hidden');
@@ -171,6 +221,126 @@
       candleSeries.update(last);
     }
     positionOverlays();
+  }
+
+  /* ================================================== pattern geometry
+     Each structure carries its own line segments, so the chart draws the
+     triangle, the neckline, the flagpole - the thing itself - rather than a
+     label claiming one is there. A label you cannot check is decoration; a
+     line sitting on the highs is something you can disagree with.
+
+     Two-point segments are drawn as-is. Lightweight Charts needs strictly
+     increasing, de-duplicated times, so points are sorted and collapsed
+     first - a segment whose ends land in the same bar would otherwise throw
+     and take the whole repaint with it.                                     */
+  function tidy(points) {
+    var seen = {}, out = [];
+    points.slice().sort(function (a, b) { return a.time - b.time; }).forEach(function (pt) {
+      if (pt.value === null || pt.value === undefined || isNaN(pt.value)) return;
+      if (seen[pt.time]) return;
+      seen[pt.time] = 1;
+      out.push({ time: pt.time, value: pt.value });
+    });
+    return out.length >= 2 ? out : [];
+  }
+
+  function drawStructures() {
+    if (!chart) return;
+    beginPool('structure');
+    if (state.overlays.patterns) {
+      var p = palette();
+      state.structures.forEach(function (st) {
+        var colour = st.dir > 0 ? p.bull : st.dir < 0 ? p.bear : p.neutral;
+        (st.lines || []).forEach(function (ln) {
+          var pts = tidy(ln.points);
+          if (!pts.length) return;
+          var dashed = ln.role === 'neckline';
+          take('structure', {
+            color: colour,
+            lineWidth: ln.role === 'pole' ? 2 : 1,
+            lineStyle: dashed ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Solid,
+            lineType: 0, priceLineVisible: false, lastValueVisible: false,
+            crosshairMarkerVisible: false, title: '',
+          }).setData(pts);
+        });
+      });
+    }
+    endPool('structure');
+  }
+
+  /* -------------------------------------------------------------- overlays */
+  function drawOverlays() {
+    if (!chart) return;
+    beginPool('overlay');
+    var c = state.candles, o = state.overlays;
+    if (c.length > 30) {
+      var p = palette();
+      var closes = c.map(function (b) { return b.close; });
+      function line(values, opts) {
+        var pts = [];
+        for (var i = 0; i < c.length; i++) {
+          if (values[i] === null || values[i] === undefined || isNaN(values[i])) continue;
+          pts.push({ time: c[i].time, value: Math.round(values[i] * 100) / 100 });
+        }
+        if (pts.length > 1) take('overlay', opts).setData(pts);
+      }
+      if (o.ema) {
+        line(KT.ind.ema(closes, 20), { color: '#3b82f6', lineWidth: 1, title: '' });
+        line(KT.ind.ema(closes, 50), { color: '#f59e0b', lineWidth: 1, title: '' });
+        if (c.length > 220) line(KT.ind.ema(closes, 200), { color: '#a855f7', lineWidth: 1, title: '' });
+      }
+      if (o.bands) {
+        var bb = KT.ind.bollinger(c, 20, 2);
+        var dotted = { lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, color: '#64748b', title: '' };
+        line(bb.upper, dotted); line(bb.lower, dotted);
+      }
+      if (o.supertrend) {
+        var st = KT.ind.supertrend(c, 10, 3);
+        line(st.value, { color: '#0d9488', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dotted, title: '' });
+      }
+      if (o.vwap && c.some(function (b) { return (b.volume || 0) > 0; })) {
+        line(KT.ind.vwap(c), { color: '#db2777', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.LargeDashed, title: '' });
+      }
+    }
+    endPool('overlay');
+  }
+
+  /* ----------------------------------------------------------------- levels
+     Horizontal price lines for the walls price has actually respected, plus
+     the trigger and target of whatever structure is closest to firing. Price
+     lines belong to the candle series and have to be removed by hand. */
+  function drawLevels() {
+    if (!candleSeries) return;
+    priceLines.forEach(function (pl) { try { candleSeries.removePriceLine(pl); } catch (e) {} });
+    priceLines = [];
+    var p = palette();
+
+    if (state.overlays.levels && state.levels) {
+      [state.levels.nearestResistance, state.levels.nearestSupport].forEach(function (z) {
+        if (!z) return;
+        priceLines.push(candleSeries.createPriceLine({
+          price: z.level, color: p.level, lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true,
+          title: (z.side === 'resistance' ? 'R' : 'S') + ' ' + z.touches + 'x',
+        }));
+      });
+    }
+    if (state.overlays.patterns && state.structures.length) {
+      var lead = state.structures[0];
+      if (lead && lead.dir) {
+        var col = lead.dir > 0 ? p.bull : p.bear;
+        priceLines.push(candleSeries.createPriceLine({
+          price: lead.target, color: col, lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.SparseDotted, axisLabelVisible: true,
+          title: 'target',
+        }));
+        priceLines.push(candleSeries.createPriceLine({
+          price: lead.trigger, color: col, lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true,
+          title: 'trigger',
+        }));
+      }
+    }
   }
 
   /* ---------------------------------------------------------------- markers */
@@ -210,7 +380,20 @@
     // Patterns sit alongside the news points and your own entries.
     var pats = [];
     if (state.patternMarkers && state.patternMarkers.length) pats = state.patternMarkers;
-    markers = markers.concat(trades).concat(pats);
+
+    // Forecast checkpoints: the "where will it be at X" answers, marked on the
+    // projection itself so the time axis and the table cannot drift apart.
+    var cps = [];
+    if (state.forecast && state.forecast.checkpoints) {
+      state.forecast.checkpoints.forEach(function (cp, i) {
+        if (i !== state.forecast.checkpoints.length - 1 && i % 2 === 1) return;   // thin them out
+        cps.push({
+          time: cp.time, position: 'aboveBar', color: p.forecast, shape: 'circle', size: 0.7,
+          text: cp.label + ' ' + cp.pUp + '%',
+        });
+      });
+    }
+    markers = markers.concat(trades).concat(pats).concat(cps);
     markers.sort(function (a, b) { return a.time - b.time; });
     try { candleSeries.setMarkers(markers); } catch (e) {}
   }
@@ -332,6 +515,14 @@
     init: init, setData: setData, tick: tick, retheme: retheme,
     frameView: frameView, showEmpty: showEmpty, refreshMarkers: applyMarkers,
     setPatterns: function (m) { state.patternMarkers = m || []; applyMarkers(); },
+    setStructures: function (list) { state.structures = list || []; drawStructures(); drawLevels(); applyMarkers(); },
+    setLevels: function (lv) { state.levels = lv || null; drawLevels(); },
+    setOverlay: function (name, on) {
+      if (!(name in state.overlays)) return;
+      state.overlays[name] = !!on;
+      drawOverlays(); drawStructures(); drawLevels();
+    },
+    overlays: function () { return state.overlays; },
     getState: function () { return state; },
   };
 })(window.KT);

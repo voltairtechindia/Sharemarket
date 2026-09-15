@@ -63,10 +63,33 @@
     });
   }
 
-  /* ------------------------------------------------------------- baked JSON */
-  function loadBaked(path) {
-    return fetchText(path, { timeout: 12000 })
-      .then(function (t) { return JSON.parse(t); });
+  /* ------------------------------------------------------------- baked JSON
+     Remote first, same-origin second.
+
+     The workflow commits to a branch the Pages site is not built from, and
+     raw.githubusercontent.com serves that branch with CORS headers within
+     seconds of the push. Reading from there is what makes a 60 second data
+     cycle possible: a commit to the published branch has to wait for a Pages
+     build, and Pages throttles builds to a handful an hour.
+
+     The same-origin copy under data/ is always tried if the remote read fails,
+     so an offline viewer, a rate limit or a missing branch degrades to older
+     data rather than to no data. A file not on the live list skips the remote
+     hop entirely - the lexicon and the feed index change when the code does,
+     not every minute, and the extra request would be waste.                 */
+  function loadBaked(path, opts) {
+    opts = opts || {};
+    var live = C.remote && C.remote.enabled && C.liveFiles.indexOf(path) !== -1;
+    if (!live || opts.localOnly) {
+      return fetchText(path, { timeout: 12000 }).then(JSON.parse);
+    }
+    var url = C.remote.base + path;
+    return fetchText(url, { timeout: C.remote.timeoutMs, cache: 'no-store' })
+      .then(function (t) { mark('remote:' + path, true); return JSON.parse(t); })
+      .catch(function (e) {
+        mark('remote:' + path, false, String(e.message || e).slice(0, 60));
+        return fetchText(path, { timeout: 12000 }).then(JSON.parse);
+      });
   }
 
   /* --------------------------------------------------------------- candles
