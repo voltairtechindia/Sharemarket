@@ -474,7 +474,6 @@
       lower2.push({ time: t, value: r2(mid - band1 * 1.96) });
     }
 
-<<<<<<< HEAD
     /* ------------------------------------------------- historical analogue
        A drift formula draws a smooth line because it is a smooth formula. Here
        we ask the series itself: when did the chart last look like it looks now,
@@ -568,8 +567,6 @@
       gapPct: r2(Math.abs(endNews - endPat) / lastClose * 100),
     };
 
-=======
->>>>>>> 7fab00c0bbdbc147a704816442adf3b2a664d8cd
     /* ------------------------------------------------------ checkpoints
        The answer to "where will it be at X". Five points across the horizon,
        each with the expected level, the 68% range and the probability of
@@ -628,11 +625,8 @@
       dayShapeSessions: shape ? shape.sessions : 0,
       lanes: lanes,
       path: path, upper: upper, lower: lower, upper2: upper2, lower2: lower2,
-<<<<<<< HEAD
       pathNews: pathNews, pathPattern: pathPattern, components: componentSummary,
       analog: analog,
-=======
->>>>>>> 7fab00c0bbdbc147a704816442adf3b2a664d8cd
       checkpoints: checkpoints,
       topNews: nAll.top,
       seasonMonth: seasonal.month,

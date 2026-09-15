@@ -18,10 +18,7 @@
 
   var chart = null, candleSeries = null;
   var fcSeries = null, upSeries = null, loSeries = null, up2Series = null, lo2Series = null;
-<<<<<<< HEAD
   var newsFcSeries = null, patFcSeries = null;   // the two component projections
-=======
->>>>>>> 7fab00c0bbdbc147a704816442adf3b2a664d8cd
   var pool = { structure: [], overlay: [] };     // reusable line series
   var priceLines = [];                            // horizontal lines on the candle series
   var state = {
@@ -139,7 +136,6 @@
       color: p.forecast, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted,
       priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, title: '',
     });
-<<<<<<< HEAD
     // Component paths sit under the blended line so the blend reads on top.
     newsFcSeries = chart.addLineSeries({
       color: p.fcNews, lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed,
@@ -152,8 +148,6 @@
       title: 'Pattern',
     });
 
-=======
->>>>>>> 7fab00c0bbdbc147a704816442adf3b2a664d8cd
     fcSeries = chart.addLineSeries({
       color: p.forecast, lineWidth: 3, lineStyle: LightweightCharts.LineStyle.Solid,
       priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
@@ -181,11 +175,8 @@
     chart.applyOptions(chartOptions());
     candleSeries.applyOptions({ upColor: p.up, downColor: p.down, borderUpColor: p.up, borderDownColor: p.down, wickUpColor: p.up, wickDownColor: p.down });
     [fcSeries, upSeries, loSeries, up2Series, lo2Series].forEach(function (s) { s.applyOptions({ color: p.forecast }); });
-<<<<<<< HEAD
     if (newsFcSeries) newsFcSeries.applyOptions({ color: p.fcNews });
     if (patFcSeries) patFcSeries.applyOptions({ color: p.fcPattern });
-=======
->>>>>>> 7fab00c0bbdbc147a704816442adf3b2a664d8cd
     drawStructures(); drawOverlays(); drawLevels();
     applyMarkers();
   }
@@ -211,7 +202,6 @@
       loSeries.setData([anchor].concat(forecast.lower));
       up2Series.setData(forecast.upper2 ? [anchor].concat(forecast.upper2) : []);
       lo2Series.setData(forecast.lower2 ? [anchor].concat(forecast.lower2) : []);
-<<<<<<< HEAD
       // Both start from the same real close, so any divergence between them is
       // the models disagreeing rather than a plotting offset.
       newsFcSeries.setData(forecast.pathNews ? [anchor].concat(forecast.pathNews) : []);
@@ -220,11 +210,6 @@
     } else {
       [fcSeries, upSeries, loSeries, up2Series, lo2Series, newsFcSeries, patFcSeries]
         .forEach(function (x) { if (x) x.setData([]); });
-=======
-      state.total = state.candles.length + forecast.path.length;
-    } else {
-      [fcSeries, upSeries, loSeries, up2Series, lo2Series].forEach(function (x) { x.setData([]); });
->>>>>>> 7fab00c0bbdbc147a704816442adf3b2a664d8cd
       state.total = state.candles.length;
     }
 
