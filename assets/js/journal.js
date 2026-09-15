@@ -11,39 +11,88 @@
   var AUTH_KEY = 'journalAuth';
   var state = { unlocked: false, trades: [], profile: 'default' };
 
-  function digest(salt, user, pass) {
-    var msg = salt + ':' + user + ':' + pass;
-    if (!(window.crypto && crypto.subtle)) return Promise.resolve('nocrypto:' + msg.length);
-    return crypto.subtle.digest('SHA-256', new TextEncoder().encode(msg)).then(function (buf) {
-      return Array.prototype.map.call(new Uint8Array(buf), function (b) {
-        return ('0' + b.toString(16)).slice(-2);
-      }).join('');
-    });
+  function hex(buf) {
+    return Array.prototype.map.call(new Uint8Array(buf), function (b) {
+      return ('0' + b.toString(16)).slice(-2);
+    }).join('');
+  }
+  function unhex(str) {
+    var out = new Uint8Array(str.length / 2);
+    for (var i = 0; i < out.length; i++) out[i] = parseInt(str.substr(i * 2, 2), 16);
+    return out;
   }
 
-  /* Credential comes from the gitignored local config when present, otherwise
-     from whatever the viewer set on this browser. Nothing is ever sent away. */
+  /* PBKDF2 rather than a bare hash. The published gate has to ship its
+     derivation publicly, so the only defence against someone guessing the
+     password offline is making each guess expensive. 310k iterations costs the
+     real user a few hundred milliseconds once and costs an attacker the same
+     per attempt. */
+  var ITERATIONS = 310000;
+
+  function derive(saltHex, user, pass, iterations) {
+    var msg = user + ':' + pass;
+    if (!(window.crypto && crypto.subtle && crypto.subtle.importKey)) {
+      return Promise.reject(new Error('this browser cannot derive a key'));
+    }
+    return crypto.subtle
+      .importKey('raw', new TextEncoder().encode(msg), 'PBKDF2', false, ['deriveBits'])
+      .then(function (key) {
+        return crypto.subtle.deriveBits({
+          name: 'PBKDF2', salt: unhex(saltHex),
+          iterations: iterations || ITERATIONS, hash: 'SHA-256',
+        }, key, 256);
+      })
+      .then(hex);
+  }
+
+  /* Credential, in order of precedence:
+       1. config/auth.json shipped with the site - this is what gates the
+          published page so a visitor cannot open the journal at all;
+       2. the gitignored local config, for a different passcode on your machine;
+       3. whatever this browser set itself, when neither of the above exists.
+     None of it is ever sent anywhere. */
+  var shipped = null;
+  function adoptShipped(json) {
+    if (json && json.hash && json.salt) shipped = json;
+    return shipped;
+  }
   function storedAuth() {
     var local = window.KT_LOCAL && window.KT_LOCAL.journalAuth;
     if (local && local.hash) return local;
+    if (shipped) return shipped;
     return core.store.get(AUTH_KEY, null);
   }
 
   function hasAuth() { return !!storedAuth(); }
 
   function setAuth(user, pass) {
-    var salt = Math.random().toString(36).slice(2) + Date.now().toString(36);
-    return digest(salt, user, pass).then(function (h) {
-      core.store.set(AUTH_KEY, { user: user, salt: salt, hash: h });
+    var bytes = new Uint8Array(16);
+    (window.crypto && crypto.getRandomValues)
+      ? crypto.getRandomValues(bytes)
+      : bytes.forEach(function (_, i) { bytes[i] = Math.floor(Math.random() * 256); });
+    var salt = hex(bytes);
+    return derive(salt, user, pass, ITERATIONS).then(function (h) {
+      core.store.set(AUTH_KEY, { user: user, salt: salt, hash: h, iterations: ITERATIONS });
       return true;
     });
+  }
+
+  /* Constant-time-ish compare. Not a real defence on a client, but it costs
+     nothing and avoids leaking position through early exit. */
+  function same(a, b) {
+    if (a.length !== b.length) return false;
+    var diff = 0;
+    for (var i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    return diff === 0;
   }
 
   function verify(user, pass) {
     var a = storedAuth();
     if (!a) return Promise.resolve(false);
     if (a.user && a.user !== user) return Promise.resolve(false);
-    return digest(a.salt, user, pass).then(function (h) { return h === a.hash; });
+    return derive(a.salt, user, pass, a.iterations || ITERATIONS)
+      .then(function (h) { return same(h, a.hash); })
+      .catch(function () { return false; });
   }
 
   /* ------------------------------------------------------------- the trades */
@@ -163,7 +212,7 @@
   function lock() { state.unlocked = false; }
 
   KT.journal = {
-    hasAuth: hasAuth, setAuth: setAuth, verify: verify,
+    hasAuth: hasAuth, setAuth: setAuth, verify: verify, adoptShipped: adoptShipped,
     unlock: unlock, lock: lock, isUnlocked: isUnlocked,
     load: load, add: add, remove: remove, all: all, forSymbol: forSymbol,
     position: position, markers: markers,

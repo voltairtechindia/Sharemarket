@@ -73,18 +73,15 @@ KT.CONFIG = {
     { id: 'cnbc_economy',name: 'CNBC TV18 economy',     url: 'https://www.cnbctv18.com/commonfeeds/v1/cne/rss/economy.xml',        region: 'india' },
   ],
 
-  /* Feeds a browser cannot reach directly. A couple are rotated through a
-     public proxy each cycle so the fast lane still sees them between the
-     5-minute server runs. Kept short on purpose - proxies are rate limited. */
-  proxiedFeeds: [
-    { id: 'et_markets', name: 'ET markets',         url: 'https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms', region: 'india' },
-    { id: 'mint_mkt',   name: 'Livemint markets',   url: 'https://www.livemint.com/rss/markets',                                 region: 'india' },
-    { id: 'bs_markets', name: 'Business Standard',  url: 'https://www.business-standard.com/rss/markets-106.rss',                region: 'india' },
-    { id: 'rbi',        name: 'RBI press releases', url: 'https://www.rbi.org.in/pressreleases_rss.xml',                         region: 'india' },
-    { id: 'yahoo_fin',  name: 'Yahoo Finance',      url: 'https://finance.yahoo.com/news/rssindex',                              region: 'world' },
-    { id: 'mw_top',     name: 'MarketWatch',        url: 'https://feeds.content.dowjones.io/public/rss/mw_topstories',           region: 'world' },
-  ],
-  proxiedPerCycle: 2,
+  /* Feeds a browser cannot reach directly are NOT attempted here.
+     Measured from the live origin: r.jina.ai rate limits (429) and strips RSS
+     to plain text so no <item> survives, allorigins was refusing connections,
+     and rss2json returned an error. The lane cost a request per cycle and
+     returned nothing, so breadth is left to the server-side workflow, which
+     has no CORS wall and had 177 of 183 polled feeds alive on its last run.
+     The proxy chain below is still used for Yahoo candles, where it works. */
+  proxiedFeeds: [],
+  proxiedPerCycle: 0,
 
   /* Proxy chain, tried in order. Verified reachable from the Pages origin;
      r.jina.ai returns the upstream body untouched with x-return-format:text. */
@@ -114,6 +111,7 @@ KT.CONFIG = {
     social:      'data/social.json',
     index:       'data/feeds_index.json',
     lexicon:     'config/lexicon.json',
+    auth:        'config/auth.json',
     candles:     (sym, tf) => `data/candles_${sym}_${tf}.json`,
   },
 

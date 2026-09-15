@@ -224,6 +224,24 @@
         <div class="drivers" id="fc-drivers"></div>
       </div>
 
+      <!-- Pattern recognition, with each pattern's own measured record -->
+      <div class="section" id="pattern-section">
+        <div class="section-head">
+          <span class="label">Pattern recognition</span>
+          <span class="label" id="pattern-horizon">&mdash;</span>
+        </div>
+        <div id="pattern-now" class="pattern-now"></div>
+        <table class="pattern-table" id="pattern-table">
+          <thead><tr><th>Pattern</th><th class="num-col">Seen</th><th class="num-col">Went its way</th><th class="num-col">Avg</th></tr></thead>
+          <tbody id="pattern-rows"></tbody>
+        </table>
+        <p class="pattern-note">
+          Hit rate is measured on this instrument's loaded history, not claimed from a
+          textbook. Anything under 8 occurrences is marked thin and should be read as noise.
+          A rate near 50% means the pattern told you nothing.
+        </p>
+      </div>
+
       <!-- Seasonal study -->
       <div class="section">
         <div class="section-head"><span class="label">Seasonal study</span><span class="label" id="season-years">&mdash;</span></div>
@@ -324,7 +342,6 @@
       </button>
     </div>
 
-    <!-- gate -->
     <div class="modal-body" id="journal-gate">
       <div class="notice" id="gate-notice">
         Your entries are stored in this browser only. They are never uploaded and never
@@ -346,7 +363,6 @@
       <p class="muted" style="font-size:11.5px;margin:0" id="gate-error"></p>
     </div>
 
-    <!-- log -->
     <div class="modal-body hidden" id="journal-body">
       <form class="journal-form" id="journal-form">
         <div class="field"><label for="j-date">Date and time</label><input type="datetime-local" id="j-date" required /></div>
@@ -383,6 +399,7 @@
 <script src="assets/local-config.js" onerror="void 0"></script>
 <script src="assets/js/core.js"></script>
 <script src="assets/js/journal.js"></script>
+<script src="assets/js/patterns.js"></script>
 <script src="assets/js/data.js"></script>
 <script src="assets/js/engine.js"></script>
 <script src="assets/js/chart.js"></script>

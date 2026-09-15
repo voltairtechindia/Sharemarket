@@ -40,6 +40,11 @@
     // The journal is an add-on. If anything in it throws, the terminal itself
     // must still boot, so its wiring never sits on the critical path.
     try { wireJournal(); } catch (e) { console.warn('journal unavailable:', e); }
+    // The shipped gate keeps the journal shut for anyone opening the public
+    // page. Failing to load it only falls back to a browser-set code.
+    data.loadBaked(C.baked.auth)
+      .then(function (a) { if (KT.journal) KT.journal.adoptShipped(a); })
+      .catch(noop);
     renderWatchlist();
     startClock();
 
@@ -325,6 +330,7 @@
     S.reasons = engine.buildReasons(S.candles, data.getNews(), S.timeframe);
     chart.setData(S.candles, S.forecast, S.reasons, S.timeframe, S.symbol);
     renderPosition();
+    computePatterns();
     renderForecast(S.forecast);
     renderLanes();
     maybeEnrichNarrative();
@@ -496,7 +502,7 @@
   function renderNews() {
     var list = el('news-list');
     if (!list) return;
-    var items = data.getNews().filter(function (n) {
+    var matching = data.getNews().filter(function (n) {
       switch (S.newsFilter) {
         case 'high':   return n.impact === 'high';
         case 'filing': return n.lane === 'filing';
@@ -506,7 +512,8 @@
         case 'world': return n.region === 'international';
         default:      return true;
       }
-    }).slice(0, 120);
+    });
+    var items = diversify(matching, 120);
 
     if (!items.length) {
       list.innerHTML = '<li class="news-row"><span class="muted" style="grid-column:1/-1">' +
@@ -551,6 +558,30 @@
     });
     list.innerHTML = '';
     list.appendChild(frag);
+  }
+
+  /* A feed that publishes 20 notices at once - the RBI press release feed is
+     the usual culprit - would otherwise own the whole visible stream, since
+     everything it posts shares a timestamp. Nothing is discarded: the full set
+     still feeds scoring and the forecast. This only decides display order, by
+     holding an over-represented source back rather than dropping it. */
+  function diversify(list, limit) {
+    var PER_SOURCE_RUN = 3;   // at most this many in a row from one source
+    var PER_SOURCE_CAP = 12;  // and at most this many on screen overall
+    var out = [], held = [], counts = {}, run = { src: null, n: 0 };
+
+    for (var i = 0; i < list.length && out.length < limit; i++) {
+      var n = list[i], src = n.source || '?';
+      var over = (counts[src] || 0) >= PER_SOURCE_CAP;
+      var streak = (run.src === src && run.n >= PER_SOURCE_RUN);
+      if (over || streak) { held.push(n); continue; }
+      out.push(n);
+      counts[src] = (counts[src] || 0) + 1;
+      run = (run.src === src) ? { src: src, n: run.n + 1 } : { src: src, n: 1 };
+    }
+    // Backfill from what was held so the list is never short.
+    for (var h = 0; h < held.length && out.length < limit; h++) out.push(held[h]);
+    return out;
   }
 
   /* Corporate filings are just a very high quality news lane: an order win or
@@ -627,8 +658,7 @@
       ['btn-journal-export', 'btn-journal-import'].forEach(function (b) { el(b).classList.remove('hidden'); });
       fillSymbols();
       if (!el('j-date').value) {
-        var d = core.fmt.ist();
-        el('j-date').value = d.toISOString().slice(0, 16);
+        el('j-date').value = core.fmt.ist().toISOString().slice(0, 16);
       }
       renderRows();
     }
@@ -664,7 +694,6 @@
           body.appendChild(tr);
         });
       }
-      // summary tiles for the currently selected instrument
       var live = S.quote && S.quote.price ? S.quote.price : null;
       var pos = J.position(S.symbol, live);
       el('journal-summary').innerHTML =
@@ -692,7 +721,7 @@
       text('gate-error', 'Checking…');
       var step = J.hasAuth() ? J.verify(u, pw) : J.setAuth(u, pw).then(function () { return true; });
       step.then(function (ok) {
-        if (!ok) { text('gate-error', 'That ID or passcode does not match what is stored on this browser.'); return; }
+        if (!ok) { text('gate-error', 'That ID or passcode does not match.'); return; }
         text('gate-error', '');
         el('j-pass').value = '';
         J.unlock(); J.load(); showLog();
@@ -710,7 +739,7 @@
       e.preventDefault();
       var when = el('j-date').value;
       if (!when) return;
-      // datetime-local has no zone; the page works in IST, so read it as IST.
+      // datetime-local carries no zone; the page works in IST, so read it as IST.
       var ts = Math.floor(Date.parse(when + ':00+05:30') / 1000);
       if (!ts || isNaN(ts)) ts = Math.floor(Date.now() / 1000);
       J.add({
@@ -750,6 +779,86 @@
       };
       fr.readAsText(f);
       e.target.value = '';
+    });
+  }
+
+  /* Pattern recognition. Detection is the easy half; the half that matters is
+     measuring how each pattern has actually resolved on this instrument, so a
+     marker can say "58% of 136" instead of asserting a reversal. */
+  function computePatterns() {
+    if (!KT.patterns || !S.candles.length) return;
+    try {
+      var found = KT.patterns.detect(S.candles);
+      var stats = KT.patterns.hitRates(S.candles, found);
+      S.patterns = { found: found, stats: stats,
+                     current: KT.patterns.current(S.candles, found, 3) };
+      chart.setPatterns(KT.patterns.markers(found, stats, 18));
+      renderPatterns();
+    } catch (e) {
+      console.warn('pattern pass failed:', e);
+    }
+  }
+
+  function renderPatterns() {
+    var P = S.patterns;
+    if (!P) return;
+    var rows = Object.keys(P.stats).map(function (k) { return P.stats[k]; })
+      .filter(function (g) { return g.n > 0; })
+      .sort(function (a, b) {
+        // most decisive record first, thin samples last
+        var ea = a.reliable && a.hitRate != null ? Math.abs(a.hitRate - 50) : -1;
+        var eb = b.reliable && b.hitRate != null ? Math.abs(b.hitRate - 50) : -1;
+        return eb - ea;
+      });
+
+    var horizon = rows.length ? rows[0].horizon : 0;
+    text('pattern-horizon', horizon ? 'measured ' + horizon + ' bars ahead' : '');
+
+    var now = el('pattern-now');
+    if (now) {
+      if (!P.current.length) {
+        now.innerHTML = '<span class="muted">Nothing forming at the live edge right now.</span>';
+      } else {
+        now.innerHTML = P.current.map(function (p) {
+          var g = P.stats[p.key] || {};
+          var cls = p.dir > 0 ? 'pos' : p.dir < 0 ? 'neg' : '';
+          var rate = (g.reliable && g.hitRate != null)
+            ? g.hitRate + '% of ' + g.n
+            : (g.n ? 'only ' + g.n + ' seen' : 'no record');
+          return '<div class="pattern-live" title="' + esc(p.why) + '">' +
+                 '<span class="chip ' + cls + '">' + esc(p.name) + '</span>' +
+                 '<span class="muted">' + rate + '</span></div>';
+        }).join('');
+      }
+    }
+
+    var body = el('pattern-rows');
+    if (!body) return;
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="4" class="muted" style="padding:10px">Not enough history on this timeframe to measure patterns.</td></tr>';
+      return;
+    }
+    body.innerHTML = '';
+    rows.slice(0, 10).forEach(function (g) {
+      var tr = document.createElement('tr');
+      if (!g.reliable) tr.className = 'thin';
+      var rate = g.hitRate != null
+        ? g.hitRate + '%'
+        : (g.upRate != null ? '\u2191' + g.upRate + '%' : '—');
+      var rateCls = g.hitRate == null ? '' : (g.hitRate >= 60 ? 'up' : g.hitRate <= 40 ? 'down' : 'flat');
+      tr.innerHTML =
+        '<td title="' + esc(g.why || '') + '">' + esc(g.name) +
+          (g.reliable ? '' : ' <span class="thin-tag">thin</span>') + '</td>' +
+        '<td class="num-col">' + g.n + '</td>' +
+        '<td class="num-col ' + rateCls + '">' + rate + '</td>' +
+        '<td class="num-col ' + fmt.cls(g.avgMove) + '">' + fmt.pct(g.avgMove) + '</td>';
+      body.appendChild(tr);
+    });
+  }
+
+  function esc(t) {
+    return String(t == null ? '' : t).replace(/[&<>"]/g, function (ch) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch];
     });
   }
 
@@ -884,8 +993,8 @@
     var lanes = [
       { k: 'Live price', id: 'quote', hint: 'Moneycontrol price feed, read directly by your browser' },
       { k: 'Candles', id: 'candles', hint: 'Yahoo Finance OHLC through the proxy chain' },
-      { k: 'Fast news', id: 'feed:mc_top', hint: C.directFeeds.length + ' CORS-friendly feeds every ' + Math.round(S.settings.newsMs / 1000) + 's' },
-      { k: 'Deep news', id: null, hint: 'GitHub Actions fetches the full feed index every 5 minutes' },
+      { k: 'Fast news', id: 'feed:mc_top', hint: C.directFeeds.length + ' feeds your browser can read directly, every ' + Math.round(S.settings.newsMs / 1000) + 's' },
+      { k: 'Deep news', id: null, hint: 'GitHub Actions fetches all ' + (S.feedsTotal || '') + ' feeds every 5 minutes, where CORS does not apply' },
       { k: 'Model', id: 'openrouter', hint: S.settings.key ? S.settings.model : 'no key set — using the local rule engine' },
     ];
     box.innerHTML = '';

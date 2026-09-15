@@ -1,0 +1,2496 @@
+From 767f2ec2054bc90353d16ea350ab55be985a56fc Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 15 Sep 2026 04:16:21 +0000
+Subject: [PATCH] Trade journal, pattern recognition, corporate filings, and
+ live-site fixes
+
+Trade journal
+- Entries stored in the viewer's browser only, never uploaded, never in the
+  repo. Plotted on the chart as buy/sell arrows beside the news markers.
+- Net position with average cost and realised/unrealised P&L against the
+  live price, plus JSON export and import.
+- Gate ships as a PBKDF2-SHA256 derivation in config/auth.json (310k
+  iterations) so the published page stays shut without the password ever
+  entering the repository. It stops visitors; it is not security, and it
+  guards nothing valuable because the entries never leave the browser.
+
+Pattern recognition
+- Candlestick patterns (engulfing, hammer, shooting star, doji, morning and
+  evening star, three soldiers and crows, gaps) and chart structures (double
+  top and bottom, head and shoulders both ways, ascending and descending
+  triangles). Thresholds in ATR so one rule set covers 1m to 1w candles.
+- Every pattern is measured against its own prior occurrences in the loaded
+  history and labelled with what actually happened, e.g. "BE 58%" of 136.
+  Under 8 occurrences is flagged thin and demoted. A doji claims indecision
+  so it reports an up-rate and no hit rate. On random-walk data the rates
+  land near 50%, confirming the statistic does not manufacture edge.
+
+Corporate filings and social
+- scripts/fetch_filings.py pulls BSE and NSE announcements and scores them by
+  materiality, heaviest category winning so an NCLT order reads as distress
+  rather than an order win. Merged into the news store with a Filings filter.
+- Reddit and YouTube RSS added to the feed index, now 442 feeds.
+
+Live-site fixes found by loading the deployed page
+- The forecast panel was display:none below 1080px, so a laptop showed a
+  chart and no forecast. It now sits under the chart instead of vanishing.
+- impact_high held bare institution words, tagging 45% of headlines HIGH.
+  Impact now needs corroboration and procedural notices are downgraded; on
+  the live 600-item feed this moves HIGH from 270 to 103.
+- RBI press releases flooded the stream by sharing one timestamp. Display
+  holds back an over-represented source, max 3 in a row; distinct sources in
+  the visible list went from a handful to 42.
+- Removed the browser-side proxied RSS lane: jina rate-limits and strips the
+  XML, allorigins refused, rss2json errored. Breadth is the workflow's job.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ExL5FNtXDKckNVanjfgmEa
+---
+ assets/js/app.js         | 328 ++++++++++++++++-
+ assets/js/chart.js       |  19 +-
+ assets/js/config.js      |  24 +-
+ assets/js/core.js        |  25 +-
+ assets/js/journal.js     | 221 ++++++++++++
+ assets/js/patterns.js    | 360 +++++++++++++++++++
+ assets/style.css         |  73 +++-
+ config/auth.json         |   8 +
+ config/lexicon.json      | 747 ++++++++++++++++++++++++++++++++++-----
+ data/filings.json        |   8 +
+ index.html               | 100 ++++++
+ scripts/fetch_filings.py | 221 ++++++++++++
+ scripts/fetch_news.py    |  18 +-
+ 13 files changed, 2023 insertions(+), 129 deletions(-)
+ create mode 100644 assets/js/journal.js
+ create mode 100644 assets/js/patterns.js
+ create mode 100644 config/auth.json
+ create mode 100644 data/filings.json
+ create mode 100644 scripts/fetch_filings.py
+
+diff --git a/assets/js/app.js b/assets/js/app.js
+index 743b6ce..77ea423 100644
+--- a/assets/js/app.js
++++ b/assets/js/app.js
+@@ -37,6 +37,14 @@
+     loadSettings();
+     applyTheme(core.store.get('theme', 'light'));
+     wireUI();
++    // The journal is an add-on. If anything in it throws, the terminal itself
++    // must still boot, so its wiring never sits on the critical path.
++    try { wireJournal(); } catch (e) { console.warn('journal unavailable:', e); }
++    // The shipped gate keeps the journal shut for anyone opening the public
++    // page. Failing to load it only falls back to a browser-set code.
++    data.loadBaked(C.baked.auth)
++      .then(function (a) { if (KT.journal) KT.journal.adoptShipped(a); })
++      .catch(noop);
+     renderWatchlist();
+     startClock();
+ 
+@@ -58,6 +66,7 @@
+             renderNews(); renderFeedCount(n);
+           }).catch(noop),
+           data.loadBaked(C.baked.rollup).then(function (r) { S.rollup = r; renderSectors(); }).catch(noop),
++          loadFilings().catch(noop),
+           data.loadBaked(C.baked.index).then(function (i) { if (!S.feedsTotal) { S.feedsTotal = i.count; renderFeedCount(null); } }).catch(noop),
+         ]);
+       })
+@@ -293,6 +302,7 @@
+         renderFeedCount(n);
+       }).catch(noop),
+       data.loadBaked(C.baked.rollup).then(function (r) { S.rollup = r; renderSectors(); }).catch(noop),
++      loadFilings().catch(noop),
+     ]).then(function () { renderNews(); });
+   }
+ 
+@@ -318,7 +328,9 @@
+       livePrice: S.quote && S.quote.price ? S.quote.price : null,
+     });
+     S.reasons = engine.buildReasons(S.candles, data.getNews(), S.timeframe);
+-    chart.setData(S.candles, S.forecast, S.reasons, S.timeframe);
++    chart.setData(S.candles, S.forecast, S.reasons, S.timeframe, S.symbol);
++    renderPosition();
++    computePatterns();
+     renderForecast(S.forecast);
+     renderLanes();
+     maybeEnrichNarrative();
+@@ -490,16 +502,18 @@
+   function renderNews() {
+     var list = el('news-list');
+     if (!list) return;
+-    var items = data.getNews().filter(function (n) {
++    var matching = data.getNews().filter(function (n) {
+       switch (S.newsFilter) {
+-        case 'high':  return n.impact === 'high';
++        case 'high':   return n.impact === 'high';
++        case 'filing': return n.lane === 'filing';
+         case 'pos':   return n.sentiment > 0.6;
+         case 'neg':   return n.sentiment < -0.6;
+         case 'india': return n.region === 'indian';
+         case 'world': return n.region === 'international';
+         default:      return true;
+       }
+-    }).slice(0, 120);
++    });
++    var items = diversify(matching, 120);
+ 
+     if (!items.length) {
+       list.innerHTML = '<li class="news-row"><span class="muted" style="grid-column:1/-1">' +
+@@ -546,6 +560,308 @@
+     list.appendChild(frag);
+   }
+ 
++  /* A feed that publishes 20 notices at once - the RBI press release feed is
++     the usual culprit - would otherwise own the whole visible stream, since
++     everything it posts shares a timestamp. Nothing is discarded: the full set
++     still feeds scoring and the forecast. This only decides display order, by
++     holding an over-represented source back rather than dropping it. */
++  function diversify(list, limit) {
++    var PER_SOURCE_RUN = 3;   // at most this many in a row from one source
++    var PER_SOURCE_CAP = 12;  // and at most this many on screen overall
++    var out = [], held = [], counts = {}, run = { src: null, n: 0 };
++
++    for (var i = 0; i < list.length && out.length < limit; i++) {
++      var n = list[i], src = n.source || '?';
++      var over = (counts[src] || 0) >= PER_SOURCE_CAP;
++      var streak = (run.src === src && run.n >= PER_SOURCE_RUN);
++      if (over || streak) { held.push(n); continue; }
++      out.push(n);
++      counts[src] = (counts[src] || 0) + 1;
++      run = (run.src === src) ? { src: src, n: run.n + 1 } : { src: src, n: 1 };
++    }
++    // Backfill from what was held so the list is never short.
++    for (var h = 0; h < held.length && out.length < limit; h++) out.push(held[h]);
++    return out;
++  }
++
++  /* Corporate filings are just a very high quality news lane: an order win or
++     an insolvency petition is published here before the wires carry it. They
++     merge into the same store so they score, rank and mark the chart like any
++     other headline, with lane 'filing' so they can be filtered on their own. */
++  function loadFilings() {
++    return data.loadBaked(C.baked.filings).then(function (j) {
++      var rows = (j && j.filings) || [];
++      if (!rows.length) return;
++      data.mergeNews(rows.map(function (f) {
++        return {
++          key: core.keyOf(f.headline),
++          headline: f.headline,
++          url: f.url || '',
++          ts: f.ts,
++          sentiment: typeof f.sentiment === 'number' ? f.sentiment : 0,
++          impact: f.impact || 'medium',
++          terms: f.kind ? [f.kind] : [],
++          industry: f.kind || 'filing',
++          source: f.source || 'Exchange filing',
++          region: 'indian',
++          lane: 'filing',
++        };
++      }));
++      S.filings = { count: j.count, high: j.high, at: j.updated_iso };
++      renderNews();
++    });
++  }
++
++  function renderPosition() {
++    var sec = el('position-section');
++    if (!sec) return;
++    if (!KT.journal || !KT.journal.isUnlocked()) { sec.classList.add('hidden'); return; }
++    var live = S.quote && S.quote.price ? S.quote.price : null;
++    var pos = KT.journal.position(S.symbol, live);
++    if (!pos.trades) { sec.classList.add('hidden'); return; }
++    sec.classList.remove('hidden');
++    text('pos-qty', fmt.int(pos.qty));
++    text('pos-avg', pos.qty ? fmt.price(pos.avgCost) : '—');
++    text('pos-unreal', pos.qty ? fmt.signed(pos.unrealised) + '  (' + fmt.pct(pos.pctOnCost) + ')' : '—');
++    core.cls('pos-unreal', fmt.cls(pos.unrealised));
++    text('pos-real', fmt.signed(pos.realised));
++    core.cls('pos-real', fmt.cls(pos.realised));
++    text('pos-count', pos.trades + ' on ' + C.symbols[S.symbol].label);
++  }
++
++  /* ------------------------------------------------------------- journal UI */
++  function wireJournal() {
++    var J = KT.journal;
++    if (!J) return;
++    var modal = el('journal-modal');
++
++    function open() {
++      modal.classList.remove('hidden');
++      el('gate-setup').classList.toggle('hidden', J.hasAuth());
++      el('btn-journal-unlock').textContent = J.hasAuth() ? 'Unlock' : 'Set passcode';
++      if (J.isUnlocked()) showLog(); else showGate();
++    }
++    function close() { modal.classList.add('hidden'); }
++
++    function showGate() {
++      el('journal-gate').classList.remove('hidden');
++      el('journal-body').classList.add('hidden');
++      el('btn-journal-unlock').classList.remove('hidden');
++      el('btn-journal-lock').classList.add('hidden');
++      ['btn-journal-export', 'btn-journal-import'].forEach(function (b) { el(b).classList.add('hidden'); });
++    }
++    function showLog() {
++      el('journal-gate').classList.add('hidden');
++      el('journal-body').classList.remove('hidden');
++      el('btn-journal-unlock').classList.add('hidden');
++      el('btn-journal-lock').classList.remove('hidden');
++      ['btn-journal-export', 'btn-journal-import'].forEach(function (b) { el(b).classList.remove('hidden'); });
++      fillSymbols();
++      if (!el('j-date').value) {
++        el('j-date').value = core.fmt.ist().toISOString().slice(0, 16);
++      }
++      renderRows();
++    }
++
++    function fillSymbols() {
++      var sel = el('j-symbol');
++      if (sel.options.length) return;
++      Object.keys(C.symbols).forEach(function (k) {
++        var o = document.createElement('option');
++        o.value = k; o.textContent = C.symbols[k].label;
++        sel.appendChild(o);
++      });
++      sel.value = S.symbol;
++    }
++
++    function renderRows() {
++      var rows = J.all(), body = el('journal-rows');
++      text('journal-count', rows.length + (rows.length === 1 ? ' entry' : ' entries') + ' in this browser');
++      if (!rows.length) {
++        body.innerHTML = '<tr><td colspan="7" class="journal-empty">No entries yet. Add one above and it appears on the chart.</td></tr>';
++      } else {
++        body.innerHTML = '';
++        rows.forEach(function (t) {
++          var tr = document.createElement('tr');
++          tr.innerHTML =
++            '<td>' + fmt.stamp(t.ts, 3600) + '</td>' +
++            '<td>' + ((C.symbols[t.symbol] || {}).label || t.symbol) + '</td>' +
++            '<td class="side-' + t.side.toLowerCase() + '">' + t.side + '</td>' +
++            '<td class="num-col">' + fmt.int(t.qty) + '</td>' +
++            '<td class="num-col">' + fmt.price(t.price) + '</td>' +
++            '<td>' + (t.note ? t.note.replace(/[<>&]/g, '') : '<span class="muted">—</span>') + '</td>' +
++            '<td><button class="row-del" data-id="' + t.id + '" title="Delete">&times;</button></td>';
++          body.appendChild(tr);
++        });
++      }
++      var live = S.quote && S.quote.price ? S.quote.price : null;
++      var pos = J.position(S.symbol, live);
++      el('journal-summary').innerHTML =
++        tile('Net qty', fmt.int(pos.qty)) +
++        tile('Avg cost', pos.qty ? fmt.price(pos.avgCost) : '—') +
++        tile('Unrealised', pos.qty ? fmt.signed(pos.unrealised) : '—', fmt.cls(pos.unrealised)) +
++        tile('Realised', fmt.signed(pos.realised), fmt.cls(pos.realised));
++      renderPosition();
++      chart.refreshMarkers();
++    }
++    function tile(k, v, cls) {
++      return '<div class="stat"><span class="stat-k">' + k + '</span>' +
++             '<span class="stat-v ' + (cls || '') + '">' + v + '</span></div>';
++    }
++
++    el('btn-journal').addEventListener('click', open);
++    var openBtn = el('btn-open-journal');
++    if (openBtn) openBtn.addEventListener('click', open);
++    el('btn-close-journal').addEventListener('click', close);
++    modal.addEventListener('click', function (e) { if (e.target === modal) close(); });
++
++    el('btn-journal-unlock').addEventListener('click', function () {
++      var u = el('j-user').value.trim(), pw = el('j-pass').value;
++      if (!u || !pw) { text('gate-error', 'Enter both an ID and a passcode.'); return; }
++      text('gate-error', 'Checking…');
++      var step = J.hasAuth() ? J.verify(u, pw) : J.setAuth(u, pw).then(function () { return true; });
++      step.then(function (ok) {
++        if (!ok) { text('gate-error', 'That ID or passcode does not match.'); return; }
++        text('gate-error', '');
++        el('j-pass').value = '';
++        J.unlock(); J.load(); showLog();
++      }).catch(function () { text('gate-error', 'Could not check the passcode in this browser.'); });
++    });
++    el('j-pass').addEventListener('keydown', function (e) {
++      if (e.key === 'Enter') el('btn-journal-unlock').click();
++    });
++
++    el('btn-journal-lock').addEventListener('click', function () {
++      J.lock(); showGate(); renderPosition(); chart.refreshMarkers();
++    });
++
++    el('journal-form').addEventListener('submit', function (e) {
++      e.preventDefault();
++      var when = el('j-date').value;
++      if (!when) return;
++      // datetime-local carries no zone; the page works in IST, so read it as IST.
++      var ts = Math.floor(Date.parse(when + ':00+05:30') / 1000);
++      if (!ts || isNaN(ts)) ts = Math.floor(Date.now() / 1000);
++      J.add({
++        ts: ts, symbol: el('j-symbol').value, side: el('j-side').value,
++        qty: el('j-qty').value, price: el('j-price').value, note: el('j-note').value,
++      });
++      el('j-qty').value = ''; el('j-price').value = ''; el('j-note').value = '';
++      renderRows();
++    });
++
++    el('journal-rows').addEventListener('click', function (e) {
++      var b = e.target.closest('.row-del');
++      if (!b) return;
++      J.remove(b.getAttribute('data-id'));
++      renderRows();
++    });
++
++    el('btn-journal-export').addEventListener('click', function () {
++      var blob = new Blob([J.exportJson()], { type: 'application/json' });
++      var a = document.createElement('a');
++      a.href = URL.createObjectURL(blob);
++      a.download = 'trade-journal-' + new Date().toISOString().slice(0, 10) + '.json';
++      a.click();
++      setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
++    });
++    el('btn-journal-import').addEventListener('click', function () { el('journal-file').click(); });
++    el('journal-file').addEventListener('change', function (e) {
++      var f = e.target.files && e.target.files[0];
++      if (!f) return;
++      var fr = new FileReader();
++      fr.onload = function () {
++        try {
++          var n = J.importJson(String(fr.result));
++          text('journal-count', 'Imported ' + n + ' new ' + (n === 1 ? 'entry' : 'entries'));
++          renderRows();
++        } catch (err) { text('journal-count', 'That file could not be read as a journal export.'); }
++      };
++      fr.readAsText(f);
++      e.target.value = '';
++    });
++  }
++
++  /* Pattern recognition. Detection is the easy half; the half that matters is
++     measuring how each pattern has actually resolved on this instrument, so a
++     marker can say "58% of 136" instead of asserting a reversal. */
++  function computePatterns() {
++    if (!KT.patterns || !S.candles.length) return;
++    try {
++      var found = KT.patterns.detect(S.candles);
++      var stats = KT.patterns.hitRates(S.candles, found);
++      S.patterns = { found: found, stats: stats,
++                     current: KT.patterns.current(S.candles, found, 3) };
++      chart.setPatterns(KT.patterns.markers(found, stats, 18));
++      renderPatterns();
++    } catch (e) {
++      console.warn('pattern pass failed:', e);
++    }
++  }
++
++  function renderPatterns() {
++    var P = S.patterns;
++    if (!P) return;
++    var rows = Object.keys(P.stats).map(function (k) { return P.stats[k]; })
++      .filter(function (g) { return g.n > 0; })
++      .sort(function (a, b) {
++        // most decisive record first, thin samples last
++        var ea = a.reliable && a.hitRate != null ? Math.abs(a.hitRate - 50) : -1;
++        var eb = b.reliable && b.hitRate != null ? Math.abs(b.hitRate - 50) : -1;
++        return eb - ea;
++      });
++
++    var horizon = rows.length ? rows[0].horizon : 0;
++    text('pattern-horizon', horizon ? 'measured ' + horizon + ' bars ahead' : '');
++
++    var now = el('pattern-now');
++    if (now) {
++      if (!P.current.length) {
++        now.innerHTML = '<span class="muted">Nothing forming at the live edge right now.</span>';
++      } else {
++        now.innerHTML = P.current.map(function (p) {
++          var g = P.stats[p.key] || {};
++          var cls = p.dir > 0 ? 'pos' : p.dir < 0 ? 'neg' : '';
++          var rate = (g.reliable && g.hitRate != null)
++            ? g.hitRate + '% of ' + g.n
++            : (g.n ? 'only ' + g.n + ' seen' : 'no record');
++          return '<div class="pattern-live" title="' + esc(p.why) + '">' +
++                 '<span class="chip ' + cls + '">' + esc(p.name) + '</span>' +
++                 '<span class="muted">' + rate + '</span></div>';
++        }).join('');
++      }
++    }
++
++    var body = el('pattern-rows');
++    if (!body) return;
++    if (!rows.length) {
++      body.innerHTML = '<tr><td colspan="4" class="muted" style="padding:10px">Not enough history on this timeframe to measure patterns.</td></tr>';
++      return;
++    }
++    body.innerHTML = '';
++    rows.slice(0, 10).forEach(function (g) {
++      var tr = document.createElement('tr');
++      if (!g.reliable) tr.className = 'thin';
++      var rate = g.hitRate != null
++        ? g.hitRate + '%'
++        : (g.upRate != null ? '\u2191' + g.upRate + '%' : '—');
++      var rateCls = g.hitRate == null ? '' : (g.hitRate >= 60 ? 'up' : g.hitRate <= 40 ? 'down' : 'flat');
++      tr.innerHTML =
++        '<td title="' + esc(g.why || '') + '">' + esc(g.name) +
++          (g.reliable ? '' : ' <span class="thin-tag">thin</span>') + '</td>' +
++        '<td class="num-col">' + g.n + '</td>' +
++        '<td class="num-col ' + rateCls + '">' + rate + '</td>' +
++        '<td class="num-col ' + fmt.cls(g.avgMove) + '">' + fmt.pct(g.avgMove) + '</td>';
++      body.appendChild(tr);
++    });
++  }
++
++  function esc(t) {
++    return String(t == null ? '' : t).replace(/[&<>"]/g, function (ch) {
++      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch];
++    });
++  }
++
+   function renderForecast(f) {
+     if (!f) return;
+     text('fc-horizon', f.horizonLabel);
+@@ -677,8 +993,8 @@
+     var lanes = [
+       { k: 'Live price', id: 'quote', hint: 'Moneycontrol price feed, read directly by your browser' },
+       { k: 'Candles', id: 'candles', hint: 'Yahoo Finance OHLC through the proxy chain' },
+-      { k: 'Fast news', id: 'feed:mc_top', hint: C.directFeeds.length + ' CORS-friendly feeds every ' + Math.round(S.settings.newsMs / 1000) + 's' },
+-      { k: 'Deep news', id: null, hint: 'GitHub Actions fetches the full feed index every 5 minutes' },
++      { k: 'Fast news', id: 'feed:mc_top', hint: C.directFeeds.length + ' feeds your browser can read directly, every ' + Math.round(S.settings.newsMs / 1000) + 's' },
++      { k: 'Deep news', id: null, hint: 'GitHub Actions fetches all ' + (S.feedsTotal || '') + ' feeds every 5 minutes, where CORS does not apply' },
+       { k: 'Model', id: 'openrouter', hint: S.settings.key ? S.settings.model : 'no key set — using the local rule engine' },
+     ];
+     box.innerHTML = '';
+diff --git a/assets/js/chart.js b/assets/js/chart.js
+index ffa300a..46909fe 100644
+--- a/assets/js/chart.js
++++ b/assets/js/chart.js
+@@ -12,7 +12,8 @@
+ 
+   var chart = null, candleSeries = null, fcSeries = null, upSeries = null, loSeries = null;
+   var state = {
+-    candles: [], forecast: null, reasons: [], tf: C.defaultTimeframe,
++    candles: [], forecast: null, reasons: [], patternMarkers: [],
++    tf: C.defaultTimeframe, symbol: C.defaultSymbol,
+     lastCandleTime: null, pinned: null, total: 0,
+   };
+   var els = {};
+@@ -119,9 +120,10 @@
+   }
+ 
+   /* ------------------------------------------------------------------ data */
+-  function setData(candles, forecast, reasons, tfKey) {
++  function setData(candles, forecast, reasons, tfKey, symbol) {
+     if (!chart) return;
+     state.tf = tfKey;
++    if (symbol) state.symbol = symbol;
+     state.candles = candles || [];
+     state.forecast = forecast || null;
+     state.reasons = reasons || [];
+@@ -199,6 +201,16 @@
+         text: (r.impact === 'high' && Math.abs(r.move) >= 0.15) ? core.fmt.pct(r.move, 1) : '',
+       };
+     });
++    // Your own entries sit on the same axis as the news points, so you can see
++    // what the tape was doing at the moment you took the trade.
++    var trades = [];
++    if (KT.journal && KT.journal.isUnlocked && KT.journal.isUnlocked()) {
++      try { trades = KT.journal.markers(state.symbol || KT.CONFIG.defaultSymbol); } catch (e) { trades = []; }
++    }
++    // Patterns sit alongside the news points and your own entries.
++    var pats = [];
++    if (state.patternMarkers && state.patternMarkers.length) pats = state.patternMarkers;
++    markers = markers.concat(trades).concat(pats);
+     markers.sort(function (a, b) { return a.time - b.time; });
+     try { candleSeries.setMarkers(markers); } catch (e) {}
+   }
+@@ -318,7 +330,8 @@
+ 
+   KT.chart = {
+     init: init, setData: setData, tick: tick, retheme: retheme,
+-    frameView: frameView, showEmpty: showEmpty,
++    frameView: frameView, showEmpty: showEmpty, refreshMarkers: applyMarkers,
++    setPatterns: function (m) { state.patternMarkers = m || []; applyMarkers(); },
+     getState: function () { return state; },
+   };
+ })(window.KT);
+diff --git a/assets/js/config.js b/assets/js/config.js
+index 8841904..e57baa6 100644
+--- a/assets/js/config.js
++++ b/assets/js/config.js
+@@ -73,18 +73,15 @@ KT.CONFIG = {
+     { id: 'cnbc_economy',name: 'CNBC TV18 economy',     url: 'https://www.cnbctv18.com/commonfeeds/v1/cne/rss/economy.xml',        region: 'india' },
+   ],
+ 
+-  /* Feeds a browser cannot reach directly. A couple are rotated through a
+-     public proxy each cycle so the fast lane still sees them between the
+-     5-minute server runs. Kept short on purpose - proxies are rate limited. */
+-  proxiedFeeds: [
+-    { id: 'et_markets', name: 'ET markets',         url: 'https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms', region: 'india' },
+-    { id: 'mint_mkt',   name: 'Livemint markets',   url: 'https://www.livemint.com/rss/markets',                                 region: 'india' },
+-    { id: 'bs_markets', name: 'Business Standard',  url: 'https://www.business-standard.com/rss/markets-106.rss',                region: 'india' },
+-    { id: 'rbi',        name: 'RBI press releases', url: 'https://www.rbi.org.in/pressreleases_rss.xml',                         region: 'india' },
+-    { id: 'yahoo_fin',  name: 'Yahoo Finance',      url: 'https://finance.yahoo.com/news/rssindex',                              region: 'world' },
+-    { id: 'mw_top',     name: 'MarketWatch',        url: 'https://feeds.content.dowjones.io/public/rss/mw_topstories',           region: 'world' },
+-  ],
+-  proxiedPerCycle: 2,
++  /* Feeds a browser cannot reach directly are NOT attempted here.
++     Measured from the live origin: r.jina.ai rate limits (429) and strips RSS
++     to plain text so no <item> survives, allorigins was refusing connections,
++     and rss2json returned an error. The lane cost a request per cycle and
++     returned nothing, so breadth is left to the server-side workflow, which
++     has no CORS wall and had 177 of 183 polled feeds alive on its last run.
++     The proxy chain below is still used for Yahoo candles, where it works. */
++  proxiedFeeds: [],
++  proxiedPerCycle: 0,
+ 
+   /* Proxy chain, tried in order. Verified reachable from the Pages origin;
+      r.jina.ai returns the upstream body untouched with x-return-format:text. */
+@@ -110,8 +107,11 @@ KT.CONFIG = {
+     seasonality: 'data/seasonality.json',
+     quote:       'data/quote.json',
+     health:      'data/feed_health.json',
++    filings:     'data/filings.json',
++    social:      'data/social.json',
+     index:       'data/feeds_index.json',
+     lexicon:     'config/lexicon.json',
++    auth:        'config/auth.json',
+     candles:     (sym, tf) => `data/candles_${sym}_${tf}.json`,
+   },
+ 
+diff --git a/assets/js/core.js b/assets/js/core.js
+index cf068c2..792e54d 100644
+--- a/assets/js/core.js
++++ b/assets/js/core.js
+@@ -108,7 +108,7 @@
+      Loaded from config/lexicon.json so the browser and the Python worker use
+      one table. Longest term wins and is blanked out, so "ban" cannot score
+      inside "banking" and "surge" cannot double count after "surges".         */
+-  var lexicon = null, bullRx = [], bearRx = [], impactHi = [], impactMd = [], relevance = [], noise = [], sectorMap = {};
++  var lexicon = null, bullRx = [], bearRx = [], impactHi = [], impactMd = [], relevance = [], noise = [], procedural = [], sectorMap = {};
+ 
+   function esc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+ 
+@@ -128,6 +128,7 @@
+     impactMd = lex.impact_medium.map(function (s) { return s.toLowerCase(); });
+     relevance = lex.relevance.map(function (s) { return s.toLowerCase(); });
+     noise = lex.noise.map(function (s) { return s.toLowerCase(); });
++    procedural = (lex.procedural || []).map(function (s) { return s.toLowerCase(); });
+     sectorMap = {};
+     Object.keys(lex.sector_map).forEach(function (k) {
+       sectorMap[k] = lex.sector_map[k].map(function (s) { return s.toLowerCase(); });
+@@ -149,10 +150,26 @@
+       }
+     }
+     var sentiment = Math.max(-4, Math.min(4, total / 2));
++
++    // Impact needs corroboration. One institution word is not a market event -
++    // "RBI invites comments on draft KYC directions" mentions the RBI but moves
++    // nothing, and tagging it HIGH made every Indian headline look urgent.
++    var hiHits = 0;
++    for (var h = 0; h < impactHi.length; h++) if (low.indexOf(impactHi[h]) !== -1) hiHits++;
++    var mdHits = 0;
++    for (var d = 0; d < impactMd.length; d++) if (low.indexOf(impactMd[d]) !== -1) mdHits++;
++
++    var isProcedural = false;
++    for (var q = 0; q < procedural.length; q++) if (low.indexOf(procedural[q]) !== -1) { isProcedural = true; break; }
++
+     var impact = 'low';
+-    for (var h = 0; h < impactHi.length; h++) if (low.indexOf(impactHi[h]) !== -1) { impact = 'high'; break; }
+-    if (impact === 'low') for (var d = 0; d < impactMd.length; d++) if (low.indexOf(impactMd[d]) !== -1) { impact = 'medium'; break; }
+-    return { sentiment: Math.round(sentiment * 100) / 100, impact: impact, terms: terms.slice(0, 6) };
++    if (hiHits && (hiHits > 1 || Math.abs(sentiment) >= 1)) impact = 'high';
++    else if (hiHits || mdHits) impact = 'medium';
++    // A notice is still a notice however many keywords it contains.
++    if (isProcedural) impact = (impact === 'high') ? 'medium' : 'low';
++
++    return { sentiment: Math.round(sentiment * 100) / 100, impact: impact,
++             terms: terms.slice(0, 6), procedural: isProcedural };
+   }
+ 
+   function isNoise(text) {
+diff --git a/assets/js/journal.js b/assets/js/journal.js
+new file mode 100644
+index 0000000..d389d10
+--- /dev/null
++++ b/assets/js/journal.js
+@@ -0,0 +1,221 @@
++/* ============================================================================
++   Trade journal. Entries live in this browser only - never uploaded, never in
++   the repo. The passcode gate keeps a casual passer-by out of the log on a
++   shared machine; it is not security, because this is a public static page.
++   ========================================================================== */
++(function (KT) {
++  'use strict';
++  var C = KT.CONFIG, core = KT.core;
++
++  var KEY = 'journal';
++  var AUTH_KEY = 'journalAuth';
++  var state = { unlocked: false, trades: [], profile: 'default' };
++
++  function hex(buf) {
++    return Array.prototype.map.call(new Uint8Array(buf), function (b) {
++      return ('0' + b.toString(16)).slice(-2);
++    }).join('');
++  }
++  function unhex(str) {
++    var out = new Uint8Array(str.length / 2);
++    for (var i = 0; i < out.length; i++) out[i] = parseInt(str.substr(i * 2, 2), 16);
++    return out;
++  }
++
++  /* PBKDF2 rather than a bare hash. The published gate has to ship its
++     derivation publicly, so the only defence against someone guessing the
++     password offline is making each guess expensive. 310k iterations costs the
++     real user a few hundred milliseconds once and costs an attacker the same
++     per attempt. */
++  var ITERATIONS = 310000;
++
++  function derive(saltHex, user, pass, iterations) {
++    var msg = user + ':' + pass;
++    if (!(window.crypto && crypto.subtle && crypto.subtle.importKey)) {
++      return Promise.reject(new Error('this browser cannot derive a key'));
++    }
++    return crypto.subtle
++      .importKey('raw', new TextEncoder().encode(msg), 'PBKDF2', false, ['deriveBits'])
++      .then(function (key) {
++        return crypto.subtle.deriveBits({
++          name: 'PBKDF2', salt: unhex(saltHex),
++          iterations: iterations || ITERATIONS, hash: 'SHA-256',
++        }, key, 256);
++      })
++      .then(hex);
++  }
++
++  /* Credential, in order of precedence:
++       1. config/auth.json shipped with the site - this is what gates the
++          published page so a visitor cannot open the journal at all;
++       2. the gitignored local config, for a different passcode on your machine;
++       3. whatever this browser set itself, when neither of the above exists.
++     None of it is ever sent anywhere. */
++  var shipped = null;
++  function adoptShipped(json) {
++    if (json && json.hash && json.salt) shipped = json;
++    return shipped;
++  }
++  function storedAuth() {
++    var local = window.KT_LOCAL && window.KT_LOCAL.journalAuth;
++    if (local && local.hash) return local;
++    if (shipped) return shipped;
++    return core.store.get(AUTH_KEY, null);
++  }
++
++  function hasAuth() { return !!storedAuth(); }
++
++  function setAuth(user, pass) {
++    var bytes = new Uint8Array(16);
++    (window.crypto && crypto.getRandomValues)
++      ? crypto.getRandomValues(bytes)
++      : bytes.forEach(function (_, i) { bytes[i] = Math.floor(Math.random() * 256); });
++    var salt = hex(bytes);
++    return derive(salt, user, pass, ITERATIONS).then(function (h) {
++      core.store.set(AUTH_KEY, { user: user, salt: salt, hash: h, iterations: ITERATIONS });
++      return true;
++    });
++  }
++
++  /* Constant-time-ish compare. Not a real defence on a client, but it costs
++     nothing and avoids leaking position through early exit. */
++  function same(a, b) {
++    if (a.length !== b.length) return false;
++    var diff = 0;
++    for (var i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
++    return diff === 0;
++  }
++
++  function verify(user, pass) {
++    var a = storedAuth();
++    if (!a) return Promise.resolve(false);
++    if (a.user && a.user !== user) return Promise.resolve(false);
++    return derive(a.salt, user, pass, a.iterations || ITERATIONS)
++      .then(function (h) { return same(h, a.hash); })
++      .catch(function () { return false; });
++  }
++
++  /* ------------------------------------------------------------- the trades */
++  function load() {
++    var raw = core.store.get(KEY + ':' + state.profile, []);
++    state.trades = Array.isArray(raw) ? raw.filter(function (t) { return t && t.id; }) : [];
++    state.trades.sort(function (a, b) { return b.ts - a.ts; });
++    return state.trades;
++  }
++
++  function save() {
++    core.store.set(KEY + ':' + state.profile, state.trades);
++  }
++
++  function add(entry) {
++    var t = {
++      id: 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
++      ts: entry.ts,
++      symbol: entry.symbol || 'NIFTY',
++      side: entry.side === 'SELL' ? 'SELL' : 'BUY',
++      qty: Number(entry.qty) || 0,
++      price: Number(entry.price) || 0,
++      note: String(entry.note || '').slice(0, 200),
++      added: Math.floor(Date.now() / 1000),
++    };
++    state.trades.unshift(t);
++    state.trades.sort(function (a, b) { return b.ts - a.ts; });
++    save();
++    return t;
++  }
++
++  function remove(id) {
++    state.trades = state.trades.filter(function (t) { return t.id !== id; });
++    save();
++  }
++
++  function all() { return state.trades; }
++
++  function forSymbol(sym) {
++    return state.trades.filter(function (t) { return t.symbol === sym; });
++  }
++
++  /* Net position and running P&L for one symbol, marked to the live price.
++     Average cost is recomputed on the buy side only, which is the simple
++     convention and matches how a broker shows an averaged long. */
++  function position(sym, livePrice) {
++    var rows = forSymbol(sym).slice().sort(function (a, b) { return a.ts - b.ts; });
++    var qty = 0, cost = 0, realised = 0;
++    rows.forEach(function (t) {
++      if (t.side === 'BUY') {
++        cost += t.qty * t.price;
++        qty += t.qty;
++      } else {
++        var avg = qty > 0 ? cost / qty : t.price;
++        realised += (t.price - avg) * Math.min(t.qty, qty);
++        cost -= avg * Math.min(t.qty, qty);
++        qty -= t.qty;
++      }
++    });
++    var avgCost = qty > 0 ? cost / qty : 0;
++    var unrealised = (livePrice && qty > 0) ? (livePrice - avgCost) * qty : 0;
++    return {
++      qty: qty, avgCost: avgCost, invested: Math.max(0, cost),
++      realised: realised, unrealised: unrealised,
++      total: realised + unrealised,
++      pctOnCost: cost > 0 ? (unrealised / cost) * 100 : 0,
++      trades: rows.length,
++    };
++  }
++
++  /* Markers the chart draws alongside the news reason points. */
++  function markers(sym) {
++    return forSymbol(sym).map(function (t) {
++      var buy = t.side === 'BUY';
++      return {
++        time: t.ts,
++        position: buy ? 'belowBar' : 'aboveBar',
++        color: buy ? '#2a78d6' : '#eb6834',
++        shape: buy ? 'arrowUp' : 'arrowDown',
++        size: 1.2,
++        text: (buy ? 'B ' : 'S ') + t.qty + ' @ ' + Math.round(t.price),
++        __trade: t,
++      };
++    });
++  }
++
++  /* -------------------------------------------------------- export / import */
++  function exportJson() {
++    return JSON.stringify({
++      exported: new Date().toISOString(),
++      profile: state.profile,
++      note: 'NIFTY Terminal trade journal. Local file, keep it private.',
++      trades: state.trades,
++    }, null, 2);
++  }
++
++  function importJson(text) {
++    var parsed = JSON.parse(text);
++    var incoming = Array.isArray(parsed) ? parsed : (parsed.trades || []);
++    var seen = {};
++    state.trades.forEach(function (t) { seen[t.id] = true; });
++    var added = 0;
++    incoming.forEach(function (t) {
++      if (!t || !t.id || seen[t.id]) return;
++      if (typeof t.ts !== 'number' || typeof t.price !== 'number') return;
++      seen[t.id] = true;
++      state.trades.push(t);
++      added++;
++    });
++    state.trades.sort(function (a, b) { return b.ts - a.ts; });
++    save();
++    return added;
++  }
++
++  function unlock() { state.unlocked = true; }
++  function isUnlocked() { return state.unlocked; }
++  function lock() { state.unlocked = false; }
++
++  KT.journal = {
++    hasAuth: hasAuth, setAuth: setAuth, verify: verify, adoptShipped: adoptShipped,
++    unlock: unlock, lock: lock, isUnlocked: isUnlocked,
++    load: load, add: add, remove: remove, all: all, forSymbol: forSymbol,
++    position: position, markers: markers,
++    exportJson: exportJson, importJson: importJson,
++  };
++})(window.KT);
+diff --git a/assets/js/patterns.js b/assets/js/patterns.js
+new file mode 100644
+index 0000000..5f82ea0
+--- /dev/null
++++ b/assets/js/patterns.js
+@@ -0,0 +1,360 @@
++/* ============================================================================
++   Pattern recognition.
++
++   Two jobs, and the second matters more than the first.
++
++   1. Detect the classic candlestick and chart patterns in the loaded series.
++   2. For every pattern it finds, measure how that same pattern has actually
++      resolved on this instrument's own history, and report that number.
++
++   The second job is the point. Textbooks say an engulfing candle "signals a
++   reversal"; what a trader needs is whether it reversed 7 times out of 10 on
++   NIFTY or 5 times out of 10, because the second is a coin flip and the label
++   is then just decoration. Everything here reports n and a hit rate so the
++   marker can be read honestly.
++
++   Thresholds are expressed in ATR, not points, so the same rules work on a
++   1-minute candle and a weekly one.
++   ========================================================================== */
++(function (KT) {
++  'use strict';
++
++  /* ----------------------------------------------------------------- utils */
++  function atr(c, i, period) {
++    period = period || 14;
++    var start = Math.max(1, i - period + 1), sum = 0, n = 0;
++    for (var k = start; k <= i; k++) {
++      var tr = Math.max(
++        c[k].high - c[k].low,
++        Math.abs(c[k].high - c[k - 1].close),
++        Math.abs(c[k].low - c[k - 1].close)
++      );
++      sum += tr; n++;
++    }
++    return n ? sum / n : (c[i].high - c[i].low) || 1;
++  }
++
++  function body(b) { return Math.abs(b.close - b.open); }
++  function upper(b) { return b.high - Math.max(b.open, b.close); }
++  function lower(b) { return Math.min(b.open, b.close) - b.low; }
++  function isUp(b) { return b.close >= b.open; }
++  function range(b) { return (b.high - b.low) || 1e-9; }
++
++  /* Swing highs and lows, used by the multi-bar chart patterns. A pivot is a
++     bar whose high (or low) is the most extreme within `w` bars either side. */
++  function pivots(c, w) {
++    w = w || 5;
++    var hi = [], lo = [];
++    for (var i = w; i < c.length - w; i++) {
++      var isHi = true, isLo = true;
++      for (var k = i - w; k <= i + w; k++) {
++        if (k === i) continue;
++        if (c[k].high >= c[i].high) isHi = false;
++        if (c[k].low <= c[i].low) isLo = false;
++        if (!isHi && !isLo) break;
++      }
++      if (isHi) hi.push(i);
++      if (isLo) lo.push(i);
++    }
++    return { highs: hi, lows: lo };
++  }
++
++  /* ------------------------------------------------------- candlestick set
++     Each detector returns a direction: 1 bullish, -1 bearish, 0 indecision.
++     `need` is how many prior bars it reads, so the scanner can skip safely. */
++  var CANDLE = [
++    {
++      key: 'engulf_bull', name: 'Bullish engulfing', dir: 1, need: 2,
++      why: 'A down bar fully swallowed by the next up bar.',
++      test: function (c, i, a) {
++        var p = c[i - 1], b = c[i];
++        return !isUp(p) && isUp(b) && body(p) > 0.1 * a &&
++               b.close >= p.open && b.open <= p.close && body(b) > body(p) * 1.1;
++      },
++    },
++    {
++      key: 'engulf_bear', name: 'Bearish engulfing', dir: -1, need: 2,
++      why: 'An up bar fully swallowed by the next down bar.',
++      test: function (c, i, a) {
++        var p = c[i - 1], b = c[i];
++        return isUp(p) && !isUp(b) && body(p) > 0.1 * a &&
++               b.close <= p.open && b.open >= p.close && body(b) > body(p) * 1.1;
++      },
++    },
++    {
++      key: 'hammer', name: 'Hammer', dir: 1, need: 6,
++      why: 'Long lower wick after a decline: sellers pushed down and lost it.',
++      test: function (c, i, a) {
++        var b = c[i];
++        return lower(b) > body(b) * 2 && upper(b) < body(b) * 0.8 &&
++               range(b) > 0.5 * a && c[i - 5].close > c[i - 1].close;
++      },
++    },
++    {
++      key: 'shooting_star', name: 'Shooting star', dir: -1, need: 6,
++      why: 'Long upper wick after a rise: buyers pushed up and lost it.',
++      test: function (c, i, a) {
++        var b = c[i];
++        return upper(b) > body(b) * 2 && lower(b) < body(b) * 0.8 &&
++               range(b) > 0.5 * a && c[i - 5].close < c[i - 1].close;
++      },
++    },
++    {
++      key: 'doji', name: 'Doji', dir: 0, need: 2,
++      why: 'Open and close almost equal: neither side finished in control.',
++      test: function (c, i, a) {
++        var b = c[i];
++        return body(b) < range(b) * 0.08 && range(b) > 0.4 * a;
++      },
++    },
++    {
++      key: 'morning_star', name: 'Morning star', dir: 1, need: 3,
++      why: 'Heavy down bar, a small pause, then a strong recovery.',
++      test: function (c, i, a) {
++        var x = c[i - 2], m = c[i - 1], z = c[i];
++        return !isUp(x) && body(x) > 0.6 * a && body(m) < body(x) * 0.4 &&
++               isUp(z) && z.close > (x.open + x.close) / 2;
++      },
++    },
++    {
++      key: 'evening_star', name: 'Evening star', dir: -1, need: 3,
++      why: 'Strong up bar, a small pause, then a heavy reversal.',
++      test: function (c, i, a) {
++        var x = c[i - 2], m = c[i - 1], z = c[i];
++        return isUp(x) && body(x) > 0.6 * a && body(m) < body(x) * 0.4 &&
++               !isUp(z) && z.close < (x.open + x.close) / 2;
++      },
++    },
++    {
++      key: 'three_soldiers', name: 'Three white soldiers', dir: 1, need: 3,
++      why: 'Three strong up bars in a row, each closing higher.',
++      test: function (c, i, a) {
++        for (var k = i - 2; k <= i; k++) {
++          if (!isUp(c[k]) || body(c[k]) < 0.4 * a) return false;
++          if (k > i - 2 && c[k].close <= c[k - 1].close) return false;
++        }
++        return true;
++      },
++    },
++    {
++      key: 'three_crows', name: 'Three black crows', dir: -1, need: 3,
++      why: 'Three strong down bars in a row, each closing lower.',
++      test: function (c, i, a) {
++        for (var k = i - 2; k <= i; k++) {
++          if (isUp(c[k]) || body(c[k]) < 0.4 * a) return false;
++          if (k > i - 2 && c[k].close >= c[k - 1].close) return false;
++        }
++        return true;
++      },
++    },
++    {
++      key: 'gap_up', name: 'Gap up', dir: 1, need: 2,
++      why: 'Opened clear of the previous bar’s high.',
++      test: function (c, i, a) { return c[i].low > c[i - 1].high + 0.15 * a; },
++    },
++    {
++      key: 'gap_down', name: 'Gap down', dir: -1, need: 2,
++      why: 'Opened clear below the previous bar’s low.',
++      test: function (c, i, a) { return c[i].high < c[i - 1].low - 0.15 * a; },
++    },
++  ];
++
++  /* ------------------------------------------------------- chart structures
++     These read the pivot series rather than individual bars. Each returns the
++     index of the bar where the structure completes, so it marks in the right
++     place rather than at the middle of the shape. */
++  function chartPatterns(c, out) {
++    if (c.length < 40) return;
++    var p = pivots(c, Math.max(3, Math.round(c.length / 60)));
++    var hs = p.highs, ls = p.lows;
++    var a = atr(c, c.length - 1, 14);
++
++    // Double top: two highs within a quarter of an ATR, with a dip between.
++    for (var i = 1; i < hs.length; i++) {
++      var h1 = hs[i - 1], h2 = hs[i];
++      if (h2 - h1 < 5 || h2 - h1 > 90) continue;
++      if (Math.abs(c[h1].high - c[h2].high) > 0.5 * a) continue;
++      var trough = Infinity;
++      for (var k = h1; k <= h2; k++) trough = Math.min(trough, c[k].low);
++      if (c[h1].high - trough < 1.2 * a) continue;
++      out.push(mk('double_top', 'Double top', -1, h2, c,
++        'Two failures at the same level with a dip between.'));
++    }
++
++    // Double bottom: the mirror.
++    for (var j = 1; j < ls.length; j++) {
++      var l1 = ls[j - 1], l2 = ls[j];
++      if (l2 - l1 < 5 || l2 - l1 > 90) continue;
++      if (Math.abs(c[l1].low - c[l2].low) > 0.5 * a) continue;
++      var peak = -Infinity;
++      for (var m = l1; m <= l2; m++) peak = Math.max(peak, c[m].high);
++      if (peak - c[l1].low < 1.2 * a) continue;
++      out.push(mk('double_bottom', 'Double bottom', 1, l2, c,
++        'Two holds at the same level with a bounce between.'));
++    }
++
++    // Head and shoulders: middle high above both neighbours, shoulders level.
++    for (var n = 2; n < hs.length; n++) {
++      var s1 = hs[n - 2], head = hs[n - 1], s2 = hs[n];
++      if (s2 - s1 > 120) continue;
++      if (c[head].high <= c[s1].high || c[head].high <= c[s2].high) continue;
++      if (Math.abs(c[s1].high - c[s2].high) > 0.8 * a) continue;
++      if (c[head].high - Math.max(c[s1].high, c[s2].high) < 0.6 * a) continue;
++      out.push(mk('head_shoulders', 'Head and shoulders', -1, s2, c,
++        'A high between two lower, level highs.'));
++    }
++
++    // Inverse head and shoulders.
++    for (var q = 2; q < ls.length; q++) {
++      var t1 = ls[q - 2], hd = ls[q - 1], t2 = ls[q];
++      if (t2 - t1 > 120) continue;
++      if (c[hd].low >= c[t1].low || c[hd].low >= c[t2].low) continue;
++      if (Math.abs(c[t1].low - c[t2].low) > 0.8 * a) continue;
++      if (Math.min(c[t1].low, c[t2].low) - c[hd].low < 0.6 * a) continue;
++      out.push(mk('inv_head_shoulders', 'Inverse head and shoulders', 1, t2, c,
++        'A low between two higher, level lows.'));
++    }
++
++    // Ascending triangle: flat highs, rising lows. Descending is the mirror.
++    triangle(c, hs, ls, a, out, true);
++    triangle(c, hs, ls, a, out, false);
++  }
++
++  function triangle(c, hs, ls, a, out, ascending) {
++    var flat = ascending ? hs : ls;
++    var slope = ascending ? ls : hs;
++    for (var i = 2; i < flat.length; i++) {
++      var f1 = flat[i - 2], f2 = flat[i - 1], f3 = flat[i];
++      if (f3 - f1 > 120 || f3 - f1 < 12) continue;
++      var v = function (k) { return ascending ? c[k].high : c[k].low; };
++      if (Math.abs(v(f1) - v(f2)) > 0.6 * a || Math.abs(v(f2) - v(f3)) > 0.6 * a) continue;
++      // the other side must be trending into it
++      var inner = slope.filter(function (k) { return k > f1 && k < f3; });
++      if (inner.length < 2) continue;
++      var first = inner[0], last = inner[inner.length - 1];
++      var w = function (k) { return ascending ? c[k].low : c[k].high; };
++      var rising = w(last) - w(first);
++      if (ascending && rising < 0.8 * a) continue;
++      if (!ascending && rising > -0.8 * a) continue;
++      out.push(mk(
++        ascending ? 'asc_triangle' : 'desc_triangle',
++        ascending ? 'Ascending triangle' : 'Descending triangle',
++        ascending ? 1 : -1, f3, c,
++        ascending ? 'Flat ceiling with lows pressing up into it.'
++                  : 'Flat floor with highs pressing down onto it.'));
++    }
++  }
++
++  function mk(key, name, dir, i, c, why) {
++    return { key: key, name: name, dir: dir, index: i, time: c[i].time, close: c[i].close, why: why };
++  }
++
++  /* ------------------------------------------------------------- detection */
++  function detect(candles) {
++    var c = candles || [];
++    if (c.length < 20) return [];
++    var out = [];
++    for (var i = 3; i < c.length; i++) {
++      var a = atr(c, i, 14);
++      if (!a) continue;
++      for (var d = 0; d < CANDLE.length; d++) {
++        var spec = CANDLE[d];
++        if (i < spec.need) continue;
++        var ok = false;
++        try { ok = spec.test(c, i, a); } catch (e) { ok = false; }
++        if (ok) out.push(mk(spec.key, spec.name, spec.dir, i, c, spec.why));
++      }
++    }
++    chartPatterns(c, out);
++    out.sort(function (x, y) { return x.index - y.index; });
++    return out;
++  }
++
++  /* ------------------------------------------------------------- hit rates
++     For every pattern type present, look at each past occurrence, measure the
++     return over the next `horizon` bars, and count how often it went the way
++     the pattern is supposed to go. The last occurrence is excluded from its
++     own statistic - it has not resolved yet. */
++  function hitRates(candles, found, horizon) {
++    var c = candles;
++    horizon = horizon || Math.max(3, Math.round(c.length / 60));
++    var byKey = {};
++
++    found.forEach(function (p) {
++      (byKey[p.key] = byKey[p.key] || { key: p.key, name: p.name, dir: p.dir, why: p.why, hits: [] })
++        .hits.push(p);
++    });
++
++    Object.keys(byKey).forEach(function (k) {
++      var g = byKey[k], wins = 0, ups = 0, n = 0, moves = [];
++      g.hits.forEach(function (p) {
++        var end = p.index + horizon;
++        if (end >= c.length) return;              // not resolved yet
++        var move = (c[end].close - p.close) / p.close * 100;
++        moves.push(move);
++        n++;
++        if (g.dir !== 0 && (move > 0) === (g.dir > 0)) wins++;
++        if (move > 0) ups++;
++      });
++      g.n = n;
++      g.horizon = horizon;
++      // A hit rate only means something for a pattern that claims a direction.
++      // A doji claims indecision, so it gets an up-rate and nothing else.
++      g.hitRate = (n && g.dir !== 0) ? Math.round(wins / n * 1000) / 10 : null;
++      g.upRate = n ? Math.round(ups / n * 1000) / 10 : null;
++      g.avgMove = n ? Math.round(moves.reduce(function (s, x) { return s + x; }, 0) / n * 100) / 100 : null;
++      g.bestMove = n ? Math.round(Math.max.apply(null, moves) * 100) / 100 : null;
++      g.worstMove = n ? Math.round(Math.min.apply(null, moves) * 100) / 100 : null;
++      // Under about 8 samples a hit rate is noise, and saying so is the point.
++      g.reliable = n >= 8;
++    });
++
++    return byKey;
++  }
++
++  /* What is showing right now, near the live edge of the series. */
++  function current(candles, found, withinBars) {
++    var edge = candles.length - 1 - (withinBars || 3);
++    return found.filter(function (p) { return p.index >= edge; });
++  }
++
++  /* Chart markers. Deliberately capped and ranked so the chart stays readable:
++     structures first, then whatever has the strongest measured record. */
++  function markers(found, stats, limit) {
++    limit = limit || 18;
++    var STRUCTURE = { double_top:1, double_bottom:1, head_shoulders:1,
++                      inv_head_shoulders:1, asc_triangle:1, desc_triangle:1 };
++    var scored = found.map(function (p) {
++      var s = stats[p.key] || {};
++      var edge = (s.reliable && s.hitRate != null) ? Math.abs(s.hitRate - 50) : 0;
++      return { p: p, rank: (STRUCTURE[p.key] ? 100 : 0) + edge + p.index / 1e6 };
++    }).sort(function (a, b) { return b.rank - a.rank; }).slice(0, limit);
++
++    return scored.map(function (o) {
++      var p = o.p, s = stats[p.key] || {};
++      var up = p.dir > 0;
++      return {
++        time: p.time,
++        position: up ? 'belowBar' : 'aboveBar',
++        color: p.dir === 0 ? '#8a8f98' : (up ? '#7c3aed' : '#d97706'),
++        shape: 'square',
++        size: 0.9,
++        text: shortLabel(p, s),
++        __pattern: p,
++        __stats: s,
++      };
++    });
++  }
++
++  function shortLabel(p, s) {
++    var abbr = p.name.split(' ').map(function (w) { return w[0]; }).join('').toUpperCase();
++    if (s && s.reliable && s.hitRate != null) return abbr + ' ' + s.hitRate + '%';
++    if (s && s.reliable && s.upRate != null) return abbr + ' \u2191' + s.upRate + '%';
++    return abbr;
++  }
++
++  KT.patterns = {
++    detect: detect, hitRates: hitRates, current: current,
++    markers: markers, pivots: pivots, atr: atr,
++  };
++})(window.KT);
+diff --git a/assets/style.css b/assets/style.css
+index c408d21..7693835 100644
+--- a/assets/style.css
++++ b/assets/style.css
+@@ -460,14 +460,26 @@ body { display: flex; flex-direction: column; overflow: hidden; }
+ @media (max-width: 1280px) {
+   :root { --insight-w: 280px; --mw-w: 240px; }
+ }
++/* Between 760 and 1080 the third column will not fit beside the chart, so it
++   moves under it instead of disappearing. Hiding the forecast entirely made
++   the page look broken on a laptop - it is the reason the page exists. */
+ @media (max-width: 1080px) {
+-  .workspace { grid-template-columns: var(--mw-w) minmax(0,1fr); }
+-  .insight-panel { display: none; }
+-  .insight-panel.is-open {
+-    display: flex; position: fixed; top: var(--header-h); right: 0; bottom: 0;
+-    width: min(340px, 90vw); z-index: 50; box-shadow: var(--shadow-lg);
+-    border-left: 1px solid var(--border);
++  .workspace {
++    grid-template-columns: var(--mw-w) minmax(0,1fr);
++    grid-template-rows: minmax(0, 1fr) auto;
+   }
++  .mw-panel      { grid-column: 1; grid-row: 1 / span 2; }
++  .chart-panel   { grid-column: 2; grid-row: 1; }
++  .insight-panel {
++    display: flex; grid-column: 2; grid-row: 2;
++    max-height: 34vh; border-top: 1px solid var(--border);
++  }
++  /* The forecast reads better as a row than a column at this width. */
++  .insight-panel .panel-scroll {
++    display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
++    align-items: start;
++  }
++  .insight-panel .section { border-right: 1px solid var(--border); }
+ }
+ @media (max-width: 860px) {
+   /* The topbar is the only row that cannot wrap, so shrink it deliberately
+@@ -527,3 +539,52 @@ body { display: flex; flex-direction: column; overflow: hidden; }
+    only things allowed to scroll sideways are their own containers. */
+ html, body { max-width: 100%; overflow-x: clip; }
+ .news-head-text, .sector-n, .mw-title, .driver-k { min-width: 0; }
++
++
++/* ------------------------------------------------------------- journal */
++.journal-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
++.journal-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
++.journal-table { width: 100%; border-collapse: collapse; font-size: 12px; }
++.journal-table th {
++  text-align: left; font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase;
++  color: var(--ink-muted); font-weight: 600; padding: 7px 9px;
++  border-bottom: 1px solid var(--border); background: var(--bg-sunken); white-space: nowrap;
++}
++.journal-table td { padding: 7px 9px; border-bottom: 1px solid var(--border); vertical-align: middle; }
++.journal-table tr:last-child td { border-bottom: none; }
++.journal-table .num-col { text-align: right; font-family: var(--mono); }
++.journal-table .side-buy  { color: var(--brand); font-weight: 600; }
++.journal-table .side-sell { color: var(--down); font-weight: 600; }
++.journal-table .row-del {
++  border: none; background: none; color: var(--ink-faint); cursor: pointer;
++  font-size: 15px; line-height: 1; padding: 2px 5px; border-radius: 3px;
++}
++.journal-table .row-del:hover { color: var(--down); background: var(--down-soft); }
++.journal-empty { padding: 18px; text-align: center; color: var(--ink-muted); font-size: 12px; }
++
++/* --------------------------------------------------- pattern recognition */
++.pattern-now { display: grid; gap: 5px; margin-bottom: 9px; }
++.pattern-live {
++  display: flex; align-items: center; justify-content: space-between;
++  gap: 8px; font-size: 11px;
++}
++.pattern-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
++.pattern-table th {
++  text-align: left; font-size: 9px; letter-spacing: .06em; text-transform: uppercase;
++  color: var(--ink-muted); font-weight: 600; padding: 5px 4px;
++  border-bottom: 1px solid var(--border); white-space: nowrap;
++}
++.pattern-table td { padding: 5px 4px; border-bottom: 1px dashed var(--border); }
++.pattern-table tr:last-child td { border-bottom: none; }
++.pattern-table .num-col { text-align: right; font-family: var(--mono); }
++/* A thin sample is shown, but visibly demoted - it is not evidence. */
++.pattern-table tr.thin td { opacity: .55; }
++.thin-tag {
++  font-size: 8.5px; letter-spacing: .05em; text-transform: uppercase;
++  color: var(--warn); border: 1px solid var(--warn); border-radius: 2px;
++  padding: 0 3px; vertical-align: middle;
++}
++.pattern-note {
++  font-size: 10px; line-height: 1.45; color: var(--ink-faint);
++  margin: 8px 0 0; border-top: 1px dashed var(--border); padding-top: 7px;
++}
+diff --git a/config/auth.json b/config/auth.json
+new file mode 100644
+index 0000000..7a0cc89
+--- /dev/null
++++ b/config/auth.json
+@@ -0,0 +1,8 @@
++{
++  "_note": "Gate for the trade journal on the published site. This is a PBKDF2-SHA256 derivation, not the password. 310,000 iterations make an offline guessing attack slow. It stops visitors opening the journal; it is not unbreakable, and it protects nothing valuable either way because journal entries are stored only in each viewer's own browser and are never uploaded.",
++  "user": "Volt@air123",
++  "salt": "fa9114430911bca933fdaded0f84d846",
++  "iterations": 310000,
++  "hash": "64eef5d16bac5c7bf6b265eadf549e27ca2ced5e3d07007d53e063d639400715",
++  "algo": "PBKDF2-SHA256"
++}
+\ No newline at end of file
+diff --git a/config/lexicon.json b/config/lexicon.json
+index 579a10a..f7d718b 100644
+--- a/config/lexicon.json
++++ b/config/lexicon.json
+@@ -1,111 +1,668 @@
+ {
+   "_note": "Single source of truth for news scoring. Read by scripts/fetch_news.py (server side) and assets/js/sentiment.js (browser), so both lanes score identically. Weights are on a -4..+4 scale.",
+   "version": 2,
+-
+   "bullish": {
+-    "record high": 4, "all-time high": 4, "lifetime high": 4, "surges": 3, "surge": 3,
+-    "soars": 3, "soar": 3, "rallies": 3, "rally": 3, "jumps": 3, "jump": 2, "spikes": 2,
+-    "climbs": 2, "gains": 2, "gain": 2, "rises": 2, "rise": 2, "advances": 2, "up": 1,
+-    "higher": 2, "outperform": 3, "beats estimates": 4, "beats expectations": 4,
+-    "tops estimates": 4, "strong results": 3, "record profit": 4, "profit jumps": 4,
+-    "revenue growth": 3, "margin expansion": 3, "order win": 3, "bags order": 3,
+-    "wins contract": 3, "deal win": 3, "upgrade": 3, "upgrades": 3, "buy rating": 3,
+-    "target price raised": 3, "raises guidance": 4, "upbeat": 2, "optimistic": 2,
+-    "bullish": 3, "recovery": 2, "rebound": 3, "bounce": 2, "inflows": 3, "buying": 2,
+-    "rate cut": 3, "liquidity boost": 3, "stimulus": 3, "dovish": 3, "easing": 2,
+-    "tax relief": 3, "incentive": 2, "approval": 2, "approved": 2, "expansion": 2,
+-    "demand revival": 3, "cools": 2, "eases": 2, "better than expected": 3,
+-    "fii buying": 3, "dii buying": 2, "block deal": 1, "bonus issue": 2, "dividend": 1,
+-    "buyback": 3, "stake buy": 2, "green": 1, "positive": 2, "boost": 2, "revival": 2,
+-    "momentum": 1, "breakout": 3, "support holds": 2, "undervalued": 2
++    "record high": 4,
++    "all-time high": 4,
++    "lifetime high": 4,
++    "surges": 3,
++    "surge": 3,
++    "soars": 3,
++    "soar": 3,
++    "rallies": 3,
++    "rally": 3,
++    "jumps": 3,
++    "jump": 2,
++    "spikes": 2,
++    "climbs": 2,
++    "gains": 2,
++    "gain": 2,
++    "rises": 2,
++    "rise": 2,
++    "advances": 2,
++    "up": 1,
++    "higher": 2,
++    "outperform": 3,
++    "beats estimates": 4,
++    "beats expectations": 4,
++    "tops estimates": 4,
++    "strong results": 3,
++    "record profit": 4,
++    "profit jumps": 4,
++    "revenue growth": 3,
++    "margin expansion": 3,
++    "order win": 3,
++    "bags order": 3,
++    "wins contract": 3,
++    "deal win": 3,
++    "upgrade": 3,
++    "upgrades": 3,
++    "buy rating": 3,
++    "target price raised": 3,
++    "raises guidance": 4,
++    "upbeat": 2,
++    "optimistic": 2,
++    "bullish": 3,
++    "recovery": 2,
++    "rebound": 3,
++    "bounce": 2,
++    "inflows": 3,
++    "buying": 2,
++    "rate cut": 3,
++    "liquidity boost": 3,
++    "stimulus": 3,
++    "dovish": 3,
++    "easing": 2,
++    "tax relief": 3,
++    "incentive": 2,
++    "approval": 2,
++    "approved": 2,
++    "expansion": 2,
++    "demand revival": 3,
++    "cools": 2,
++    "eases": 2,
++    "better than expected": 3,
++    "fii buying": 3,
++    "dii buying": 2,
++    "block deal": 1,
++    "bonus issue": 2,
++    "dividend": 1,
++    "buyback": 3,
++    "stake buy": 2,
++    "green": 1,
++    "positive": 2,
++    "boost": 2,
++    "revival": 2,
++    "momentum": 1,
++    "breakout": 3,
++    "support holds": 2,
++    "undervalued": 2
+   },
+-
+   "bearish": {
+-    "crash": -4, "crashes": -4, "plunges": -4, "plunge": -4, "tumbles": -3, "tumble": -3,
+-    "slumps": -3, "slump": -3, "sinks": -3, "dives": -3, "drops": -2, "drop": -2,
+-    "falls": -2, "fall": -2, "declines": -2, "decline": -2, "slides": -2, "down": -1,
+-    "lower": -2, "selloff": -4, "sell-off": -4, "sell off": -3, "correction": -3,
+-    "bear market": -4, "bearish": -3, "underperform": -3, "misses estimates": -4,
+-    "misses expectations": -4, "profit falls": -4, "loss widens": -4, "posts loss": -4,
+-    "weak results": -3, "margin pressure": -3, "downgrade": -3, "downgrades": -3,
+-    "sell rating": -3, "target price cut": -3, "cuts guidance": -4, "warns": -3,
+-    "warning": -3, "outflows": -3, "fii selling": -3, "selling pressure": -3,
+-    "rate hike": -3, "hawkish": -3, "tightening": -2, "inflation rises": -3,
+-    "inflation surges": -4, "deficit widens": -3, "downside": -2, "recession": -4,
+-    "slowdown": -3, "contraction": -3, "layoffs": -2, "job cuts": -2, "default": -4,
+-    "fraud": -4, "probe": -3, "investigation": -2, "penalty": -2, "fine": -2,
+-    "ban": -3, "restriction": -2, "tariff": -3, "tariffs": -3, "sanctions": -3,
+-    "war": -3, "conflict": -3, "attack": -3, "tension": -2, "escalation": -3,
+-    "disruption": -2, "shortage": -2, "crisis": -3, "risk": -1, "concern": -2,
+-    "concerns": -2, "worries": -2, "fears": -3, "uncertainty": -2, "volatility": -1,
+-    "pressure": -2, "drag": -2, "weak": -2, "weakness": -2, "negative": -2,
+-    "red": -1, "cautious": -1, "overvalued": -2, "breakdown": -3, "resistance": -1
++    "crash": -4,
++    "crashes": -4,
++    "plunges": -4,
++    "plunge": -4,
++    "tumbles": -3,
++    "tumble": -3,
++    "slumps": -3,
++    "slump": -3,
++    "sinks": -3,
++    "dives": -3,
++    "drops": -2,
++    "drop": -2,
++    "falls": -2,
++    "fall": -2,
++    "declines": -2,
++    "decline": -2,
++    "slides": -2,
++    "down": -1,
++    "lower": -2,
++    "selloff": -4,
++    "sell-off": -4,
++    "sell off": -3,
++    "correction": -3,
++    "bear market": -4,
++    "bearish": -3,
++    "underperform": -3,
++    "misses estimates": -4,
++    "misses expectations": -4,
++    "profit falls": -4,
++    "loss widens": -4,
++    "posts loss": -4,
++    "weak results": -3,
++    "margin pressure": -3,
++    "downgrade": -3,
++    "downgrades": -3,
++    "sell rating": -3,
++    "target price cut": -3,
++    "cuts guidance": -4,
++    "warns": -3,
++    "warning": -3,
++    "outflows": -3,
++    "fii selling": -3,
++    "selling pressure": -3,
++    "rate hike": -3,
++    "hawkish": -3,
++    "tightening": -2,
++    "inflation rises": -3,
++    "inflation surges": -4,
++    "deficit widens": -3,
++    "downside": -2,
++    "recession": -4,
++    "slowdown": -3,
++    "contraction": -3,
++    "layoffs": -2,
++    "job cuts": -2,
++    "default": -4,
++    "fraud": -4,
++    "probe": -3,
++    "investigation": -2,
++    "penalty": -2,
++    "fine": -2,
++    "ban": -3,
++    "restriction": -2,
++    "tariff": -3,
++    "tariffs": -3,
++    "sanctions": -3,
++    "war": -3,
++    "conflict": -3,
++    "attack": -3,
++    "tension": -2,
++    "escalation": -3,
++    "disruption": -2,
++    "shortage": -2,
++    "crisis": -3,
++    "risk": -1,
++    "concern": -2,
++    "concerns": -2,
++    "worries": -2,
++    "fears": -3,
++    "uncertainty": -2,
++    "volatility": -1,
++    "pressure": -2,
++    "drag": -2,
++    "weak": -2,
++    "weakness": -2,
++    "negative": -2,
++    "red": -1,
++    "cautious": -1,
++    "overvalued": -2,
++    "breakdown": -3,
++    "resistance": -1
+   },
+-
+   "impact_high": [
+-    "rbi", "repo rate", "monetary policy", "mpc", "federal reserve", "fed", "fomc",
+-    "interest rate", "inflation", "cpi", "gdp", "budget", "gst", "sebi",
+-    "fii", "dii", "crude oil", "brent", "rupee", "dollar index", "us tariff",
+-    "trade deal", "war", "geopolitical", "nifty", "sensex", "bank nifty",
+-    "index rejig", "msci", "expiry", "circuit", "bond yield", "downgrade", "upgrade",
+-    "election", "government", "parliament", "policy", "regulation"
++    "repo rate",
++    "monetary policy",
++    "mpc",
++    "rate cut",
++    "rate hike",
++    "fomc",
++    "federal reserve",
++    "fed chair",
++    "interest rate decision",
++    "cpi inflation",
++    "inflation data",
++    "gdp growth",
++    "union budget",
++    "gst rate",
++    "sebi bans",
++    "sebi tightens",
++    "circuit breaker",
++    "index rejig",
++    "msci rebalancing",
++    "fii selling",
++    "fii buying",
++    "dii buying",
++    "record high",
++    "all-time high",
++    "crash",
++    "selloff",
++    "sell-off",
++    "bear market",
++    "tariff",
++    "sanctions",
++    "war",
++    "geopolitical",
++    "downgrade",
++    "upgrade",
++    "bond yield",
++    "rupee record",
++    "crude oil price",
++    "election result",
++    "emergency",
++    "default",
++    "bailout",
++    "stimulus",
++    "liquidity injection",
++    "bans",
++    "probe into",
++    "raid"
+   ],
+-
+   "impact_medium": [
+-    "results", "earnings", "quarterly", "q1", "q2", "q3", "q4", "guidance",
+-    "order", "contract", "merger", "acquisition", "ipo", "listing", "stake",
+-    "dividend", "buyback", "bonus", "split", "capex", "expansion", "plant",
+-    "pmi", "iip", "exports", "imports", "deficit", "reserves", "auction",
+-    "monsoon", "demand", "sales", "production", "output", "prices"
++    "acquisition",
++    "auction",
++    "bank nifty",
++    "bonus",
++    "budget",
++    "buyback",
++    "capex",
++    "contract",
++    "crude",
++    "deficit",
++    "demand",
++    "dii",
++    "dividend",
++    "dollar index",
++    "earnings",
++    "expansion",
++    "expiry",
++    "exports",
++    "fii",
++    "gdp",
++    "government",
++    "gst",
++    "guidance",
++    "iip",
++    "imports",
++    "inflation",
++    "ipo",
++    "listing",
++    "merger",
++    "monsoon",
++    "nifty",
++    "order",
++    "output",
++    "parliament",
++    "plant",
++    "pmi",
++    "policy",
++    "prices",
++    "production",
++    "q1",
++    "q2",
++    "q3",
++    "q4",
++    "quarterly",
++    "rbi",
++    "regulation",
++    "reserves",
++    "results",
++    "rupee",
++    "sales",
++    "sebi",
++    "sensex",
++    "split",
++    "stake",
++    "trade deal"
+   ],
+-
+   "relevance": [
+-    "market", "markets", "stock", "stocks", "share", "shares", "equity", "equities",
+-    "nifty", "sensex", "bse", "nse", "index", "sector", "trading", "trade",
+-    "investor", "investors", "economy", "economic", "gdp", "inflation", "rbi",
+-    "fed", "rate", "rates", "bond", "yield", "rupee", "dollar", "currency",
+-    "crude", "oil", "gold", "commodity", "commodities", "earnings", "results",
+-    "profit", "loss", "revenue", "sales", "order", "contract", "ipo", "fund",
+-    "funds", "flows", "fii", "dii", "bank", "banks", "banking", "finance",
+-    "financial", "company", "companies", "business", "industry", "sebi", "budget",
+-    "tax", "gst", "policy", "tariff", "export", "import", "deficit", "growth",
+-    "demand", "supply", "price", "prices", "valuation", "analyst", "brokerage",
+-    "target", "rating", "futures", "options", "derivatives", "expiry", "volatility",
+-    "portfolio", "capital", "debt", "credit", "loan", "npa", "merger", "acquisition"
++    "market",
++    "markets",
++    "stock",
++    "stocks",
++    "share",
++    "shares",
++    "equity",
++    "equities",
++    "nifty",
++    "sensex",
++    "bse",
++    "nse",
++    "index",
++    "sector",
++    "trading",
++    "trade",
++    "investor",
++    "investors",
++    "economy",
++    "economic",
++    "gdp",
++    "inflation",
++    "rbi",
++    "fed",
++    "rate",
++    "rates",
++    "bond",
++    "yield",
++    "rupee",
++    "dollar",
++    "currency",
++    "crude",
++    "oil",
++    "gold",
++    "commodity",
++    "commodities",
++    "earnings",
++    "results",
++    "profit",
++    "loss",
++    "revenue",
++    "sales",
++    "order",
++    "contract",
++    "ipo",
++    "fund",
++    "funds",
++    "flows",
++    "fii",
++    "dii",
++    "bank",
++    "banks",
++    "banking",
++    "finance",
++    "financial",
++    "company",
++    "companies",
++    "business",
++    "industry",
++    "sebi",
++    "budget",
++    "tax",
++    "gst",
++    "policy",
++    "tariff",
++    "export",
++    "import",
++    "deficit",
++    "growth",
++    "demand",
++    "supply",
++    "price",
++    "prices",
++    "valuation",
++    "analyst",
++    "brokerage",
++    "target",
++    "rating",
++    "futures",
++    "options",
++    "derivatives",
++    "expiry",
++    "volatility",
++    "portfolio",
++    "capital",
++    "debt",
++    "credit",
++    "loan",
++    "npa",
++    "merger",
++    "acquisition"
+   ],
+-
+   "noise": [
+-    "horoscope", "astrology", "zodiac", "rashifal", "numerology", "tarot",
+-    "cricket", "ipl", "football", "kabaddi", "olympics", "wrestling", "tennis",
+-    "bollywood", "tollywood", "box office", "movie review", "film review",
+-    "celebrity", "actress", "actor ", "singer", "web series", "netflix show",
+-    "recipe", "fashion", "beauty tips", "weight loss", "viral video", "viral post",
+-    "photos", "pics", "watch video", "trailer", "teaser", "birthday", "wedding",
+-    "divorce", "dating", "gossip", "meme", "troll", "obituary", "weather forecast",
+-    "rainfall alert", "heatwave alert", "traffic", "lottery", "sarkari result",
+-    "admit card", "exam result", "answer key", "recruitment notification",
+-    "match preview", "playing xi", "vs live score", "quiz", "puzzle",
+-    "sponsored", "advertorial", "partner content", "brand connect",
+-    "deals of the day", "amazon sale", "flipkart sale", "discount offer",
+-    "best phones under", "smartphone launch", "gadget review", "car review",
+-    "bike launch", "travel guide", "tourist", "health tips", "yoga", "diet plan"
++    "horoscope",
++    "astrology",
++    "zodiac",
++    "rashifal",
++    "numerology",
++    "tarot",
++    "cricket",
++    "ipl",
++    "football",
++    "kabaddi",
++    "olympics",
++    "wrestling",
++    "tennis",
++    "bollywood",
++    "tollywood",
++    "box office",
++    "movie review",
++    "film review",
++    "celebrity",
++    "actress",
++    "actor ",
++    "singer",
++    "web series",
++    "netflix show",
++    "recipe",
++    "fashion",
++    "beauty tips",
++    "weight loss",
++    "viral video",
++    "viral post",
++    "photos",
++    "pics",
++    "watch video",
++    "trailer",
++    "teaser",
++    "birthday",
++    "wedding",
++    "divorce",
++    "dating",
++    "gossip",
++    "meme",
++    "troll",
++    "obituary",
++    "weather forecast",
++    "rainfall alert",
++    "heatwave alert",
++    "traffic",
++    "lottery",
++    "sarkari result",
++    "admit card",
++    "exam result",
++    "answer key",
++    "recruitment notification",
++    "match preview",
++    "playing xi",
++    "vs live score",
++    "quiz",
++    "puzzle",
++    "sponsored",
++    "advertorial",
++    "partner content",
++    "brand connect",
++    "deals of the day",
++    "amazon sale",
++    "flipkart sale",
++    "discount offer",
++    "best phones under",
++    "smartphone launch",
++    "gadget review",
++    "car review",
++    "bike launch",
++    "travel guide",
++    "tourist",
++    "health tips",
++    "yoga",
++    "diet plan"
+   ],
+-
+   "sector_map": {
+-    "banking": ["bank", "banking", "hdfc", "icici", "sbi", "axis", "kotak", "indusind", "nbfc", "credit", "loan", "npa", "deposit", "rbi"],
+-    "it": ["infosys", "tcs", "wipro", "hcl", "tech mahindra", "it services", "software", "coforge", "persistent", "ltimindtree", "mphasis"],
+-    "auto": ["maruti", "tata motors", "mahindra", "bajaj auto", "hero motocorp", "eicher", "tvs", "ashok leyland", "auto sales", "vehicle", "ev "],
+-    "pharma": ["pharma", "sun pharma", "cipla", "dr reddy", "lupin", "aurobindo", "divis", "usfda", "drug", "healthcare", "hospital"],
+-    "metal": ["steel", "tata steel", "jsw", "hindalco", "vedanta", "sail", "jindal", "aluminium", "copper", "zinc", "metal", "coal"],
+-    "energy": ["reliance", "ongc", "oil", "gas", "bpcl", "hpcl", "ioc", "gail", "crude", "refinery", "petrol", "diesel", "lng"],
+-    "fmcg": ["hindustan unilever", "itc", "nestle", "britannia", "dabur", "marico", "godrej consumer", "fmcg", "consumer goods"],
+-    "realty": ["dlf", "godrej properties", "oberoi realty", "prestige", "lodha", "real estate", "housing", "property"],
+-    "power": ["ntpc", "power grid", "tata power", "adani power", "adani green", "nhpc", "sjvn", "electricity", "renewable", "solar", "wind"],
+-    "infra": ["larsen", "l&t", "infrastructure", "construction", "cement", "ultratech", "ambuja", "shree cement", "road", "railway", "port"],
+-    "telecom": ["bharti airtel", "vodafone idea", "jio", "telecom", "arpu", "spectrum", "5g"],
+-    "defence": ["defence", "hal", "bel", "bharat dynamics", "mazagon", "shipbuilders", "drone", "missile"],
+-    "index": ["nifty", "sensex", "bank nifty", "index", "market", "dalal street", "benchmark"],
+-    "macro": ["gdp", "inflation", "cpi", "wpi", "iip", "pmi", "fiscal", "budget", "deficit", "gst", "trade", "exports", "imports", "forex"],
+-    "global": ["fed", "federal reserve", "wall street", "nasdaq", "s&p 500", "dow", "china", "europe", "ecb", "yen", "dollar", "treasury", "tariff"]
+-  }
+-}
++    "banking": [
++      "bank",
++      "banking",
++      "hdfc",
++      "icici",
++      "sbi",
++      "axis",
++      "kotak",
++      "indusind",
++      "nbfc",
++      "credit",
++      "loan",
++      "npa",
++      "deposit",
++      "rbi"
++    ],
++    "it": [
++      "infosys",
++      "tcs",
++      "wipro",
++      "hcl",
++      "tech mahindra",
++      "it services",
++      "software",
++      "coforge",
++      "persistent",
++      "ltimindtree",
++      "mphasis"
++    ],
++    "auto": [
++      "maruti",
++      "tata motors",
++      "mahindra",
++      "bajaj auto",
++      "hero motocorp",
++      "eicher",
++      "tvs",
++      "ashok leyland",
++      "auto sales",
++      "vehicle",
++      "ev "
++    ],
++    "pharma": [
++      "pharma",
++      "sun pharma",
++      "cipla",
++      "dr reddy",
++      "lupin",
++      "aurobindo",
++      "divis",
++      "usfda",
++      "drug",
++      "healthcare",
++      "hospital"
++    ],
++    "metal": [
++      "steel",
++      "tata steel",
++      "jsw",
++      "hindalco",
++      "vedanta",
++      "sail",
++      "jindal",
++      "aluminium",
++      "copper",
++      "zinc",
++      "metal",
++      "coal"
++    ],
++    "energy": [
++      "reliance",
++      "ongc",
++      "oil",
++      "gas",
++      "bpcl",
++      "hpcl",
++      "ioc",
++      "gail",
++      "crude",
++      "refinery",
++      "petrol",
++      "diesel",
++      "lng"
++    ],
++    "fmcg": [
++      "hindustan unilever",
++      "itc",
++      "nestle",
++      "britannia",
++      "dabur",
++      "marico",
++      "godrej consumer",
++      "fmcg",
++      "consumer goods"
++    ],
++    "realty": [
++      "dlf",
++      "godrej properties",
++      "oberoi realty",
++      "prestige",
++      "lodha",
++      "real estate",
++      "housing",
++      "property"
++    ],
++    "power": [
++      "ntpc",
++      "power grid",
++      "tata power",
++      "adani power",
++      "adani green",
++      "nhpc",
++      "sjvn",
++      "electricity",
++      "renewable",
++      "solar",
++      "wind"
++    ],
++    "infra": [
++      "larsen",
++      "l&t",
++      "infrastructure",
++      "construction",
++      "cement",
++      "ultratech",
++      "ambuja",
++      "shree cement",
++      "road",
++      "railway",
++      "port"
++    ],
++    "telecom": [
++      "bharti airtel",
++      "vodafone idea",
++      "jio",
++      "telecom",
++      "arpu",
++      "spectrum",
++      "5g"
++    ],
++    "defence": [
++      "defence",
++      "hal",
++      "bel",
++      "bharat dynamics",
++      "mazagon",
++      "shipbuilders",
++      "drone",
++      "missile"
++    ],
++    "index": [
++      "nifty",
++      "sensex",
++      "bank nifty",
++      "index",
++      "market",
++      "dalal street",
++      "benchmark"
++    ],
++    "macro": [
++      "gdp",
++      "inflation",
++      "cpi",
++      "wpi",
++      "iip",
++      "pmi",
++      "fiscal",
++      "budget",
++      "deficit",
++      "gst",
++      "trade",
++      "exports",
++      "imports",
++      "forex"
++    ],
++    "global": [
++      "fed",
++      "federal reserve",
++      "wall street",
++      "nasdaq",
++      "s&p 500",
++      "dow",
++      "china",
++      "europe",
++      "ecb",
++      "yen",
++      "dollar",
++      "treasury",
++      "tariff"
++    ]
++  },
++  "procedural": [
++    "invites comments",
++    "draft directions",
++    "amendment directions",
++    "master direction",
++    "auction of",
++    "treasury bills",
++    "t-bill",
++    "notification no",
++    "press release no",
++    "tender",
++    "vacancy",
++    "recruitment",
++    "clarification on",
++    "faq",
++    "corrigendum",
++    "list of",
++    "schedule of",
++    "calendar for",
++    "annual report",
++    "minutes of",
++    "appointment of",
++    "obituary",
++    "holiday",
++    "office order"
++  ]
++}
+\ No newline at end of file
+diff --git a/data/filings.json b/data/filings.json
+new file mode 100644
+index 0000000..a21cbd0
+--- /dev/null
++++ b/data/filings.json
+@@ -0,0 +1,8 @@
++{
++ "updated_iso": "2026-09-15T04:01:40+00:00",
++ "count": 0,
++ "high": 0,
++ "note": "Empty until the first run of scripts/fetch_filings.py via the workflow. Lanes report which exchange answered.",
++ "lanes": [],
++ "filings": []
++}
+\ No newline at end of file
+diff --git a/index.html b/index.html
+index d5282a6..fa91d4e 100644
+--- a/index.html
++++ b/index.html
+@@ -46,6 +46,9 @@
+     <button class="icon-btn" id="btn-insight" title="Show forecast panel" aria-label="Show forecast panel">
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3v18h18"/><path d="M7 14l4-5 3 3 5-7"/></svg>
+     </button>
++    <button class="icon-btn" id="btn-journal" title="Trade journal" aria-label="Trade journal">
++      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h7M9 11h7"/></svg>
++    </button>
+     <button class="icon-btn" id="btn-theme" title="Toggle dark mode" aria-label="Toggle dark mode">
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+     </button>
+@@ -167,6 +170,7 @@
+         <div class="news-filters" role="group" aria-label="News filter">
+           <button class="filter-btn" data-filter="all"    aria-pressed="true">All</button>
+           <button class="filter-btn" data-filter="high"   aria-pressed="false">High impact</button>
++          <button class="filter-btn" data-filter="filing" aria-pressed="false">Filings</button>
+           <button class="filter-btn" data-filter="pos"    aria-pressed="false">Positive</button>
+           <button class="filter-btn" data-filter="neg"    aria-pressed="false">Negative</button>
+           <button class="filter-btn" data-filter="india"  aria-pressed="false">India</button>
+@@ -181,6 +185,19 @@
+   <aside class="panel insight-panel" id="insight-panel" aria-label="Forecast and study">
+     <div class="panel-scroll">
+ 
++      <!-- Your position, from the local trade journal -->
++      <div class="section hidden" id="position-section">
++        <div class="section-head">
++          <span class="label">Your position</span>
++          <button class="btn btn-sm" id="btn-open-journal">Journal</button>
++        </div>
++        <div class="kv"><span class="kv-k">Net quantity</span><span class="kv-v" id="pos-qty">&mdash;</span></div>
++        <div class="kv"><span class="kv-k">Average cost</span><span class="kv-v" id="pos-avg">&mdash;</span></div>
++        <div class="kv"><span class="kv-k">Unrealised</span><span class="kv-v" id="pos-unreal">&mdash;</span></div>
++        <div class="kv"><span class="kv-k">Realised</span><span class="kv-v" id="pos-real">&mdash;</span></div>
++        <div class="kv"><span class="kv-k">Entries on chart</span><span class="kv-v" id="pos-count">&mdash;</span></div>
++      </div>
++
+       <!-- Forecast verdict -->
+       <div class="section">
+         <div class="section-head">
+@@ -207,6 +224,24 @@
+         <div class="drivers" id="fc-drivers"></div>
+       </div>
+ 
++      <!-- Pattern recognition, with each pattern's own measured record -->
++      <div class="section" id="pattern-section">
++        <div class="section-head">
++          <span class="label">Pattern recognition</span>
++          <span class="label" id="pattern-horizon">&mdash;</span>
++        </div>
++        <div id="pattern-now" class="pattern-now"></div>
++        <table class="pattern-table" id="pattern-table">
++          <thead><tr><th>Pattern</th><th class="num-col">Seen</th><th class="num-col">Went its way</th><th class="num-col">Avg</th></tr></thead>
++          <tbody id="pattern-rows"></tbody>
++        </table>
++        <p class="pattern-note">
++          Hit rate is measured on this instrument's loaded history, not claimed from a
++          textbook. Anything under 8 occurrences is marked thin and should be read as noise.
++          A rate near 50% means the pattern told you nothing.
++        </p>
++      </div>
++
+       <!-- Seasonal study -->
+       <div class="section">
+         <div class="section-head"><span class="label">Seasonal study</span><span class="label" id="season-years">&mdash;</span></div>
+@@ -297,9 +332,74 @@
+   </div>
+ </div>
+ 
++<!-- ============================================================== JOURNAL -->
++<div class="modal-backdrop hidden" id="journal-modal" role="dialog" aria-modal="true" aria-labelledby="journal-title">
++  <div class="modal" style="width:min(760px,100%)">
++    <div class="modal-head">
++      <h2 id="journal-title">Trade journal</h2>
++      <button class="icon-btn" id="btn-close-journal" aria-label="Close">
++        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
++      </button>
++    </div>
++
++    <div class="modal-body" id="journal-gate">
++      <div class="notice" id="gate-notice">
++        Your entries are stored in this browser only. They are never uploaded and never
++        reach the repository. This passcode keeps someone who picks up your machine out
++        of the log; it is not security, because this page is public and runs client-side.
++      </div>
++      <div class="field">
++        <label for="j-user">ID</label>
++        <input type="text" id="j-user" autocomplete="username" spellcheck="false" />
++      </div>
++      <div class="field">
++        <label for="j-pass">Passcode</label>
++        <input type="password" id="j-pass" autocomplete="current-password" />
++      </div>
++      <div class="notice info hidden" id="gate-setup">
++        No passcode is set on this browser yet. Enter the ID and passcode you want to use
++        and they will be saved here as a salted hash.
++      </div>
++      <p class="muted" style="font-size:11.5px;margin:0" id="gate-error"></p>
++    </div>
++
++    <div class="modal-body hidden" id="journal-body">
++      <form class="journal-form" id="journal-form">
++        <div class="field"><label for="j-date">Date and time</label><input type="datetime-local" id="j-date" required /></div>
++        <div class="field"><label for="j-symbol">Instrument</label><select id="j-symbol"></select></div>
++        <div class="field"><label for="j-side">Side</label><select id="j-side"><option value="BUY">Buy</option><option value="SELL">Sell</option></select></div>
++        <div class="field"><label for="j-qty">Quantity</label><input type="number" id="j-qty" min="0" step="any" required /></div>
++        <div class="field"><label for="j-price">Price</label><input type="number" id="j-price" min="0" step="any" required /></div>
++        <div class="field" style="grid-column:1/-1"><label for="j-note">Note (optional)</label><input type="text" id="j-note" maxlength="200" placeholder="why you took it" /></div>
++        <div class="field" style="grid-column:1/-1;justify-self:start"><button type="submit" class="btn btn-primary">Add entry</button></div>
++      </form>
++
++      <div class="stat-grid" id="journal-summary"></div>
++
++      <div class="journal-table-wrap">
++        <table class="journal-table" id="journal-table">
++          <thead><tr><th>When</th><th>Instrument</th><th>Side</th><th class="num-col">Qty</th><th class="num-col">Price</th><th>Note</th><th></th></tr></thead>
++          <tbody id="journal-rows"></tbody>
++        </table>
++      </div>
++    </div>
++
++    <div class="modal-foot">
++      <span class="muted" style="margin-right:auto;font-size:11px" id="journal-count"></span>
++      <button class="btn" id="btn-journal-export">Export</button>
++      <button class="btn" id="btn-journal-import">Import</button>
++      <input type="file" id="journal-file" accept="application/json" class="hidden" />
++      <button class="btn btn-primary" id="btn-journal-unlock">Unlock</button>
++      <button class="btn hidden" id="btn-journal-lock">Lock</button>
++    </div>
++  </div>
++</div>
++
+ <script src="assets/js/config.js"></script>
+ <script src="assets/local-config.js" onerror="void 0"></script>
+ <script src="assets/js/core.js"></script>
++<script src="assets/js/journal.js"></script>
++<script src="assets/js/patterns.js"></script>
+ <script src="assets/js/data.js"></script>
+ <script src="assets/js/engine.js"></script>
+ <script src="assets/js/chart.js"></script>
+diff --git a/scripts/fetch_filings.py b/scripts/fetch_filings.py
+new file mode 100644
+index 0000000..f3404f3
+--- /dev/null
++++ b/scripts/fetch_filings.py
+@@ -0,0 +1,221 @@
++"""Corporate filings and social chatter - the lanes a browser cannot reach.
++
++Filings are the highest-signal source in this project: an order win, a results
++date, a pledge or an open offer is published here before the news wires pick it
++up, and it is the thing that actually moves a single stock and, in size, the
++index. Scored for materiality so the chart can mark the ones that matter.
++
++Writes:
++  data/filings.json   BSE + NSE announcements, scored
++  data/social.json    Reddit and StockTwits chatter (kept, schema extended)
++
++Nothing raises. Every lane records whether it answered so the UI can show it.
++"""
++import json
++import re
++import sys
++import time
++from datetime import datetime, timedelta, timezone
++
++import requests
++
++sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
++from common import DATA, IST, UA, now_iso, write_json  # noqa: E402
++
++MAX_FILINGS = 400
++LOOKBACK_DAYS = 3
++
++# What a filing actually means, and how hard it usually hits.
++MATERIAL = [
++    ("order_win",   3, ["order", "contract", "letter of intent", "loi", "work order",
++                        "bags", "awarded", "tender", "purchase order"]),
++    ("results",     3, ["financial results", "quarterly results", "audited results",
++                        "unaudited results", "earnings", "board meeting intimation"]),
++    ("fundraise",   3, ["qip", "qualified institutional", "preferential allotment",
++                        "fund raising", "rights issue", "ncd", "debenture", "esop"]),
++    ("stake",       3, ["acquisition", "open offer", "sast", "substantial acquisition",
++                        "stake sale", "divestment", "merger", "amalgamation", "scheme of arrangement"]),
++    ("distress",    4, ["default", "insolvency", "nclt", "ibc", "resolution professional",
++                        "show cause", "penalty", "search and seizure", "fraud", "qualified opinion"]),
++    ("pledge",      2, ["pledge", "encumbrance", "invocation", "invoked", "lock-in"]),
++    ("payout",      2, ["dividend", "bonus issue", "stock split", "buyback", "record date"]),
++    ("governance",  1, ["resignation", "appointment", "cessation", "auditor", "kmp",
++                        "director", "secretarial"]),
++    ("routine",     0, ["newspaper publication", "trading window", "closure of trading window",
++                        "compliance certificate", "shareholding pattern", "investor presentation",
++                        "analyst meet", "corporate governance report", "reconciliation"]),
++]
++
++NEGATIVE = ["invoked", "default", "insolvency", "nclt", "penalty", "show cause", "fraud", "resignation",
++            "downgrade", "qualified opinion", "invocation", "search and seizure", "lapse"]
++POSITIVE = ["order", "contract", "awarded", "bags", "dividend", "bonus", "buyback",
++            "acquisition", "expansion", "commission", "approval", "upgrade", "record"]
++
++
++def classify(text):
++    low = (text or "").lower()
++    # Pick the heaviest category that matches, not the first. "Order from NCLT
++    # admitting insolvency" contains "order" but it is distress, not a win.
++    kind, weight = "other", 1
++    for name, w, terms in MATERIAL:
++        if any(t in low for t in terms) and w > weight:
++            kind, weight = name, w
++    if kind == "other":
++        for name, w, terms in MATERIAL:
++            if any(t in low for t in terms):
++                kind, weight = name, w
++                break
++    if weight >= 3:
++        impact = "high"
++    elif weight == 2:
++        impact = "medium"
++    else:
++        impact = "low"
++    neg = sum(1 for t in NEGATIVE if t in low)
++    pos = sum(1 for t in POSITIVE if t in low)
++    sentiment = max(-4.0, min(4.0, (pos - neg) * 1.5))
++    return kind, impact, round(sentiment, 2)
++
++
++def clean(text):
++    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(text or ""))).strip()
++
++
++def fetch_bse(lanes):
++    """BSE's announcement API is open; it only wants a browser-shaped request."""
++    to = datetime.now(IST)
++    frm = to - timedelta(days=LOOKBACK_DAYS)
++    url = ("https://api.bseindia.com/BseIndiaAPI/api/AnnGetData/w"
++           f"?strCat=-1&strPrevDate={frm:%Y%m%d}&strScrip=&strSearch=P"
++           f"&strToDate={to:%Y%m%d}&strType=C&pageno=1")
++    r = requests.get(url, timeout=25, headers={
++        "User-Agent": UA,
++        "Referer": "https://www.bseindia.com/corporates/ann.html",
++        "Origin": "https://www.bseindia.com",
++        "Accept": "application/json, text/plain, */*",
++    })
++    r.raise_for_status()
++    rows = r.json().get("Table", []) or []
++    out = []
++    for row in rows:
++        head = clean(row.get("HEADLINE") or row.get("NEWSSUB"))
++        name = clean(row.get("SLONGNAME") or row.get("SCRIP_CD"))
++        if not head or len(head) < 12:
++            continue
++        when = row.get("NEWS_DT") or row.get("DT_TM") or ""
++        try:
++            ts = int(datetime.fromisoformat(when.replace("Z", "")).replace(tzinfo=IST).timestamp())
++        except Exception:  # noqa: BLE001
++            ts = int(time.time())
++        kind, impact, sentiment = classify(head + " " + name)
++        out.append({
++            "source": "BSE filings", "exchange": "BSE", "company": name,
++            "headline": (name + ": " + head) if name else head,
++            "kind": kind, "impact": impact, "sentiment": sentiment, "ts": ts,
++            "url": "https://www.bseindia.com/corporates/ann.html",
++        })
++    lanes.record("BSE filings", True, len(out))
++    return out
++
++
++def fetch_nse(lanes):
++    """NSE hands out a session cookie on the homepage before it answers its API."""
++    s = requests.Session()
++    heads = {"User-Agent": UA, "Accept": "*/*", "Accept-Language": "en-IN,en;q=0.9"}
++    s.get("https://www.nseindia.com/", headers=heads, timeout=20)
++    time.sleep(1)
++    r = s.get("https://www.nseindia.com/api/corporate-announcements?index=equities",
++              headers=dict(heads, Referer="https://www.nseindia.com/companies-listing/corporate-filings-announcements"),
++              timeout=25)
++    r.raise_for_status()
++    rows = r.json()
++    if isinstance(rows, dict):
++        rows = rows.get("data", []) or []
++    out = []
++    for row in rows:
++        head = clean(row.get("desc") or row.get("subject"))
++        name = clean(row.get("sm_name") or row.get("symbol"))
++        if not head or len(head) < 12:
++            continue
++        when = row.get("an_dt") or row.get("sort_date") or ""
++        try:
++            ts = int(datetime.strptime(when[:19], "%d-%b-%Y %H:%M:%S").replace(tzinfo=IST).timestamp())
++        except Exception:  # noqa: BLE001
++            try:
++                ts = int(datetime.fromisoformat(when[:19]).replace(tzinfo=IST).timestamp())
++            except Exception:  # noqa: BLE001
++                ts = int(time.time())
++        kind, impact, sentiment = classify(head + " " + name)
++        out.append({
++            "source": "NSE filings", "exchange": "NSE", "company": name,
++            "headline": (name + ": " + head) if name else head,
++            "kind": kind, "impact": impact, "sentiment": sentiment, "ts": ts,
++            "url": "https://www.nseindia.com/companies-listing/corporate-filings-announcements",
++        })
++    lanes.record("NSE filings", True, len(out))
++    return out
++
++
++def fetch_stocktwits(lanes):
++    """Public trending stream. Retail sentiment - weak on fact, useful on mood."""
++    r = requests.get("https://api.stocktwits.com/api/2/streams/trending.json",
++                     timeout=20, headers={"User-Agent": UA})
++    r.raise_for_status()
++    out = []
++    for m in (r.json().get("messages") or [])[:40]:
++        body = clean(m.get("body"))
++        if len(body) < 15:
++            continue
++        basic = ((m.get("entities") or {}).get("sentiment") or {}).get("basic")
++        try:
++            ts = int(datetime.fromisoformat(m["created_at"].replace("Z", "+00:00")).timestamp())
++        except Exception:  # noqa: BLE001
++            ts = int(time.time())
++        out.append({
++            "source": "StockTwits", "headline": body[:220],
++            "sentiment": 2.0 if basic == "Bullish" else (-2.0 if basic == "Bearish" else 0.0),
++            "impact": "low", "kind": "chatter", "ts": ts,
++            "symbols": [s.get("symbol") for s in (m.get("symbols") or [])][:6],
++            "url": "https://stocktwits.com/",
++        })
++    lanes.record("StockTwits", True, len(out))
++    return out
++
++
++def main():
++    from common import Lanes
++    lanes = Lanes()
++
++    filings = []
++    filings += lanes.run("BSE filings", lambda: fetch_bse(Lanes()))
++    filings += lanes.run("NSE filings", lambda: fetch_nse(Lanes()))
++
++    seen, deduped = set(), []
++    for f in sorted(filings, key=lambda x: -x["ts"]):
++        k = re.sub(r"[^a-z0-9]", "", f["headline"].lower())[:90]
++        if k in seen:
++            continue
++        seen.add(k)
++        deduped.append(f)
++    deduped = deduped[:MAX_FILINGS]
++
++    write_json("filings.json", {
++        "updated_iso": now_iso(),
++        "count": len(deduped),
++        "high": sum(1 for f in deduped if f["impact"] == "high"),
++        "lanes": lanes.as_list(),
++        "filings": deduped,
++    })
++
++    chatter = lanes.run("StockTwits", lambda: fetch_stocktwits(Lanes()))
++    write_json("social.json", {
++        "updated_iso": now_iso(),
++        "count": len(chatter),
++        "lanes": lanes.as_list(),
++        "items": chatter,
++    })
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/scripts/fetch_news.py b/scripts/fetch_news.py
+index 8423246..8ec3019 100644
+--- a/scripts/fetch_news.py
++++ b/scripts/fetch_news.py
+@@ -36,6 +36,7 @@ IMPACT_HI = [k.lower() for k in LEX["impact_high"]]
+ IMPACT_MD = [k.lower() for k in LEX["impact_medium"]]
+ RELEVANCE = [k.lower() for k in LEX["relevance"]]
+ NOISE = [k.lower() for k in LEX["noise"]]
++PROCEDURAL = [k.lower() for k in LEX.get("procedural", [])]
+ SECTORS = {k: [t.lower() for t in v] for k, v in LEX["sector_map"].items()}
+ 
+ # Terms are matched longest-first on word boundaries, and each match is blanked
+@@ -76,11 +77,22 @@ def score_text(text):
+     # Compress so a headline stuffed with words cannot dominate.
+     sentiment = max(-4.0, min(4.0, total / 2.0))
+ 
+-    impact = "low"
+-    if any(k in low for k in IMPACT_HI):
++    # Impact needs corroboration. One institution word is not a market event:
++    # "RBI invites comments on draft KYC directions" mentions the RBI but moves
++    # nothing, and tagging it high made every Indian headline look urgent.
++    hi_hits = sum(1 for k in IMPACT_HI if k in low)
++    md_hits = sum(1 for k in IMPACT_MD if k in low)
++    is_procedural = any(k in low for k in PROCEDURAL)
++
++    if hi_hits and (hi_hits > 1 or abs(sentiment) >= 1):
+         impact = "high"
+-    elif any(k in low for k in IMPACT_MD):
++    elif hi_hits or md_hits:
+         impact = "medium"
++    else:
++        impact = "low"
++    if is_procedural:
++        impact = "medium" if impact == "high" else "low"
++
+     return round(sentiment, 2), impact, hits[:6]
+ 
+ 
+-- 
+2.43.0
+

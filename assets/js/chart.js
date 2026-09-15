@@ -12,7 +12,8 @@
 
   var chart = null, candleSeries = null, fcSeries = null, upSeries = null, loSeries = null;
   var state = {
-    candles: [], forecast: null, reasons: [], tf: C.defaultTimeframe, symbol: C.defaultSymbol,
+    candles: [], forecast: null, reasons: [], patternMarkers: [],
+    tf: C.defaultTimeframe, symbol: C.defaultSymbol,
     lastCandleTime: null, pinned: null, total: 0,
   };
   var els = {};
@@ -206,7 +207,10 @@
     if (KT.journal && KT.journal.isUnlocked && KT.journal.isUnlocked()) {
       try { trades = KT.journal.markers(state.symbol || KT.CONFIG.defaultSymbol); } catch (e) { trades = []; }
     }
-    markers = markers.concat(trades);
+    // Patterns sit alongside the news points and your own entries.
+    var pats = [];
+    if (state.patternMarkers && state.patternMarkers.length) pats = state.patternMarkers;
+    markers = markers.concat(trades).concat(pats);
     markers.sort(function (a, b) { return a.time - b.time; });
     try { candleSeries.setMarkers(markers); } catch (e) {}
   }
@@ -327,6 +331,7 @@
   KT.chart = {
     init: init, setData: setData, tick: tick, retheme: retheme,
     frameView: frameView, showEmpty: showEmpty, refreshMarkers: applyMarkers,
+    setPatterns: function (m) { state.patternMarkers = m || []; applyMarkers(); },
     getState: function () { return state; },
   };
 })(window.KT);
