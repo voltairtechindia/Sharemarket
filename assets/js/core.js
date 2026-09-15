@@ -214,8 +214,36 @@
     var t; return function () { var a = arguments, c = this; clearTimeout(t); t = setTimeout(function () { fn.apply(c, a); }, ms); };
   }
 
+  /* ------------------------------------------------- bar spacing, measured
+     Never trust the interval a provider says it gave you. Yahoo answers
+     interval=1wk with monthly bars when the range is long enough, and a
+     forecast that steps a week at a time through monthly data puts every
+     projected date four times too close - silently, because nothing throws.
+
+     The median gap is used rather than the mean so one overnight or holiday
+     gap cannot skew it, and the config value is kept unless the data disagrees
+     by more than a quarter, so ordinary weekend gaps change nothing. */
+  function deriveBarSec(candles, declared) {
+    if (!candles || candles.length < 12) return declared;
+    var gaps = [];
+    for (var i = 1; i < candles.length; i++) {
+      var g = candles[i].time - candles[i - 1].time;
+      if (g > 0) gaps.push(g);
+    }
+    if (gaps.length < 8) return declared;
+    gaps.sort(function (a, b) { return a - b; });
+    // The lower quartile, not the median: for intraday series the median is
+    // inflated by every overnight gap, while the quartile lands on the real
+    // in-session spacing.
+    var q = gaps[Math.floor(gaps.length * 0.25)];
+    if (!q) return declared;
+    var ratio = q / declared;
+    if (ratio > 0.75 && ratio < 1.33) return declared;
+    return q;
+  }
+
   KT.core = {
-    fmt: fmt, marketState: marketState, store: store,
+    fmt: fmt, marketState: marketState, store: store, deriveBarSec: deriveBarSec,
     setLexicon: setLexicon, score: score, isNoise: isNoise, sectorOf: sectorOf, keyOf: keyOf,
     hasLexicon: function () { return !!lexicon; },
     el: el, text: text, cls: cls, clamp: clamp, mean: mean, stdev: stdev, debounce: debounce,

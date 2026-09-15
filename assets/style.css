@@ -38,8 +38,14 @@
   --grid:          #f0f2f5;
   --axis:          #dfe3e8;
   --forecast:      #7c3aed;
+  --fc-news:       #0284c7;
+  --fc-pattern:    #ea580c;
   --forecast-soft: #ede9fe;
   --now-line:      #94a3b8;
+  --pattern-bull:  #0ea5e9;
+  --pattern-bear:  #d97706;
+  --pattern-neutral:#94a3b8;
+  --level-line:    #64748b;
 
   /* categorical slots for the driver / sector charts */
   --series-1: #2a78d6;
@@ -84,8 +90,14 @@
   --grid:          #21252b;
   --axis:          #333a43;
   --forecast:      #a78bfa;
+  --fc-news:       #38bdf8;
+  --fc-pattern:    #fb923c;
   --forecast-soft: #251d3d;
   --now-line:      #64748b;
+  --pattern-bull:  #38bdf8;
+  --pattern-bear:  #fbbf24;
+  --pattern-neutral:#7a838f;
+  --level-line:    #94a3b8;
   --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
   --series-4: #c98500; --series-5: #9085e9;
   --shadow:   0 1px 2px rgba(0,0,0,.4);
@@ -278,6 +290,8 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .lg-swatch { width: 12px; height: 3px; border-radius: 2px; flex: 0 0 auto; }
 .lg-swatch.hist { background: linear-gradient(90deg, var(--up) 50%, var(--down) 50%); }
 .lg-swatch.fc   { background: repeating-linear-gradient(90deg, var(--forecast) 0 4px, transparent 4px 7px); }
+.lg-swatch.fcnews { background: repeating-linear-gradient(90deg, var(--fc-news) 0 4px, transparent 4px 7px); }
+.lg-swatch.fcpat  { background: repeating-linear-gradient(90deg, var(--fc-pattern) 0 4px, transparent 4px 7px); }
 .lg-swatch.cone { background: var(--forecast-soft); border: 1px solid var(--forecast); height: 8px; border-radius: 2px; }
 
 .chart-stage { position: relative; flex: 1 1 auto; min-height: 260px; }
@@ -585,6 +599,318 @@ html, body { max-width: 100%; overflow-x: clip; }
   padding: 0 3px; vertical-align: middle;
 }
 .pattern-note {
+  font-size: 10px; line-height: 1.45; color: var(--ink-faint);
+  margin: 8px 0 0; border-top: 1px dashed var(--border); padding-top: 7px;
+}
+
+
+/* ============================================================================
+   Additions: forecast checkpoints, calibration, chart structures, levels,
+   global cues, indicator grid, holdings, alerts and the overlay toolbar.
+   Every colour below is one of the tokens above, so the dark theme needs no
+   second copy of any of it.
+   ========================================================================== */
+
+.fine {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--ink-muted);
+  margin: 6px 0 0;
+}
+
+/* ------------------------------------------------------- overlay toolbar */
+.overlay-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: auto;
+}
+.ov-btn {
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--ink-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ov-btn:hover { background: var(--bg-hover); color: var(--ink); }
+.ov-btn.is-on {
+  background: var(--brand-soft);
+  border-color: var(--brand);
+  color: var(--brand-ink);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------- checkpoint table */
+.cp-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.cp-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--ink-muted);
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.cp-table th.num, .cp-table td.num { text-align: right; }
+.cp-table td {
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--ink);
+}
+.cp-table tr:last-child td { border-bottom: 0; }
+.cp-table td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.cp-time { color: var(--ink-strong); font-weight: 600; }
+.cp-range { color: var(--ink-muted); font-size: 10px; white-space: nowrap; }
+.cp-prob { font-weight: 600; }
+.cp-prob.up { color: var(--up); }
+.cp-prob.down { color: var(--down); }
+.cp-prob.flat { color: var(--ink-muted); }
+
+/* ------------------------------------------------------------ structures */
+.structure-list { display: flex; flex-direction: column; gap: 6px; }
+.structure-row {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--pattern-neutral);
+  border-radius: var(--radius);
+  padding: 7px 8px;
+  background: var(--bg-sunken);
+}
+.structure-row.bull { border-left-color: var(--pattern-bull); }
+.structure-row.bear { border-left-color: var(--pattern-bear); }
+.structure-top {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.structure-name { font-weight: 600; font-size: 11.5px; color: var(--ink-strong); }
+.structure-status {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  padding: 1px 5px;
+  border-radius: 2px;
+  background: var(--bg-hover);
+  color: var(--ink-muted);
+}
+.structure-status.triggered { background: var(--brand-soft); color: var(--brand-ink); }
+.structure-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--ink-muted);
+  font-family: var(--mono);
+}
+.structure-meta b { color: var(--ink); font-weight: 600; }
+.structure-why { font-size: 10.5px; color: var(--ink-muted); margin-top: 3px; line-height: 1.4; }
+.structure-rate { font-size: 10.5px; margin-top: 3px; }
+.structure-rate.thin { color: var(--warn); }
+
+/* ---------------------------------------------------------------- levels */
+.levels-list { display: flex; flex-direction: column; gap: 3px; }
+.level-row {
+  display: grid;
+  grid-template-columns: 54px 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 11px;
+  padding: 3px 0;
+}
+.level-tag {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--ink-muted);
+}
+.level-tag.res { color: var(--down); }
+.level-tag.sup { color: var(--up); }
+.level-price { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-strong); }
+.level-note { color: var(--ink-muted); font-size: 10px; text-align: right; }
+
+/* ------------------------------------------------------------ global cues */
+.cues-list { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; }
+.cue {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+  padding: 2px 0;
+  gap: 6px;
+}
+.cue-k { color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cue-v { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* -------------------------------------------------------- indicator grid */
+.ind-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 10px; }
+.ind {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+  gap: 6px;
+  padding: 2px 0;
+}
+.ind-k { color: var(--ink-muted); }
+.ind-v { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.ind-v.up { color: var(--up); }
+.ind-v.down { color: var(--down); }
+
+/* --------------------------------------------------------------- holdings */
+.pf-mini { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.pf-mini li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  font-size: 11px;
+  align-items: baseline;
+  padding: 2px 0;
+}
+.pf-sym { color: var(--ink-strong); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* ----------------------------------------------------------------- alerts */
+.alert-btn { position: relative; }
+.alert-dot {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--down);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+.drawer {
+  position: fixed;
+  top: var(--header-h);
+  right: 0;
+  bottom: 0;
+  width: min(380px, 100vw);
+  background: var(--bg-raised);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+}
+.drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.drawer-head h2 { font-size: 13px; margin: 0; flex: 1; }
+.drawer-actions { display: flex; align-items: center; gap: 6px; }
+.alert-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+.alert-item {
+  display: block;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+}
+.alert-item.high { border-left-color: var(--down); }
+.alert-item.medium { border-left-color: var(--warn); }
+.alert-head {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 10px;
+  color: var(--ink-muted);
+  margin-bottom: 2px;
+}
+.alert-sym { font-weight: 700; color: var(--ink-strong); font-size: 11px; }
+.alert-kind { text-transform: uppercase; letter-spacing: .04em; }
+.alert-text { font-size: 11.5px; line-height: 1.4; color: var(--ink); }
+.alert-text a { color: inherit; text-decoration: none; }
+.alert-text a:hover { text-decoration: underline; }
+.alert-x {
+  float: right;
+  border: 0;
+  background: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 0 0 6px;
+}
+.alert-x:hover { color: var(--ink); }
+
+/* ----------------------------------------------------------- wide modal */
+.modal-wide {
+  max-width: 880px;
+  width: calc(100vw - 32px);
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+}
+/* One scroll region, not three. Nesting a scrolling table inside a scrolling
+   modal body meant the holdings list showed two rows at a time inside a
+   window with plenty of space left. */
+.modal-wide .modal-body { overflow-y: auto; flex: 1; min-height: 0; }
+.field-wide { grid-column: 1 / -1; }
+.table-wrap { overflow-x: auto; }
+.news-list.compact li { padding: 6px 0; font-size: 11px; }
+
+@media (max-width: 720px) {
+  .cues-list, .ind-grid { grid-template-columns: 1fr; }
+  .drawer { width: 100vw; }
+}
+
+/* The calibration rows carry a target inside the label, so the label needs to
+   be allowed to wrap while the number stays on one line and hard right. */
+#accuracy-section .kv { align-items: baseline; gap: 10px; }
+#accuracy-section .kv-k { line-height: 1.35; }
+#accuracy-section .kv-k em { font-style: normal; color: var(--ink-faint); }
+#accuracy-section .kv-v { white-space: nowrap; font-family: var(--mono); }
+
+
+/* ------------------------------------- news vs pattern forecast split */
+.fc-split {
+  display: grid; gap: 4px; margin: 9px 0 2px;
+  padding: 8px 9px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--bg-sunken);
+}
+.fc-split-row { display: flex; align-items: baseline; gap: 7px; font-size: 11.5px; }
+.fc-dot { width: 8px; height: 3px; border-radius: 2px; flex: 0 0 auto; }
+.fc-dot.news { background: var(--fc-news); }
+.fc-dot.pat  { background: var(--fc-pattern); }
+.fc-split-k { color: var(--ink-muted); }
+.fc-split-v { margin-left: auto; font-weight: 600; font-size: 11.5px; }
+.fc-split-verdict {
+  font-size: 10.5px; line-height: 1.4; color: var(--ink-muted);
+  border-top: 1px dashed var(--border); padding-top: 6px; margin-top: 3px;
+}
+.fc-split-verdict.conflict { color: var(--warn); }
+
+
+/* --------------------------------------------- historical analogue panel */
+.analog-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
+.analog-table th {
+  text-align: left; font-size: 9px; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--ink-muted); font-weight: 600; padding: 5px 4px;
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.analog-table td { padding: 5px 4px; border-bottom: 1px dashed var(--border); }
+.analog-table tr:last-child td { border-bottom: none; }
+.analog-table .num-col { text-align: right; font-family: var(--mono); }
+/* A weak match is shown but visibly demoted - it is not evidence. */
+.analog-table tr.weak td { opacity: .5; }
+.analog-note {
   font-size: 10px; line-height: 1.45; color: var(--ink-faint);
   margin: 8px 0 0; border-top: 1px dashed var(--border); padding-top: 7px;
 }

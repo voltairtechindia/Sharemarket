@@ -19,7 +19,7 @@ Run:  python scripts/feeds_build.py
 """
 import re
 
-from common import ROOT, now_iso, write_json
+from common import ROOT, load_cfg, now_iso, write_json
 
 GN = "https://news.google.com/rss/search?q={q}&hl=en-IN&gl=IN&ceid=IN:en"
 GN_US = "https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
@@ -295,6 +295,47 @@ def slug(text):
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")[:48]
 
 
+# Words in a feed's own name are the only hint available about what it carries,
+# which is enough to route it and to guess whether it is an Indian desk.
+WORLD_HINTS = ("cnbc us", "marketwatch", "nasdaq", "reuters", "bloomberg", "yahoo",
+               "federal reserve", "ecb", "imf", "opec", "eia", "investing.com",
+               "cnbc world", "world")
+TAG_HINTS = [
+    ("result", "earnings"), ("ipo", "ipo"), ("econom", "macro"), ("market", "markets"),
+    ("currency", "currency"), ("forex", "currency"), ("commodit", "commodity"),
+    ("bank", "sector"), ("industr", "sector"), ("compan", "business"),
+    ("press", "policy"), ("sebi", "policy"), ("rbi", "policy"), ("pib", "policy"),
+    ("buzz", "markets"), ("money", "markets"),
+]
+
+
+def from_yaml():
+    """Read the `news:` list out of config/feeds.yml, if it is readable.
+
+    A broken or missing YAML file must not take the index down with it - the
+    baseline list above is still a working universe on its own - so every
+    failure here is reported and swallowed."""
+    try:
+        cfg = load_cfg("feeds.yml") or {}
+    except Exception as exc:  # noqa: BLE001
+        print(f"  config/feeds.yml unreadable ({exc!r}), using the baseline only")
+        return []
+    out = []
+    for row in (cfg.get("news") or []):
+        if not isinstance(row, dict):
+            continue
+        name = (row.get("name") or "").strip()
+        url = (row.get("url") or "").strip()
+        if not name or not url.startswith("http"):
+            continue
+        low = name.lower()
+        region = "world" if any(h in low for h in WORLD_HINTS) else "india"
+        tags = sorted({tag for key, tag in TAG_HINTS if key in low}) or ["wire"]
+        out.append((name, url, region, tags, row.get("priority", 2)))
+    print(f"  config/feeds.yml contributed {len(out)} entries")
+    return out
+
+
 def build():
     feeds = []
     seen = set()
@@ -317,6 +358,14 @@ def build():
 
     for name, url, region, tags, pri in DIRECT:
         add("d_" + slug(name), name, url, "direct", region, tags, pri)
+
+    # config/feeds.yml is the hand-editable lane. Anything listed there is
+    # merged in on top of the baseline above; add() dedupes by URL, so a feed
+    # that appears in both keeps the baseline's priority and tags rather than
+    # being counted twice. This is what makes "add your own feed" mean editing
+    # one YAML file instead of editing Python.
+    for name, url, region, tags, pri in from_yaml():
+        add("y_" + slug(name), name, url, "direct", region, tags, pri)
 
     for q, tags, pri in INDEX_QUERIES:
         add("gi_" + slug(q), q, gn(q), "gnews", "india", tags, pri)

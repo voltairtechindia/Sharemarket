@@ -32,7 +32,7 @@ TIMEFRAMES = [
     ("1D", "5m", "1mo"),    # daily view: 5m candles, reasons every 1 hour
     ("1M", "1d", "6mo"),    # monthly view: daily candles, reasons every 1 day
     ("1Y", "1d", "2y"),     # yearly view
-    ("ALL", "1wk", "max"),  # till date
+    ("ALL", "1mo", "max"),  # till date - Yahoo serves monthly bars at this range anyway
 ]
 
 SEASONAL_SOURCES = [("1mo", "max"), ("1d", "10y")]

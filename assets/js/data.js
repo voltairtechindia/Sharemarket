@@ -63,10 +63,33 @@
     });
   }
 
-  /* ------------------------------------------------------------- baked JSON */
-  function loadBaked(path) {
-    return fetchText(path, { timeout: 12000 })
-      .then(function (t) { return JSON.parse(t); });
+  /* ------------------------------------------------------------- baked JSON
+     Remote first, same-origin second.
+
+     The workflow commits to a branch the Pages site is not built from, and
+     raw.githubusercontent.com serves that branch with CORS headers within
+     seconds of the push. Reading from there is what makes a 60 second data
+     cycle possible: a commit to the published branch has to wait for a Pages
+     build, and Pages throttles builds to a handful an hour.
+
+     The same-origin copy under data/ is always tried if the remote read fails,
+     so an offline viewer, a rate limit or a missing branch degrades to older
+     data rather than to no data. A file not on the live list skips the remote
+     hop entirely - the lexicon and the feed index change when the code does,
+     not every minute, and the extra request would be waste.                 */
+  function loadBaked(path, opts) {
+    opts = opts || {};
+    var live = C.remote && C.remote.enabled && C.liveFiles.indexOf(path) !== -1;
+    if (!live || opts.localOnly) {
+      return fetchText(path, { timeout: 12000 }).then(JSON.parse);
+    }
+    var url = C.remote.base + path;
+    return fetchText(url, { timeout: C.remote.timeoutMs, cache: 'no-store' })
+      .then(function (t) { mark('remote:' + path, true); return JSON.parse(t); })
+      .catch(function (e) {
+        mark('remote:' + path, false, String(e.message || e).slice(0, 60));
+        return fetchText(path, { timeout: 12000 }).then(JSON.parse);
+      });
   }
 
   /* --------------------------------------------------------------- candles
@@ -390,8 +413,40 @@
     });
   }
 
+  /* The full daily record, roughly two decades, fetched once and kept for the
+     session. The displayed timeframe is often intraday, where "history" is a
+     handful of days; matching today's shape against that is nearly worthless.
+     The precedent panel needs real years behind it, so it gets its own series
+     independent of whatever the chart is currently showing. */
+  var longHistory = {};
+  function getLongHistory(symbolKey) {
+    if (longHistory[symbolKey]) return Promise.resolve(longHistory[symbolKey]);
+    var cacheKey = 'longhist:' + symbolKey;
+    var cached = core.store.get(cacheKey, null);
+    if (cached && cached.length > 500) {
+      longHistory[symbolKey] = cached;
+      return Promise.resolve(cached);
+    }
+    var sym = C.symbols[symbolKey];
+    if (!sym) return Promise.reject(new Error('unknown symbol'));
+    return fetchJSONVia(C.endpoints.yahooChart(sym.yahoo, '1d', 'max'),
+                        { proxyOnly: true, skipRss2json: true, timeout: 30000 })
+      .then(function (r) {
+        var parsed = parseYahoo(r.data);
+        if (!parsed.candles.length) throw new Error('no long history');
+        longHistory[symbolKey] = parsed.candles;
+        // Daily bars barely change; a day of cache is plenty and keeps the
+        // fetch off every reload.
+        core.store.set(cacheKey, parsed.candles, 86400000);
+        mark('longhistory', true, parsed.candles.length + ' daily bars');
+        return parsed.candles;
+      })
+      .catch(function (e) { mark('longhistory', false, String(e.message || e)); throw e; });
+  }
+
   KT.data = {
     fetchText: fetchText, fetchVia: fetchVia, fetchJSONVia: fetchJSONVia, loadBaked: loadBaked,
+    getLongHistory: getLongHistory,
     getCandles: getCandles, getLiveQuote: getLiveQuote, getQuoteFallback: getQuoteFallback,
     fetchFastLane: fetchFastLane, mergeNews: mergeNews, adoptBakedNews: adoptBakedNews,
     restoreNews: restoreNews, getNews: getNews,

@@ -30,6 +30,18 @@
     feedsAlive: null,
     narrativeAt: 0,
     booted: false,
+    /* --- added lanes and computed views --------------------------------- */
+    indicators: null,       // KT.ind.snapshot of the loaded candles
+    levels: null,           // clustered S/R, pivots, fib, profile, gaps
+    structures: [],         // triangles, flags, double tops currently on screen
+    structureStats: {},     // what each of those patterns did historically here
+    calibration: null,      // how well the band has actually held up
+    calibratedAt: 0,
+    calibratedKey: null,    // symbol:timeframe the calibration above belongs to
+    global: null,           // overnight cues from the workflow
+    flows: null,            // breadth, FII and DII
+    vix: null,
+    alertsOpen: false,
   };
 
   /* ================================================================= BOOT */
@@ -40,6 +52,9 @@
     // The journal is an add-on. If anything in it throws, the terminal itself
     // must still boot, so its wiring never sits on the critical path.
     try { wireJournal(); } catch (e) { console.warn('journal unavailable:', e); }
+    // Same rule for the holdings book: an add-on that must never stop the
+    // terminal from starting.
+    try { KT.portfolio.load(); wirePortfolio(); } catch (e) { console.warn('holdings unavailable:', e); }
     // The shipped gate keeps the journal shut for anyone opening the public
     // page. Failing to load it only falls back to a browser-set code.
     data.loadBaked(C.baked.auth)
@@ -68,6 +83,12 @@
           data.loadBaked(C.baked.rollup).then(function (r) { S.rollup = r; renderSectors(); }).catch(noop),
           loadFilings().catch(noop),
           data.loadBaked(C.baked.index).then(function (i) { if (!S.feedsTotal) { S.feedsTotal = i.count; renderFeedCount(null); } }).catch(noop),
+          data.loadBaked(C.baked.global).then(function (g) { S.global = g; renderCues(); }).catch(noop),
+          data.loadBaked(C.baked.flows).then(function (f) { S.flows = f; }).catch(noop),
+          // The universe is what turns "RELIANCE" into "Reliance Industries"
+          // for headline matching, so it has to land before the first scan.
+          data.loadBaked(C.baked.universe).then(function (u) { KT.portfolio.setUniverse(u); fillUniverseList(); }).catch(noop),
+          data.loadBaked(C.baked.stocks).then(function (q) { KT.portfolio.setQuotes(q); }).catch(noop),
         ]);
       })
       .then(function () {
@@ -177,6 +198,27 @@
       refreshNews().then(recompute);
     });
 
+    var ovg = el('overlay-group');
+    if (ovg) {
+      // Remember which overlays you had on. This is a per-viewer convenience,
+      // so localStorage is the right home for it and losing it costs nothing.
+      var saved = core.store.get('overlays', null);
+      if (saved) {
+        Object.keys(saved).forEach(function (k) { chart.setOverlay(k, saved[k]); });
+        ovg.querySelectorAll('.ov-btn').forEach(function (b) {
+          b.classList.toggle('is-on', !!saved[b.dataset.ov]);
+        });
+      }
+      ovg.addEventListener('click', function (e) {
+        var btn = e.target.closest ? e.target.closest('.ov-btn') : null;
+        if (!btn) return;
+        var on = !btn.classList.contains('is-on');
+        btn.classList.toggle('is-on', on);
+        chart.setOverlay(btn.dataset.ov, on);
+        core.store.set('overlays', chart.overlays());
+      });
+    }
+
     el('tf-group').addEventListener('click', function (e) {
       var btn = e.target.closest('.tf-btn');
       if (!btn) return;
@@ -249,6 +291,17 @@
   function refreshCandles() {
     return data.getCandles(S.symbol, S.timeframe).then(function (res) {
       S.candles = res.candles;
+      // Trust the data over the label. If the provider handed back a coarser
+      // granularity than the timeframe asked for, every downstream consumer -
+      // the forecast's clock, the reason buckets, the live tick's slot maths -
+      // needs the real spacing, and they all read it from this one place.
+      var tf = C.timeframes[S.timeframe];
+      var real = core.deriveBarSec(S.candles, tf.barSec);
+      if (real !== tf.barSec) {
+        console.info('[' + S.timeframe + '] provider returned ' + real + 's bars, not ' +
+                     tf.barSec + 's; using the measured spacing.');
+        tf.barSec = real;
+      }
       return res;
     });
   }
@@ -303,7 +356,10 @@
       }).catch(noop),
       data.loadBaked(C.baked.rollup).then(function (r) { S.rollup = r; renderSectors(); }).catch(noop),
       loadFilings().catch(noop),
-    ]).then(function () { renderNews(); });
+      data.loadBaked(C.baked.global).then(function (g) { S.global = g; renderCues(); }).catch(noop),
+      data.loadBaked(C.baked.flows).then(function (f) { S.flows = f; }).catch(noop),
+      data.loadBaked(C.baked.stocks).then(function (q) { KT.portfolio.setQuotes(q); }).catch(noop),
+    ]).then(function () { renderNews(); scanAlerts(); });
   }
 
   function refreshAll() {
@@ -317,23 +373,85 @@
     });
   }
 
-  /* Recompute forecast + reasons from whatever we currently hold. */
+  /* Recompute every derived view from whatever we currently hold.
+
+     Order matters: indicators and levels feed the structure scan, and all
+     three feed the forecast, so a stale snapshot never reaches the projection.
+     Calibration is the expensive one - it replays the model across the series -
+     so it runs on its own slow timer rather than on every tick. */
   function recompute() {
     if (!S.candles.length) return;
+    var news = data.getNews();
+
+    S.indicators = KT.ind.snapshot(S.candles);
+    S.levels = KT.levels.build(S.candles);
+    S.structures = KT.structures.detect(S.candles);
+    S.structureStats = KT.structures.outcomes(S.candles);
+
+    var vixQuote = S.quotes && S.quotes.INDIAVIX;
+    S.vix = vixQuote && vixQuote.price ? vixQuote.price : null;
+
     S.forecast = engine.buildForecast({
       candles: S.candles,
-      news: data.getNews(),
+      news: news,
       seasonality: S.seasonality,
       timeframe: S.timeframe,
       livePrice: S.quote && S.quote.price ? S.quote.price : null,
+      indicators: S.indicators,
+      levels: S.levels,
+      structures: S.structures,
+      structureStats: S.structureStats,
+      global: S.global,
+      flows: S.flows,
+      vix: S.vix,
     });
-    S.reasons = engine.buildReasons(S.candles, data.getNews(), S.timeframe);
+    S.reasons = engine.buildReasons(S.candles, news, S.timeframe);
+
+    chart.setStructures(S.structures);
+    chart.setLevels(S.levels);
     chart.setData(S.candles, S.forecast, S.reasons, S.timeframe, S.symbol);
+
     renderPosition();
     computePatterns();
     renderForecast(S.forecast);
+    renderCheckpoints(S.forecast);
+    renderStructures();
+    renderLevels();
+    renderIndicators();
     renderLanes();
+    renderPortfolio();
+    maybeCalibrate();
     maybeEnrichNarrative();
+  }
+
+  /* The band is only worth showing if it has been checked. This replays the
+     technical core of the model across the loaded series and reports how often
+     price actually finished inside the range it drew. */
+  function maybeCalibrate() {
+    // Keyed on symbol and timeframe, not just on time. Each timeframe is a
+    // different series scored over a different horizon, so reusing the daily
+    // view's number under the yearly chart would put a flattering figure next
+    // to a projection it says nothing about.
+    var key = S.symbol + ':' + S.timeframe;
+    if (key === S.calibratedKey && Date.now() - S.calibratedAt < C.forecast.calibrateEveryMs && S.calibration) return;
+    if (key !== S.calibratedKey) {
+      S.calibration = null;
+      renderAccuracy();            // clear the stale number while the new one runs
+    }
+    S.calibratedKey = key;
+    S.calibratedAt = Date.now();
+    // Yield first: on a long series this is tens of milliseconds of maths, and
+    // running it inline would show up as a stutter in the 1 second tick.
+    var forKey = key, forCandles = S.candles, forTf = S.timeframe;
+    setTimeout(function () {
+      var result = null;
+      try { result = KT.forecast.calibrate(forCandles, forTf); } catch (e) { result = null; }
+      // The view can change while this runs. Dropping a late result is right:
+      // showing it would label the new chart with the old chart's score.
+      if (forKey !== S.calibratedKey) return;
+      S.calibration = result;
+      renderAccuracy();
+    }, 0);
   }
 
   /* =============================================================== LOOPS */
@@ -352,6 +470,11 @@
     S.timers.baked = setInterval(function () { refreshBaked().then(recompute); }, C.poll.bakedMs);
     S.timers.candles = setInterval(function () { refreshCandles().then(recompute).catch(noop); }, 300000);
     S.timers.others = setInterval(refreshOtherQuotes, 30000);
+    // Holdings outside the workflow universe are priced on their own slower
+    // timer, because each one costs a trip through the shared public proxy.
+    S.timers.holdings = setInterval(function () {
+      KT.portfolio.refreshMissing().then(function (n) { if (n) { renderPortfolio(); scanAlerts(); } });
+    }, C.holdings.quoteRefreshMs * 5);
   }
 
   var lastTickAt = 0;
@@ -502,7 +625,17 @@
   function renderNews() {
     var list = el('news-list');
     if (!list) return;
-    var matching = data.getNews().filter(function (n) {
+    var all = data.getNews();
+    // "My stocks" is the only filter that needs work up front: build the set
+    // of matched headline keys once rather than re-matching inside the filter.
+    var mine = null;
+    if (S.newsFilter === 'mine') {
+      mine = {};
+      KT.portfolio.matchNews(all).forEach(function (m) {
+        mine[m.item.key || core.keyOf(m.item.headline)] = m.holding.symbol;
+      });
+    }
+    var matching = all.filter(function (n) {
       switch (S.newsFilter) {
         case 'high':   return n.impact === 'high';
         case 'filing': return n.lane === 'filing';
@@ -510,14 +643,28 @@
         case 'neg':   return n.sentiment < -0.6;
         case 'india': return n.region === 'indian';
         case 'world': return n.region === 'international';
+        case 'mine':  return !!mine[n.key];
         default:      return true;
       }
     });
     var items = diversify(matching, 120);
 
     if (!items.length) {
-      list.innerHTML = '<li class="news-row"><span class="muted" style="grid-column:1/-1">' +
-        (core.hasLexicon() ? 'No headlines match this filter yet.' : 'Loading feeds…') + '</span></li>';
+      var why = !core.hasLexicon() ? 'Loading feeds…'
+        : S.newsFilter === 'mine'
+          ? (KT.portfolio.count()
+              ? 'Nothing in the current stream names one of your holdings.'
+              : 'Add holdings first and this shows only the news that names them.')
+          : 'No headlines match this filter yet.';
+      list.innerHTML = '';
+      var li0 = document.createElement('li');
+      li0.className = 'news-row';
+      var sp0 = document.createElement('span');
+      sp0.className = 'muted';
+      sp0.style.gridColumn = '1/-1';
+      sp0.textContent = why;
+      li0.appendChild(sp0);
+      list.appendChild(li0);
       return;
     }
 
@@ -792,7 +939,11 @@
       var stats = KT.patterns.hitRates(S.candles, found);
       S.patterns = { found: found, stats: stats,
                      current: KT.patterns.current(S.candles, found, 3) };
-      chart.setPatterns(KT.patterns.markers(found, stats, 18));
+      // Eight, not eighteen. The chart now also carries reason points, trade
+      // entries, forecast checkpoints and the drawn structure geometry, and
+      // the candlestick markers were the ones that turned into an unreadable
+      // row of overlapping abbreviations. The full table is in the panel.
+      chart.setPatterns(KT.patterns.markers(found, stats, 8));
       renderPatterns();
     } catch (e) {
       console.warn('pattern pass failed:', e);
@@ -862,6 +1013,129 @@
     });
   }
 
+  /* News against pattern. Two numbers and a verdict, because the useful
+     question is not just "where does it point" but "do the two reasons for
+     pointing there agree". A conflict is worth reading as a warning that the
+     blended line is averaging a disagreement rather than confirming a view. */
+  function renderForecastSplit(f) {
+    var box = el('fc-split');
+    if (!box) return;
+    var comp = f && f.components;
+    if (!comp) { box.classList.add('hidden'); return; }
+    box.classList.remove('hidden');
+
+    function put(id, part) {
+      var node = el(id);
+      if (!node) return;
+      node.textContent = fmt.price(part.end) + '  (' + fmt.pct(part.changePct) + ')';
+      node.className = 'fc-split-v num ' + fmt.cls(part.changePct);
+      node.title = part.note || '';
+    }
+    put('fc-news-v', comp.news);
+    put('fc-pat-v', comp.pattern);
+
+    var v = el('fc-split-verdict');
+    if (!v) return;
+    var conflict = comp.agree === 'conflict';
+    v.className = 'fc-split-verdict' + (conflict ? ' conflict' : '');
+    if (conflict) {
+      v.textContent = 'The headlines and the chart disagree, ' + fmt.pct(comp.gapPct, 2).replace('+', '') +
+        ' apart at the end of the horizon. The blended line is averaging a conflict, so treat it as low conviction.';
+    } else if (comp.agree === 'flat') {
+      v.textContent = 'Neither the news nor the chart is pushing in a direction right now.';
+    } else {
+      v.textContent = 'News and chart point the same way, ' + fmt.pct(comp.gapPct, 2).replace('+', '') +
+        ' apart at the end of the horizon. Agreement is the stronger case of the two.';
+    }
+  }
+
+  /* The evidence behind the projection's shape. Everything here is a count or
+     a measured outcome from real history, which is the only kind of support a
+     forecast can honestly offer. */
+  function ensureLongHistory() {
+    if (S.longHistoryState) return;
+    S.longHistoryState = 'loading';
+    data.getLongHistory(S.symbol)
+      .then(function (candles) {
+        S.longHistory = candles;
+        S.longHistoryState = 'ready';
+        renderAnalogue(S.forecast);
+      })
+      .catch(function () { S.longHistoryState = 'failed'; });
+  }
+
+  /* Daily analogue over the full record, so "when did this happen before"
+     reaches back two decades rather than a few intraday sessions. Horizon is
+     fixed in trading days, so it reads as "over the next month" whatever the
+     chart timeframe happens to be. */
+  function dailyAnalogue() {
+    if (!S.longHistory || !KT.analogs) return null;
+    if (S.dailyAnalogue && S.dailyAnalogueFor === S.symbol) return S.dailyAnalogue;
+    var a = KT.analogs.find(S.longHistory, { window: 30, horizon: 21, k: 8 });
+    S.dailyAnalogue = a && a.ok ? a : null;
+    S.dailyAnalogueFor = S.symbol;
+    return S.dailyAnalogue;
+  }
+
+  function renderAnalogue(f) {
+    var sec = el('analog-section');
+    if (!sec) return;
+    // Daily precedent is the better evidence when we have it: decades of bars
+    // rather than whatever the current timeframe happens to hold.
+    var daily = dailyAnalogue();
+    var a = daily || (f && f.analog);
+    if (!a || !a.ok || !a.matches || !a.matches.length) {
+      sec.classList.add('hidden');
+      return;
+    }
+    sec.classList.remove('hidden');
+
+    var tf = C.timeframes[S.timeframe] || {};
+    var barSec = daily ? 86400 : (tf.barSec || 86400);
+    var spanDays = Math.round(a.bars * barSec / 86400);
+    var scope = spanDays >= 400 ? (Math.round(spanDays / 365 * 10) / 10) + ' years of bars'
+              : spanDays >= 60 ? Math.round(spanDays / 30) + ' months of bars'
+              : spanDays + ' days of bars';
+    text('analog-scope', a.scanned + ' windows scanned \u00b7 ' + scope + (daily ? ' · next ' + a.horizon + ' days' : ''));
+
+    var upCls = a.upRate >= 60 ? 'up' : a.upRate <= 40 ? 'down' : 'flat';
+    el('analog-tiles').innerHTML =
+      tile('Went up after', a.ups + ' of ' + a.n, upCls) +
+      tile('Base rate', a.upRate + '%', upCls) +
+      tile('Average', fmt.pct(a.avgEnd), fmt.cls(a.avgEnd)) +
+      tile('Median', fmt.pct(a.medianEnd), fmt.cls(a.medianEnd));
+
+    text('analog-quality', a.quality + '%  ' + (a.quality >= 40 ? 'close' : a.quality >= 20 ? 'loose' : 'weak'));
+    core.cls('analog-quality', a.quality >= 40 ? 'up' : a.quality >= 20 ? 'flat' : 'down');
+    text('analog-extremes', fmt.pct(a.bestEnd) + '  /  ' + fmt.pct(a.worstEnd));
+
+    var body = el('analog-rows');
+    body.innerHTML = '';
+    a.matches.forEach(function (m) {
+      var tr = document.createElement('tr');
+      if (m.similarity < 20) tr.className = 'weak';
+      var when = KT.analogs ? KT.analogs.describeMatch(m, barSec) : '';
+      tr.innerHTML =
+        '<td>' + when + '</td>' +
+        '<td class="num-col">' + m.similarity + '%</td>' +
+        '<td class="num-col ' + fmt.cls(m.endChange) + '">' + fmt.pct(m.endChange) + '</td>';
+      tr.title = 'Over the ' + a.horizon + (daily ? ' trading days' : ' bars') + ' after this window closed.';
+      body.appendChild(tr);
+    });
+
+    var note = el('analog-note');
+    if (note) {
+      note.textContent = a.quality < 20
+        ? 'Today\u2019s shape has no close precedent here, so these matches are loose and the projection borrows little from them. Read this as weak support.'
+        : 'Similar-looking history is not a cause. The sample is small by construction and regimes change, so read the spread and the match quality, not just the average.';
+    }
+  }
+
+  function tile(k, v, cls) {
+    return '<div class="stat"><span class="stat-k">' + k + '</span>' +
+           '<span class="stat-v ' + (cls || '') + '">' + v + '</span></div>';
+  }
+
   function renderForecast(f) {
     if (!f) return;
     text('fc-horizon', f.horizonLabel);
@@ -874,6 +1148,9 @@
     text('fc-confidence', 'Confidence ' + f.confidence + '%  ·  midpoint ' + fmt.price(f.target) + ' (' + fmt.pct(f.targetPct) + ')');
     var pin = el('fc-pin');
     if (pin) pin.style.left = ((f.bias + 1) / 2 * 100) + '%';
+    renderForecastSplit(f);
+    renderAnalogue(f);
+    ensureLongHistory();
     text('fc-narrative', f.narrative);
 
     var box = el('fc-drivers');
@@ -903,6 +1180,608 @@
     text('fc-weights-note', 'weights ' + Object.keys(C.forecast.weights).map(function (k) {
       return Math.round(C.forecast.weights[k] * 100) + '%';
     }).join(' / '));
+  }
+
+  /* ====================================================== CHECKPOINT TABLE
+     The direct answer to "where will it be at X". One row per checkpoint, each
+     carrying the centre of the range, the range itself, and the probability of
+     trading above the current price by then. The probability is the honest
+     part: on a near random walk at short horizons it will sit close to 50, and
+     a panel that pretended otherwise would be lying to you every morning. */
+  function renderCheckpoints(f) {
+    var body = el('cp-rows');
+    if (!body) return;
+    body.innerHTML = '';
+    if (!f || !f.checkpoints || !f.checkpoints.length) {
+      text('cp-basis', '—');
+      text('cp-note', 'Not enough history loaded to project a path.');
+      return;
+    }
+    f.checkpoints.forEach(function (cp) {
+      var tr = document.createElement('tr');
+
+      var tdT = document.createElement('td');
+      tdT.className = 'cp-time';
+      tdT.textContent = cp.label;
+
+      var tdV = document.createElement('td');
+      tdV.className = 'num';
+      tdV.textContent = fmt.price(cp.value);
+
+      var tdR = document.createElement('td');
+      tdR.className = 'num cp-range';
+      tdR.textContent = fmt.int(cp.low) + '–' + fmt.int(cp.high);
+
+      var tdP = document.createElement('td');
+      tdP.className = 'num cp-prob ' + (cp.pUp >= 55 ? 'up' : cp.pUp <= 45 ? 'down' : 'flat');
+      tdP.textContent = cp.pUp + '%';
+
+      tr.appendChild(tdT); tr.appendChild(tdV); tr.appendChild(tdR); tr.appendChild(tdP);
+      body.appendChild(tr);
+    });
+
+    var vol = f.volImplied
+      ? 'vol ' + f.volRealised + '% realised blended with ' + f.volImplied + '% implied per bar'
+      : 'vol ' + f.volRealised + '% per bar, realised';
+    text('cp-basis', f.intradayProfile ? 'clock-aware' : 'flat vol');
+    text('cp-note',
+      'Range is one standard deviation, so price finishes inside it about two times in three. ' +
+      vol + (f.intradayProfile ? ', widened at the open and tightened at lunch from this instrument’s own session profile' : '') +
+      (f.dayShapeSessions ? '. Average session shape from ' + f.dayShapeSessions + ' sessions is folded into the path' : '') +
+      '. "Up" is the chance of trading above ' + fmt.price(f.lastClose) + ' at that time.');
+  }
+
+  /* ========================================================= CALIBRATION */
+  function renderAccuracy() {
+    var c = S.calibration;
+    if (!c) {
+      text('acc-n', '—');
+      ['acc-68', 'acc-95', 'acc-dir', 'acc-skill'].forEach(function (id) { text(id, '—'); });
+      text('acc-note', 'Not enough loaded history on this timeframe to score the forecast. Switch to Daily or Monthly for a measured number.');
+      return;
+    }
+    text('acc-n', c.n + ' replays');
+    var c68 = el('acc-68');
+    if (c68) {
+      c68.textContent = c.coverage68 + '%';
+      c68.className = 'kv-v ' + (Math.abs(c.coverage68 - 68) <= 8 ? 'up' : 'down');
+    }
+    var c95 = el('acc-95');
+    if (c95) {
+      c95.textContent = c.coverage95 + '%';
+      c95.className = 'kv-v ' + (Math.abs(c.coverage95 - 95) <= 6 ? 'up' : 'down');
+    }
+    var dir = el('acc-dir');
+    if (dir) {
+      dir.textContent = c.directionRate == null
+        ? 'no directional calls'
+        : c.directionRate + '% of ' + c.directionCalls;
+      dir.className = 'kv-v ' + (c.directionRate == null ? '' : c.directionRate > 52 ? 'up' : c.directionRate < 48 ? 'down' : 'flat');
+    }
+    var sk = el('acc-skill');
+    if (sk) {
+      sk.textContent = c.skill < 1
+        ? (Math.round((1 - c.skill) * 1000) / 10) + '% better'
+        : (Math.round((c.skill - 1) * 1000) / 10) + '% worse';
+      sk.className = 'kv-v ' + (c.skill < 1 ? 'up' : 'down');
+    }
+    text('acc-note',
+      'Measured by rebuilding the forecast at ' + c.n + ' past points on this timeframe and checking what price actually did over the next ' +
+      c.bars + ' bars. ' + c.basis.charAt(0).toUpperCase() + c.basis.slice(1) + '. ' +
+      'Coverage far from target means the band is the wrong width; a direction rate near 50% means the lean is worth little at this horizon, whatever the headline says.');
+  }
+
+  /* ========================================================== STRUCTURES */
+  function renderStructures() {
+    var host = el('structure-list');
+    if (!host) return;
+    host.innerHTML = '';
+    var list = S.structures || [];
+    text('structure-count', list.length ? list.length + ' drawn' : 'none');
+    if (!list.length) {
+      text('structure-note', 'No triangle, flag, double top or head and shoulders clears the quality bar on this timeframe right now. The bar is deliberately high: geometry finds these shapes in pure noise if you let it.');
+      return;
+    }
+    list.forEach(function (st) {
+      var stat = S.structureStats[st.key] || {};
+      var row = document.createElement('div');
+      row.className = 'structure-row ' + (st.dir > 0 ? 'bull' : st.dir < 0 ? 'bear' : '');
+
+      var top = document.createElement('div');
+      top.className = 'structure-top';
+      var name = document.createElement('span');
+      name.className = 'structure-name';
+      name.textContent = st.name;
+      var status = document.createElement('span');
+      status.className = 'structure-status ' + st.status;
+      status.textContent = st.status;
+      top.appendChild(name); top.appendChild(status);
+
+      var meta = document.createElement('div');
+      meta.className = 'structure-meta';
+      meta.appendChild(kvSpan('trigger', fmt.price(st.trigger)));
+      meta.appendChild(kvSpan('target', fmt.price(st.target) + ' (' + fmt.pct(st.targetPct, 1) + ')'));
+      meta.appendChild(kvSpan('invalid at', fmt.price(st.stop)));
+      meta.appendChild(kvSpan('quality', Math.round(st.quality * 100) + '%'));
+
+      var why = document.createElement('div');
+      why.className = 'structure-why';
+      why.textContent = st.why;
+
+      var rate = document.createElement('div');
+      if (stat.resolved) {
+        rate.className = 'structure-rate' + (stat.reliable ? '' : ' thin');
+        var n = stat.resolved, plural = n === 1 ? 'case' : 'cases';
+        rate.textContent = stat.reliable
+          ? 'On this instrument it reached target before stop ' + stat.hitRate + '% of ' + n + ' resolved ' + plural + '.'
+          : 'Only ' + n + ' resolved ' + plural + ' in the loaded history \u2014 too few to call a rate, so treat the shape as context, not a signal.';
+      } else {
+        rate.className = 'structure-rate thin';
+        rate.textContent = 'No resolved occurrences in the loaded history, so there is no measured record to quote.';
+      }
+
+      row.appendChild(top); row.appendChild(meta); row.appendChild(why); row.appendChild(rate);
+      host.appendChild(row);
+    });
+    text('structure-note', 'Drawn on the chart in the same colour. Trigger is the level that confirms the shape; target is the measured move from its own height.');
+  }
+
+  function kvSpan(k, v) {
+    var sp = document.createElement('span');
+    sp.appendChild(document.createTextNode(k + ' '));
+    var b = document.createElement('b');
+    b.textContent = v;
+    sp.appendChild(b);
+    return sp;
+  }
+
+  /* ============================================================== LEVELS */
+  function renderLevels() {
+    var host = el('levels-list');
+    if (!host) return;
+    host.innerHTML = '';
+    var lv = S.levels;
+    if (!lv) { text('levels-basis', '—'); return; }
+    text('levels-basis', lv.profile ? lv.profile.basis : '');
+
+    var rows = [];
+    lv.zones.slice(0, 6).forEach(function (z) {
+      rows.push({ tag: z.side === 'resistance' ? 'res' : 'sup',
+                  label: z.side === 'resistance' ? 'Resistance' : 'Support',
+                  price: z.level, note: z.touches + ' touches · ' + fmt.pct(z.distPct, 1) });
+    });
+    if (lv.pivots) {
+      rows.push({ tag: '', label: 'Pivot', price: lv.pivots.pp, note: 'from yesterday' });
+      rows.push({ tag: 'res', label: 'R1', price: lv.pivots.r1, note: 'classic' });
+      rows.push({ tag: 'sup', label: 'S1', price: lv.pivots.s1, note: 'classic' });
+    }
+    if (lv.profile) {
+      rows.push({ tag: '', label: 'POC', price: lv.profile.poc, note: 'busiest price' });
+      rows.push({ tag: '', label: 'Value area', price: lv.profile.vaLow,
+                  note: 'to ' + fmt.int(lv.profile.vaHigh) });
+    }
+    (lv.gaps || []).slice(0, 2).forEach(function (g) {
+      rows.push({ tag: g.dir === 'up' ? 'sup' : 'res', label: 'Open gap',
+                  price: g.dir === 'up' ? g.from : g.to, note: fmt.pct(g.sizePct, 2) + ' unfilled' });
+    });
+
+    rows.forEach(function (r) {
+      var div = document.createElement('div');
+      div.className = 'level-row';
+      var t = document.createElement('span');
+      t.className = 'level-tag ' + r.tag;
+      t.textContent = r.label;
+      var pr = document.createElement('span');
+      pr.className = 'level-price';
+      pr.textContent = fmt.price(r.price);
+      var n = document.createElement('span');
+      n.className = 'level-note';
+      n.textContent = r.note;
+      div.appendChild(t); div.appendChild(pr); div.appendChild(n);
+      host.appendChild(div);
+    });
+  }
+
+  /* ========================================================= GLOBAL CUES */
+  function renderCues() {
+    var host = el('cues-list');
+    if (!host) return;
+    host.innerHTML = '';
+    var g = S.global;
+    // An empty items object is the normal shape when every upstream source
+    // refused the runner, so it has to be handled exactly like a missing file.
+    if (!g || !g.items || !Object.keys(g.items).length) {
+      text('cues-updated', g && g.generated_at ? 'no sources answered' : 'not loaded');
+      var p = document.createElement('p');
+      p.className = 'fine';
+      p.textContent = 'Overnight cues have not arrived yet. Until they do, the forecast falls back to ' +
+        'international headline sentiment for its global lane, and that lane\u2019s weight is spread ' +
+        'across the others rather than counted as neutral.';
+      host.appendChild(p);
+      return;
+    }
+    text('cues-updated', g.generated_at ? fmt.ago(Math.floor(new Date(g.generated_at).getTime() / 1000)) : '');
+    var order = ['us_futures', 'sgx_nifty', 'crude', 'usdinr', 'dxy', 'us10y', 'gold', 'vix'];
+    order.forEach(function (k) {
+      var row = g.items[k];
+      if (!row) return;
+      var d = document.createElement('div');
+      d.className = 'cue';
+      var kk = document.createElement('span');
+      kk.className = 'cue-k';
+      kk.textContent = row.label || k;
+      var vv = document.createElement('span');
+      vv.className = 'cue-v ' + fmt.cls(row.changePct);
+      vv.textContent = (row.price != null ? fmt.int(row.price) + '  ' : '') + fmt.pct(row.changePct, 2);
+      d.appendChild(kk); d.appendChild(vv);
+      host.appendChild(d);
+    });
+  }
+
+  /* =========================================================== INDICATORS */
+  function renderIndicators() {
+    var host = el('indicator-grid');
+    if (!host) return;
+    host.innerHTML = '';
+    var s = S.indicators;
+    if (!s) { text('ind-basis', '—'); return; }
+    text('ind-basis', s.bars + ' bars');
+
+    function row(k, v, cls) {
+      var d = document.createElement('div');
+      d.className = 'ind';
+      var a = document.createElement('span');
+      a.className = 'ind-k';
+      a.textContent = k;
+      var b = document.createElement('span');
+      b.className = 'ind-v ' + (cls || '');
+      b.textContent = v;
+      d.appendChild(a); d.appendChild(b);
+      host.appendChild(d);
+    }
+    function n(v, d) { return v == null ? '—' : v.toFixed(d === undefined ? 1 : d); }
+
+    row('RSI 14', n(s.rsi), s.rsi == null ? '' : s.rsi > 60 ? 'up' : s.rsi < 40 ? 'down' : '');
+    row('ADX 14', n(s.adx), s.adx == null ? '' : s.adx > 25 ? 'up' : '');
+    row('MACD hist', n(s.macdHist, 2), s.macdHist == null ? '' : fmt.cls(s.macdHist));
+    row('ATR %', n(s.atrPct, 2));
+    row('%B', n(s.pctB, 2), s.pctB == null ? '' : s.pctB > 1 ? 'up' : s.pctB < 0 ? 'down' : '');
+    row('BB width', n(s.bbWidth, 2));
+    row('Supertrend', s.supertrendDir == null ? '—' : (s.supertrendDir > 0 ? 'long' : 'short'),
+        s.supertrendDir == null ? '' : (s.supertrendDir > 0 ? 'up' : 'down'));
+    row('Squeeze', s.squeezeOn ? 'on, ' + s.squeezeAge + ' bars' : 'off', s.squeezeOn ? 'down' : '');
+    row('Stochastic', n(s.stoch), s.stoch == null ? '' : s.stoch > 80 ? 'up' : s.stoch < 20 ? 'down' : '');
+    row('CCI 20', n(s.cci, 0));
+    row('20 EMA', s.ema20 == null ? '—' : fmt.price(s.ema20), s.ema20 == null ? '' : fmt.cls(s.price - s.ema20));
+    row('50 EMA', s.ema50 == null ? '—' : fmt.price(s.ema50), s.ema50 == null ? '' : fmt.cls(s.price - s.ema50));
+    if (s.hasVolume) {
+      row('VWAP', s.vwap == null ? '—' : fmt.price(s.vwap), s.vwap == null ? '' : fmt.cls(s.price - s.vwap));
+      row('MFI 14', n(s.mfi));
+    }
+  }
+
+  /* ============================================================ PORTFOLIO
+     Holdings live in this browser. Everything here reads them, matches them
+     against the same news stream the index uses, and raises an alert when
+     something lands on one of your names. */
+  function renderPortfolio() {
+    var v = KT.portfolio.valuation();
+    var has = KT.portfolio.count() > 0;
+    var empty = el('pf-empty');
+    if (empty) empty.classList.toggle('hidden', has);
+
+    if (!has) {
+      ['pf-invested', 'pf-current', 'pf-pl', 'pf-day'].forEach(function (id) { text(id, '—'); });
+      var mini0 = el('pf-mini');
+      if (mini0) mini0.innerHTML = '';
+      renderAlertBadge();
+      return;
+    }
+
+    text('pf-invested', fmt.price(v.invested));
+    text('pf-current', fmt.price(v.current));
+    var pl = el('pf-pl');
+    if (pl) {
+      pl.textContent = fmt.signed(v.pl) + (v.plPct == null ? '' : '  (' + fmt.pct(v.plPct) + ')');
+      pl.className = 'kv-v ' + fmt.cls(v.pl);
+    }
+    var day = el('pf-day');
+    if (day) {
+      day.textContent = fmt.signed(v.dayChange);
+      day.className = 'kv-v ' + fmt.cls(v.dayChange);
+    }
+
+    var mini = el('pf-mini');
+    if (mini) {
+      mini.innerHTML = '';
+      v.lines.slice(0, 6).forEach(function (l) {
+        var li = document.createElement('li');
+        var a = document.createElement('span');
+        a.className = 'pf-sym';
+        a.textContent = l.row.symbol;
+        var b = document.createElement('span');
+        b.className = 'pf-num ' + (l.dayPct == null ? '' : fmt.cls(l.dayPct));
+        b.textContent = l.dayPct == null ? '—' : fmt.pct(l.dayPct, 1);
+        var c = document.createElement('span');
+        c.className = 'pf-num ' + (l.pl == null ? '' : fmt.cls(l.pl));
+        c.textContent = l.pl == null ? 'no price' : fmt.signed(l.pl, 0);
+        li.appendChild(a); li.appendChild(b); li.appendChild(c);
+        mini.appendChild(li);
+      });
+      if (v.unpriced) {
+        var li2 = document.createElement('li');
+        li2.className = 'fine';
+        li2.textContent = v.unpriced + ' holding' + (v.unpriced > 1 ? 's' : '') + ' without a live price, held at cost.';
+        mini.appendChild(li2);
+      }
+    }
+    renderAlertBadge();
+  }
+
+  function renderPortfolioTable() {
+    var body = el('pf-rows');
+    if (!body) return;
+    body.innerHTML = '';
+    var v = KT.portfolio.valuation();
+    v.lines.forEach(function (l) {
+      var tr = document.createElement('tr');
+      function td(txt, cls) {
+        var d = document.createElement('td');
+        if (cls) d.className = cls;
+        d.textContent = txt;
+        return d;
+      }
+      var sym = document.createElement('td');
+      var strong = document.createElement('strong');
+      strong.textContent = l.row.symbol;
+      var small = document.createElement('div');
+      small.className = 'fine';
+      small.textContent = l.row.name === l.row.symbol ? l.row.exchange : l.row.name;
+      sym.appendChild(strong); sym.appendChild(small);
+      tr.appendChild(sym);
+      tr.appendChild(td(fmt.int(l.row.qty), 'num'));
+      tr.appendChild(td(fmt.price(l.row.avgPrice), 'num'));
+      tr.appendChild(td(l.ltp == null ? '—' : fmt.price(l.ltp), 'num'));
+      tr.appendChild(td(l.dayPct == null ? '—' : fmt.pct(l.dayPct, 1), 'num ' + (l.dayPct == null ? '' : fmt.cls(l.dayPct))));
+      tr.appendChild(td(l.pl == null ? '—' : fmt.signed(l.pl, 0) + (l.plPct == null ? '' : ' (' + fmt.pct(l.plPct, 1) + ')'),
+                        'num ' + (l.pl == null ? '' : fmt.cls(l.pl))));
+      var act = document.createElement('td');
+      var btn = document.createElement('button');
+      btn.className = 'btn btn-sm';
+      btn.dataset.remove = l.row.id;
+      btn.textContent = 'Remove';
+      act.appendChild(btn);
+      tr.appendChild(act);
+      body.appendChild(tr);
+    });
+
+    var sum = el('pf-summary');
+    if (sum) {
+      sum.innerHTML = '';
+      [['Invested', fmt.price(v.invested), ''],
+       ['Value', fmt.price(v.current), ''],
+       ['P&L', fmt.signed(v.pl), fmt.cls(v.pl)],
+       ['Today', fmt.signed(v.dayChange), fmt.cls(v.dayChange)]].forEach(function (t) {
+        var d = document.createElement('div');
+        d.className = 'stat';
+        var k = document.createElement('span');
+        k.className = 'stat-k';
+        k.textContent = t[0];
+        var val = document.createElement('span');
+        val.className = 'stat-v ' + t[2];
+        val.textContent = t[1];
+        d.appendChild(k); d.appendChild(val);
+        sum.appendChild(d);
+      });
+    }
+    text('pf-count', KT.portfolio.count() + ' holdings, stored in this browser only');
+
+    var newsHost = el('pf-news');
+    if (newsHost) {
+      newsHost.innerHTML = '';
+      var related = KT.portfolio.relatedNews(data.getNews(), 25);
+      text('pf-news-count', related.length ? related.length + ' matched' : 'none yet');
+      related.forEach(function (r) {
+        var li = document.createElement('li');
+        var head = document.createElement('div');
+        head.className = 'news-meta';
+        head.textContent = r.symbol + ' · ' + r.item.source + ' · ' + fmt.ago(r.item.ts);
+        var a = document.createElement(r.item.url ? 'a' : 'span');
+        if (r.item.url) { a.href = r.item.url; a.target = '_blank'; a.rel = 'noopener'; }
+        a.className = 'news-head';
+        a.textContent = r.item.headline;
+        li.appendChild(head); li.appendChild(a);
+        newsHost.appendChild(li);
+      });
+    }
+  }
+
+  function fillUniverseList() {
+    var dl = el('pf-universe');
+    if (!dl) return;
+    dl.innerHTML = '';
+    KT.portfolio.universeList().slice(0, 900).forEach(function (u) {
+      var o = document.createElement('option');
+      o.value = u.symbol;
+      o.label = u.name;
+      dl.appendChild(o);
+    });
+  }
+
+  /* ================================================================ ALERTS */
+  function scanAlerts() {
+    if (!KT.portfolio.count()) return;
+    try {
+      var r = KT.portfolio.scan(data.getNews());
+      if (r.fresh) renderAlerts();
+      renderAlertBadge();
+    } catch (e) { /* an alert failure must never stop the tape */ }
+  }
+
+  function renderAlertBadge() {
+    var dot = el('alert-dot');
+    if (!dot) return;
+    var n = KT.portfolio.alerts().length;
+    dot.textContent = n > 99 ? '99+' : String(n);
+    dot.classList.toggle('hidden', n === 0);
+  }
+
+  function renderAlerts() {
+    var list = el('alert-list');
+    if (!list) return;
+    list.innerHTML = '';
+    var alerts = KT.portfolio.alerts();
+    var empty = el('alerts-empty');
+    if (empty) empty.classList.toggle('hidden', alerts.length > 0);
+
+    alerts.forEach(function (a) {
+      var li = document.createElement('li');
+      li.className = 'alert-item ' + (a.severity || 'medium');
+
+      var x = document.createElement('button');
+      x.className = 'alert-x';
+      x.dataset.dismiss = a.key;
+      x.setAttribute('aria-label', 'Dismiss');
+      x.textContent = '×';
+      li.appendChild(x);
+
+      var head = document.createElement('div');
+      head.className = 'alert-head';
+      var sym = document.createElement('span');
+      sym.className = 'alert-sym';
+      sym.textContent = a.symbol;
+      var kind = document.createElement('span');
+      kind.className = 'alert-kind';
+      kind.textContent = a.kind;
+      var when = document.createElement('span');
+      when.textContent = fmt.ago(a.ts);
+      head.appendChild(sym); head.appendChild(kind); head.appendChild(when);
+
+      var body = document.createElement('div');
+      body.className = 'alert-text';
+      if (a.url) {
+        var link = document.createElement('a');
+        link.href = a.url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = a.headline;
+        body.appendChild(link);
+      } else {
+        body.textContent = a.headline;
+      }
+
+      li.appendChild(head); li.appendChild(body);
+      list.appendChild(li);
+    });
+    renderAlertBadge();
+  }
+
+  function wirePortfolio() {
+    var modal = el('portfolio-modal');
+    if (!modal) return;
+
+    function open() {
+      renderPortfolioTable();
+      fillUniverseList();
+      var d = el('pf-date');
+      if (d && !d.value) d.value = new Date().toISOString().slice(0, 10);
+      modal.classList.remove('hidden');
+    }
+    function close() { modal.classList.add('hidden'); }
+
+    el('btn-portfolio').addEventListener('click', open);
+    var side = el('btn-open-portfolio');
+    if (side) side.addEventListener('click', open);
+    el('btn-close-portfolio').addEventListener('click', close);
+    modal.addEventListener('click', function (e) { if (e.target === modal) close(); });
+
+    el('portfolio-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      text('pf-error', '');
+      try {
+        KT.portfolio.add({
+          symbol: el('pf-symbol').value,
+          exchange: el('pf-exchange').value,
+          qty: el('pf-qty').value,
+          avgPrice: el('pf-price').value,
+          date: el('pf-date').value,
+          note: el('pf-note').value,
+        });
+        el('pf-symbol').value = ''; el('pf-qty').value = ''; el('pf-price').value = ''; el('pf-note').value = '';
+        KT.portfolio.refreshMissing().then(function () {
+          renderPortfolioTable(); renderPortfolio(); scanAlerts();
+        });
+        renderPortfolioTable(); renderPortfolio();
+      } catch (err) {
+        text('pf-error', String(err.message || err));
+      }
+    });
+
+    el('pf-rows').addEventListener('click', function (e) {
+      var id = e.target && e.target.dataset && e.target.dataset.remove;
+      if (!id) return;
+      KT.portfolio.remove(id);
+      renderPortfolioTable(); renderPortfolio();
+    });
+
+    el('btn-pf-clear').addEventListener('click', function () {
+      if (!KT.portfolio.count()) return;
+      // Holdings only exist in this browser, so there is no copy to restore
+      // from. Ask before wiping them.
+      if (!window.confirm('Remove every holding from this browser? There is no server copy to restore from.')) return;
+      KT.portfolio.clear();
+      renderPortfolioTable(); renderPortfolio(); renderAlerts();
+    });
+
+    el('btn-pf-export').addEventListener('click', function () {
+      var blob = new Blob([KT.portfolio.exportJson()], { type: 'application/json' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'holdings-' + new Date().toISOString().slice(0, 10) + '.json';
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+    });
+    el('btn-pf-import').addEventListener('click', function () { el('pf-file').click(); });
+    el('pf-file').addEventListener('change', function (e) {
+      var file = e.target.files && e.target.files[0];
+      if (!file) return;
+      var fr = new FileReader();
+      fr.onload = function () {
+        try {
+          var n = KT.portfolio.importJson(String(fr.result));
+          text('pf-error', n + ' holdings imported.');
+          KT.portfolio.refreshMissing().then(function () { renderPortfolioTable(); renderPortfolio(); });
+          renderPortfolioTable(); renderPortfolio();
+        } catch (err) { text('pf-error', 'Could not read that file: ' + (err.message || err)); }
+      };
+      fr.readAsText(file);
+      e.target.value = '';
+    });
+
+    /* ------------------------------------------------------ alerts drawer */
+    var drawer = el('alerts-drawer');
+    el('btn-alerts').addEventListener('click', function () {
+      S.alertsOpen = !S.alertsOpen;
+      drawer.classList.toggle('hidden', !S.alertsOpen);
+      if (S.alertsOpen) renderAlerts();
+    });
+    el('btn-close-alerts').addEventListener('click', function () {
+      S.alertsOpen = false;
+      drawer.classList.add('hidden');
+    });
+    el('btn-alerts-clear').addEventListener('click', function () {
+      KT.portfolio.dismissAll();
+      renderAlerts();
+    });
+    el('alert-list').addEventListener('click', function (e) {
+      var k = e.target && e.target.dataset && e.target.dataset.dismiss;
+      if (!k) return;
+      KT.portfolio.dismiss(k);
+      renderAlerts();
+    });
+
+    renderAlerts();
+    renderPortfolio();
   }
 
   function renderSeasonality() {

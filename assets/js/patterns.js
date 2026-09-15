@@ -348,8 +348,10 @@
 
   function shortLabel(p, s) {
     var abbr = p.name.split(' ').map(function (w) { return w[0]; }).join('').toUpperCase();
-    if (s && s.reliable && s.hitRate != null) return abbr + ' ' + s.hitRate + '%';
-    if (s && s.reliable && s.upRate != null) return abbr + ' \u2191' + s.upRate + '%';
+    // Only a pattern with a measured record worth knowing earns the space for
+    // a number. An unreliable rate printed on the chart reads as authority it
+    // has not got, and a row of them is just noise across the candles.
+    if (s && s.reliable && s.hitRate != null && Math.abs(s.hitRate - 50) >= 8) return abbr + ' ' + s.hitRate + '%';
     return abbr;
   }
 
