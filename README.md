@@ -187,10 +187,11 @@ Data sources — all free, no keys
 |---|---|---|
 | Live index price | Moneycontrol price feed | directly from the browser (sends CORS headers) |
 | OHLC candles | Yahoo Finance chart API | via `r.jina.ai` → `allorigins` proxy chain |
-| Fast news, every 60s | 15 CORS-clean feeds | directly from the browser, ~800 items a sweep |
-| Deep news, ~every minute | 448 feeds | GitHub Actions, server side |
+| Fast news, every 60s | 13 CORS-clean feeds | directly from the browser |
+| Deep news, per workflow run | 448 feeds | GitHub Actions, server side |
 | Global cues | Yahoo, Stooq fallback | GitHub Actions |
-| Breadth, FII and DII | NSE, Moneycontrol fallback | GitHub Actions |
+| Breadth | NSE `allIndices`, widest index that answered | GitHub Actions |
+| FII and DII | NSE, Moneycontrol fallback | GitHub Actions |
 | Stock quotes | NSE index endpoint, Yahoo fallback | GitHub Actions |
 | Ticker → company names | NSE equity master | GitHub Actions |
 | Seasonality | Yahoo Finance, ~19y of monthly closes | GitHub Actions |
@@ -200,10 +201,18 @@ Data sources — all free, no keys
 **Why two news lanes.** Most Indian and international publishers — Economic
 Times, Livemint, Business Standard, RBI, Reuters, NDTV Profit, Zee Business — do
 not send CORS headers, so a browser on a static site cannot read them at all.
-Fifteen feeds can be read directly, re-verified from the deployed origin:
-Moneycontrol (8), CNBC TV18 (4), Yahoo Finance, CNBC US and MarketWatch. The page
-sweeps those every 60 seconds; the workflow fetches the whole index server side,
-where CORS does not apply.
+Thirteen feeds can be read directly, each re-verified 200-with-items from the
+deployed origin: CNBC TV18 (5), CNBC US (3), MarketWatch (3) and Yahoo Finance.
+The page sweeps those every 60 seconds; the workflow fetches the whole index
+server side, where CORS does not apply.
+
+Moneycontrol's eight RSS paths used to be the bulk of that list. `www.moneycontrol.com`
+now answers **403 to a browser** on every one of them — measured from the live
+origin, all eight, every sweep — so the fast lane was reporting "unavailable"
+while eight of its fifteen feeds failed silently. They are removed from
+`directFeeds` rather than left in to fail. They still work **server side**, where
+no `Origin` header is sent, so the deep lane keeps them and loses nothing. The
+price feed on `priceapi.moneycontrol.com` is a different host and is unaffected.
 
 ### Why the data used to look stale, and what fixed it
 
@@ -228,10 +237,31 @@ four times a day, purely as the offline fallback — so a fresh clone opens with
 something in it, and the page still works if `raw.githubusercontent` is
 unreachable.
 
-The scheduler fires the workflow at best every five minutes and is often late,
-so each run also does four extra news sweeps a minute apart, publishing each as
-it lands. News is the only lane that changes minute to minute, so it is the only
-one repeated.
+### The five-minute cron is not a five-minute cron
+
+`live-data.yml` asks for `*/5 * * * *`. Measured start times over 18 Sep 2026
+and the day before: **01:12, 22:59, 20:26, 17:23, 12:53, 07:53 UTC** — roughly
+one run every two and a half hours, not twelve an hour. GitHub deprioritises
+scheduled workflows on repos with little push activity and drops the queued
+firings; it does not queue them up and catch up later. On top of that each run
+takes 7 to 9 minutes, which is longer than the interval it is asking for.
+
+The visible consequence: at 11:00 IST on a trading day the `live-data` branch
+was carrying data generated at 06:46 IST, four and a quarter hours stale, with
+no server-side run at all during the morning session.
+
+Nothing in this repo can fix that — it is GitHub's scheduler, and the free tier
+is what it is. What keeps the page usable anyway is that the lanes which change
+minute to minute do not depend on it: live price, candles and the fast news
+sweep all run in the browser. Breadth, FII/DII, filings and the deep news index
+are as old as the last run, and the Data Lanes panel shows when each one
+landed. Treat the workflow as a several-times-a-day job, because that is what
+it is, and read the timestamps rather than the cron expression.
+
+Each run also does four extra news sweeps a minute apart, publishing each as it
+lands. News is the only lane that changes minute to minute, so it is the only
+one repeated — which buys four fresh minutes out of every 150, not the
+continuous coverage the cron line implies.
 
 About the feed count
 --------------------
@@ -240,8 +270,9 @@ About the feed count
 URLs pointed at `example.com`, and the rest at hostnames that do not resolve
 (`feeds.moneycontrol.com`, `feeds.etmarkets.com`, `feeds.reutersindia.com`).
 The headlines in the old `data/news.json` were generated from a template, not
-fetched. That file is left in place so nothing that reads it breaks, but it is
-no longer used.
+fetched. `rss_config.json` was kept around for a while in case something still
+read it; a grep over `assets/`, `index.html` and `scripts/` found nothing did,
+so 175 KB of `example.com` URLs is now deleted rather than carried.
 
 `data/feeds_index.json` replaces it with **448 feeds that are all real and all
 free**: 83 publisher and regulator RSS URLs, and 365 Google News RSS search
@@ -273,6 +304,16 @@ The key is optional. Without it the forecast still runs — direction, range and
 confidence all come from the local rule engine. The model only rewrites the
 explanation into plain English, and it is explicitly told never to change the
 numbers the engine produced.
+
+**Reasoning is turned off in the request.** The default model is
+`openrouter/free`, an auto-router across whatever is free at that moment, and
+`max_tokens` covers reasoning tokens as well as the answer. Routed to
+`liquid/lfm-2.5-2.6b:free` the call came back with `reasoning_tokens: 320`,
+`finish_reason: "length"` and `content: null` — the entire 320-token budget
+spent thinking, nothing written, the lane reporting "idle" with no explanation.
+`reasoning: { enabled: false }` in the body fixes it deterministically; this
+model is rewriting numbers that already exist, so it has nothing to reason
+about.
 
 If the key you were using has ever been committed or shared, rotate it at
 https://openrouter.ai/keys.
@@ -314,11 +355,28 @@ scripts/fetch_flows.py         breadth, FII and DII
 scripts/fetch_stocks.py        per-stock quotes for the holdings panel
 scripts/build_universe.py      NSE ticker to company name and aliases
 scripts/fetch_filings.py       BSE and NSE corporate announcements
+scripts/serve.py               dev server: static files plus the fetch loops
 scripts/publish_live.sh        force-pushes data/ to the live-data branch
 
-.github/workflows/live-data.yml   every 5 min + four minute-spaced news sweeps
+.github/workflows/live-data.yml   asks for every 5 min; GitHub gives ~every 2.5 h
 .github/workflows/snapshot.yml    copies live data back to the published branch 4x a day
 ```
+
+### What was removed, and why
+
+These were all live in the tree and exercised by nothing, which is the failure
+mode this project keeps having: a lane that is built, committed, and never read.
+
+| Removed | Why |
+|---|---|
+| `realtime_loop.py` | hardcoded `C:\hrv\...` path, `import random`, wrote the fabricated numbers below |
+| `history.html` | linked from nowhere; fell back to typed-in prose like "next resistance at 23500-23600" when its data file was missing, which it always was |
+| `data/live_impact.json` | read by `history.html`, written by nothing since `realtime_loop.py` stopped running |
+| `scripts/predict.py`, `scripts/validate.py`, `data/predictions.json` | a whole forecast-scoring subsystem, in no workflow, read by no screen; `forecast.js` `calibrate()` replaced it |
+| `scripts/fetch_social.py`, `data/social.json` | `fetch_filings.py` superseded the fetcher; the `social:` path was declared in `config.js` and never fetched |
+| `scripts/demo_data.py` | generated fake market data, in a repo whose whole argument is that it does not do that |
+| `data/rss_config.json` | 175 KB of `example.com` URLs, already documented as dead |
+| `accuracy: 'data/accuracy.json'` in `config.js` | the file has never existed in this repo |
 
 ### Load order is a dependency order
 
@@ -341,11 +399,12 @@ Running locally
 ---------------
 
 ```bash
-pip install -r requirements.txt
-python scripts/feeds_build.py      # writes data/feeds_index.json
-python scripts/fetch_market.py     # candles, quote, seasonality
-python scripts/fetch_news.py       # news, rollup, feed health
-python -m http.server 8080         # then open http://localhost:8080
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python scripts/feeds_build.py    # writes data/feeds_index.json
+.venv/bin/python scripts/fetch_market.py   # candles, quote, seasonality
+.venv/bin/python scripts/fetch_news.py     # news, rollup, feed health
+.venv/bin/python scripts/fetch_flows.py    # breadth, FII/DII
+.venv/bin/python -m http.server 8080       # then open http://localhost:8080
 ```
 
 Open `index.html` over `http://`, not `file://` — the browser blocks fetches of

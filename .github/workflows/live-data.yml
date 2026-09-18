@@ -20,6 +20,14 @@ name: Live market and news data
 # ---------------------------------------------------------------------------
 on:
   schedule:
+    # This asks for twelve runs an hour. GitHub does not give twelve runs an
+    # hour. Measured starts on 17-18 Sep 2026: 07:53, 12:53, 17:23, 20:26,
+    # 22:59, 01:12 UTC - about one run every two and a half hours. Scheduled
+    # workflows on a low-activity repo are deprioritised and the skipped
+    # firings are dropped, not queued. Lowering the number here would not help
+    # (the same throttle applies) and raising the cadence is not available on
+    # the free tier, so the expression stays as the ceiling we would take if
+    # offered, and the README says plainly what actually arrives.
     - cron: "*/5 * * * *"
   workflow_dispatch:
   push:
