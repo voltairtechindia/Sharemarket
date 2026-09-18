@@ -79,21 +79,25 @@ KT.CONFIG = {
      800 items per sweep. Anything not on this list either refused CORS or
      returned 503 when tested, and belongs to the server-side workflow.       */
   directFeeds: [
-    { id: 'mc_top',        name: 'Moneycontrol top',       url: 'https://www.moneycontrol.com/rss/MCtopnews.xml',                   region: 'india' },
-    { id: 'mc_latest',     name: 'Moneycontrol latest',    url: 'https://www.moneycontrol.com/rss/latestnews.xml',                  region: 'india' },
-    { id: 'mc_markets',    name: 'Moneycontrol markets',   url: 'https://www.moneycontrol.com/rss/marketreports.xml',               region: 'india' },
-    { id: 'mc_business',   name: 'Moneycontrol business',  url: 'https://www.moneycontrol.com/rss/business.xml',                    region: 'india' },
-    { id: 'mc_economy',    name: 'Moneycontrol economy',   url: 'https://www.moneycontrol.com/rss/economy.xml',                     region: 'india' },
-    { id: 'mc_results',    name: 'Moneycontrol results',   url: 'https://www.moneycontrol.com/rss/results.xml',                     region: 'india' },
-    { id: 'mc_buzz',       name: 'Moneycontrol buzzing',   url: 'https://www.moneycontrol.com/rss/buzzingstocks.xml',               region: 'india' },
-    { id: 'mc_ipo',        name: 'Moneycontrol IPO',       url: 'https://www.moneycontrol.com/rss/iponews.xml',                     region: 'india' },
-    { id: 'cnbc_market',   name: 'CNBC TV18 markets',      url: 'https://www.cnbctv18.com/commonfeeds/v1/cne/rss/market.xml',       region: 'india' },
-    { id: 'cnbc_economy',  name: 'CNBC TV18 economy',      url: 'https://www.cnbctv18.com/commonfeeds/v1/cne/rss/economy.xml',      region: 'india' },
-    { id: 'cnbc_business', name: 'CNBC TV18 business',     url: 'https://www.cnbctv18.com/commonfeeds/v1/cne/rss/business.xml',     region: 'india' },
-    { id: 'cnbc_world',    name: 'CNBC TV18 world',        url: 'https://www.cnbctv18.com/commonfeeds/v1/cne/rss/world.xml',        region: 'international' },
-    { id: 'yahoo_finance', name: 'Yahoo Finance',          url: 'https://finance.yahoo.com/news/rssindex',                          region: 'international' },
+    /* Moneycontrol's eight RSS paths used to head this list. www.moneycontrol.com
+       now answers 403 to a browser on any of them - re-measured from the
+       deployed origin, all eight, every time - so they are gone rather than
+       left in to fail the lane on every sweep. The price feed on
+       priceapi.moneycontrol.com is a different host and still works.
+       Everything below was verified 200 with items from the live origin. */
+    { id: 'cnbc_market',   name: 'CNBC TV18 markets',      url: 'https://www.cnbctv18.com/commonfeeds/v1/cne/rss/market.xml',           region: 'india' },
+    { id: 'cnbc_economy',  name: 'CNBC TV18 economy',      url: 'https://www.cnbctv18.com/commonfeeds/v1/cne/rss/economy.xml',          region: 'india' },
+    { id: 'cnbc_business', name: 'CNBC TV18 business',     url: 'https://www.cnbctv18.com/commonfeeds/v1/cne/rss/business.xml',         region: 'india' },
+    { id: 'cnbc_pf',       name: 'CNBC TV18 personal fin', url: 'https://www.cnbctv18.com/commonfeeds/v1/cne/rss/personal-finance.xml', region: 'india' },
+    { id: 'cnbc_startup',  name: 'CNBC TV18 startup',      url: 'https://www.cnbctv18.com/commonfeeds/v1/cne/rss/startup.xml',          region: 'india' },
+    { id: 'cnbc_world',    name: 'CNBC TV18 world',        url: 'https://www.cnbctv18.com/commonfeeds/v1/cne/rss/world.xml',            region: 'international' },
+    { id: 'yahoo_finance', name: 'Yahoo Finance',          url: 'https://finance.yahoo.com/news/rssindex',                              region: 'international' },
     { id: 'cnbc_us',       name: 'CNBC US markets',        url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258', region: 'international' },
-    { id: 'marketwatch',   name: 'MarketWatch top',        url: 'https://feeds.content.dowjones.io/public/rss/mw_topstories',       region: 'international' },
+    { id: 'cnbc_us_world', name: 'CNBC US world markets',  url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839135', region: 'international' },
+    { id: 'cnbc_us_fin',   name: 'CNBC US finance',        url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664', region: 'international' },
+    { id: 'marketwatch',   name: 'MarketWatch top',        url: 'https://feeds.content.dowjones.io/public/rss/mw_topstories',           region: 'international' },
+    { id: 'mw_realtime',   name: 'MarketWatch realtime',   url: 'https://feeds.content.dowjones.io/public/rss/mw_realtimeheadlines',    region: 'international' },
+    { id: 'mw_pulse',      name: 'MarketWatch pulse',      url: 'https://feeds.content.dowjones.io/public/rss/mw_marketpulse',          region: 'international' },
   ],
 
   /* Feeds a browser cannot reach directly are NOT attempted here.
@@ -150,11 +154,9 @@ KT.CONFIG = {
     quote:       'data/quote.json',
     health:      'data/feed_health.json',
     filings:     'data/filings.json',
-    social:      'data/social.json',
     index:       'data/feeds_index.json',
     global:      'data/global.json',
     flows:       'data/flows.json',
-    accuracy:    'data/accuracy.json',
     stocks:      'data/stocks.json',
     universe:    'data/universe.json',
     lexicon:     'config/lexicon.json',

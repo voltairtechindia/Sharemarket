@@ -365,8 +365,12 @@
           var a = m.architecture || {};
           var out = a.output_modalities || ['text'];
           var inp = a.input_modalities || ['text'];
-          return out.indexOf('text') !== -1 && out.indexOf('audio') === -1 &&
-                 out.indexOf('image') === -1 && inp.indexOf('text') !== -1;
+          if (out.indexOf('text') === -1 || out.indexOf('audio') !== -1 ||
+              out.indexOf('image') !== -1 || inp.indexOf('text') === -1) return false;
+          // Classifiers and rerankers are text-in / text-out and priced at zero,
+          // so the modality filter alone lets them into the dropdown. They
+          // answer a forecast prompt with a verdict like "User Safety: safe".
+          return !/guard|safety|moderat|embed|rerank|classif/i.test(m.id);
         }).map(function (m) { return m.id; });
         free.sort(function (a, b) {
           // The auto-router first, then alphabetical.
@@ -395,6 +399,14 @@
         model: model,
         temperature: 0.2,
         max_tokens: 320,
+        /* max_tokens covers reasoning tokens as well as the answer, and the
+           free auto-router picks whatever is free at the time. Measured on
+           liquid/lfm-2.5-2.6b: reasoning_tokens 320, finish_reason "length",
+           content null - the whole budget spent thinking, nothing written, and
+           the lane fell back to the local wording without saying why. This
+           model does not need to reason; it is rewriting numbers the engine
+           already produced. */
+        reasoning: { enabled: false },
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       }),
     }).then(function (r) {
@@ -404,6 +416,13 @@
     }).then(function (j) {
       var msg = j && j.choices && j.choices[0] && j.choices[0].message;
       if (!msg || !msg.content) throw new Error('empty completion');
+      /* The free pool the auto-router draws from includes classifiers, not only
+         chat models. Routed to nvidia/nemotron-3.5-content-safety the call
+         returned a valid 200 whose entire content was "User Safety: safe",
+         which would have been printed to the panel as the forecast's
+         explanation. Two or three sentences of prose were asked for; anything
+         this short is not that, so the local wording stays. */
+      if (msg.content.trim().length < 60) throw new Error('unusable completion');
       mark('openrouter', true, model);
       return msg.content;
     }).catch(function (e) {

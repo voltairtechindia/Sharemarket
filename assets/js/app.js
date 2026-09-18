@@ -1869,16 +1869,33 @@
     var box = el('source-lanes');
     if (!box) return;
     var h = data.health;
+    /* The fast lane's health used to be read off feed:mc_top alone - one feed
+       out of fifteen standing in for the whole set. When Moneycontrol started
+       answering 403 the lane read "unavailable" while seven other feeds were
+       filling the page, and when that feed was removed it read "idle" forever.
+       Count the direct set instead: alive if any of them answered. */
+    var directOk = 0, directSeen = 0;
+    C.directFeeds.forEach(function (f) {
+      var st = h['feed:' + f.id];
+      if (!st) return;
+      directSeen++;
+      if (st.ok) directOk++;
+    });
+    var fastState = directSeen
+      ? { ok: directOk > 0, note: directOk + ' of ' + directSeen + ' answered' }
+      : null;
+
     var lanes = [
       { k: 'Live price', id: 'quote', hint: 'Moneycontrol price feed, read directly by your browser' },
       { k: 'Candles', id: 'candles', hint: 'Yahoo Finance OHLC through the proxy chain' },
-      { k: 'Fast news', id: 'feed:mc_top', hint: C.directFeeds.length + ' feeds your browser can read directly, every ' + Math.round(S.settings.newsMs / 1000) + 's' },
-      { k: 'Deep news', id: null, hint: 'GitHub Actions fetches all ' + (S.feedsTotal || '') + ' feeds every 5 minutes, where CORS does not apply' },
+      { k: 'Fast news', st: fastState, hint: C.directFeeds.length + ' feeds your browser can read directly, every ' + Math.round(S.settings.newsMs / 1000) + 's' },
+      { k: 'Deep news', id: null, hint: 'GitHub Actions fetches all ' + (S.feedsTotal || '') + ' feeds a run, where CORS does not apply' },
       { k: 'Model', id: 'openrouter', hint: S.settings.key ? S.settings.model : 'no key set — using the local rule engine' },
     ];
     box.innerHTML = '';
     lanes.forEach(function (lane) {
-      var st = lane.id ? h[lane.id] : (S.feedsAlive ? { ok: true, note: S.feedsAlive + ' alive' } : null);
+      var st = lane.st !== undefined ? lane.st
+        : (lane.id ? h[lane.id] : (S.feedsAlive ? { ok: true, note: S.feedsAlive + ' alive' } : null));
       var row = document.createElement('div');
       row.className = 'source-row';
       row.title = lane.hint + (st && st.note ? ' · ' + st.note : '');
@@ -1924,7 +1941,12 @@
           S.forecast.narrative = clean;
         }
       })
-      .catch(noop);
+      .catch(noop)
+      /* renderLanes() runs earlier in the same pass than this call, so the
+         Model lane was always showing the state from before the request. It
+         read "idle" on a page that was already displaying the model's own
+         sentence. Redraw once the answer - or the failure - is in. */
+      .then(renderLanes);
   }
 
   KT.app = {
