@@ -167,6 +167,25 @@ def seasonality(monthly, daily):
     }
 
 
+def prev_close(daily, meta):
+    """The previous session's close, from the daily candles rather than Yahoo's
+    chartPreviousClose.
+
+    chartPreviousClose is the close before the *requested range* starts, not the
+    close before today. meta comes from the first timeframe fetched, which is a
+    5-day minute window, so it was reading the close from five sessions back and
+    every change/change_pct in quote.json inherited that error - 0.80% against a
+    real 0.16% on 18 Sep 2026. The daily series already sits in this loop.
+    """
+    if daily:
+        today = datetime.fromtimestamp(
+            meta.get("regularMarketTime") or 0, tz=IST).date()
+        for row in reversed(daily):
+            if datetime.fromtimestamp(row[0], tz=IST).date() < today:
+                return row[4]
+    return meta.get("chartPreviousClose")
+
+
 def main():
     out_quote = {}
     generated = now_iso()
@@ -174,10 +193,13 @@ def main():
     for key, meta_cfg in SYMBOLS.items():
         ysym = meta_cfg["yahoo"]
         meta_latest = None
+        daily_rows = []
         for tf, interval, rng in TIMEFRAMES:
             try:
                 meta, rows = fetch_chart(ysym, interval, rng)
                 meta_latest = meta_latest or meta
+                if interval == "1d" and len(rows) > len(daily_rows):
+                    daily_rows = rows
                 write_json(
                     f"candles_{key}_{tf}.json",
                     {
@@ -197,7 +219,7 @@ def main():
                 "label": meta_cfg["label"],
                 "exchange": meta_cfg["exchange"],
                 "price": meta_latest.get("regularMarketPrice"),
-                "prev_close": meta_latest.get("chartPreviousClose"),
+                "prev_close": prev_close(daily_rows, meta_latest),
                 "day_high": meta_latest.get("regularMarketDayHigh"),
                 "day_low": meta_latest.get("regularMarketDayLow"),
                 "week52_high": meta_latest.get("fiftyTwoWeekHigh"),

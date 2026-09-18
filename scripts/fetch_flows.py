@@ -25,8 +25,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from common import DATA, UA, Lanes, now_iso, write_json  # noqa: E402
 
 NSE_HOME = "https://www.nseindia.com/market-data/live-equity-market"
-NSE_BREADTH = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
-NSE_ALL = "https://www.nseindia.com/api/equity-stockIndices?index=SECURITIES%20IN%20F%26O"
+# equity-stockIndices, which used to serve the constituent rows, now answers 404
+# for every index. allIndices still answers, and each row already carries the
+# advance/decline count NSE computed itself, so the counting is no longer ours
+# to do. Preference order is widest first: a 500-name read is a market, a
+# 50-name read is the same heavyweights that already moved the index.
+NSE_INDICES = "https://www.nseindia.com/api/allIndices"
+BREADTH_PREF = ("NIFTY 500", "NIFTY TOTAL MARKET", "NIFTY 200", "NIFTY 100", "NIFTY 50")
 NSE_FII = "https://www.nseindia.com/api/fiidiiTradeReact"
 MC_FII = "https://www.moneycontrol.com/stocks/marketstats/fii_dii_activity/index.php"
 
@@ -45,29 +50,24 @@ def session():
 
 
 def breadth(s):
-    """Advance/decline across the F&O universe, falling back to the Nifty 50."""
-    for url, label in ((NSE_ALL, "F&O universe"), (NSE_BREADTH, "Nifty 50")):
-        r = s.get(url, timeout=25)
-        if r.status_code != 200:
+    """Advance/decline from NSE's own index rows, widest index that answered."""
+    r = s.get(NSE_INDICES, timeout=25)
+    if r.status_code != 200:
+        raise RuntimeError(f"allIndices HTTP {r.status_code}")
+    rows = {(row.get("indexSymbol") or ""): row for row in (r.json().get("data") or [])}
+    for name in BREADTH_PREF:
+        row = rows.get(name)
+        if not row:
             continue
-        rows = (r.json().get("data") or [])
-        adv = dec = unc = 0
-        for row in rows:
-            sym = (row.get("symbol") or "")
-            if sym.startswith("NIFTY"):
-                continue
-            ch = row.get("pChange")
-            if ch is None:
-                continue
-            if ch > 0:
-                adv += 1
-            elif ch < 0:
-                dec += 1
-            else:
-                unc += 1
+        adv, dec = row.get("advances"), row.get("declines")
+        # NSE sends these as strings before the open and as ints once the
+        # session starts; both arrive as null on a holiday.
+        try:
+            adv, dec, unc = int(adv), int(dec), int(row.get("unchanged") or 0)
+        except (TypeError, ValueError):
+            continue
         if adv + dec + unc:
-            return {"advances": adv, "declines": dec, "unchanged": unc, "basis": label}
-        time.sleep(1)
+            return {"advances": adv, "declines": dec, "unchanged": unc, "basis": name}
     raise RuntimeError("no breadth rows")
 
 

@@ -1,4 +1,4 @@
-"""Corporate filings and social chatter - the lanes a browser cannot reach.
+"""Corporate filings - the lane a browser cannot reach.
 
 Filings are the highest-signal source in this project: an order win, a results
 date, a pledge or an open offer is published here before the news wires pick it
@@ -7,7 +7,12 @@ index. Scored for materiality so the chart can mark the ones that matter.
 
 Writes:
   data/filings.json   BSE + NSE announcements, scored
-  data/social.json    Reddit and StockTwits chatter (kept, schema extended)
+
+This used to also write data/social.json from the StockTwits trending stream.
+Nothing ever read it - the path was declared in config.js and never fetched -
+so the lane was paying a request and 12 KB of branch churn per run to produce
+a file no screen displayed. Removed rather than wired: retail chatter is not a
+forecast input any of the seven lanes asks for.
 
 Nothing raises. Every lane records whether it answered so the UI can show it.
 """
@@ -81,8 +86,15 @@ def clean(text):
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(text or ""))).strip()
 
 
-def fetch_bse(lanes):
-    """BSE's announcement API is open; it only wants a browser-shaped request."""
+def fetch_bse():
+    """BSE's announcement API is open; it only wants a browser-shaped request.
+
+    It answers 200 with the bare JSON string "No Record Found!" rather than an
+    empty table when it does not want to serve you - which is also what it
+    returns to a datacentre address, so an empty result here is a block as often
+    as it is a quiet day. Calling .get() on that string raised AttributeError
+    and the lane reported a Python error instead of "BSE said no".
+    """
     to = datetime.now(IST)
     frm = to - timedelta(days=LOOKBACK_DAYS)
     url = ("https://api.bseindia.com/BseIndiaAPI/api/AnnGetData/w"
@@ -95,7 +107,10 @@ def fetch_bse(lanes):
         "Accept": "application/json, text/plain, */*",
     })
     r.raise_for_status()
-    rows = r.json().get("Table", []) or []
+    payload = r.json()
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"BSE returned {payload!r}")
+    rows = payload.get("Table") or []
     out = []
     for row in rows:
         head = clean(row.get("HEADLINE") or row.get("NEWSSUB"))
@@ -114,11 +129,10 @@ def fetch_bse(lanes):
             "kind": kind, "impact": impact, "sentiment": sentiment, "ts": ts,
             "url": "https://www.bseindia.com/corporates/ann.html",
         })
-    lanes.record("BSE filings", True, len(out))
     return out
 
 
-def fetch_nse(lanes):
+def fetch_nse():
     """NSE hands out a session cookie on the homepage before it answers its API."""
     s = requests.Session()
     heads = {"User-Agent": UA, "Accept": "*/*", "Accept-Language": "en-IN,en;q=0.9"}
@@ -152,33 +166,6 @@ def fetch_nse(lanes):
             "kind": kind, "impact": impact, "sentiment": sentiment, "ts": ts,
             "url": "https://www.nseindia.com/companies-listing/corporate-filings-announcements",
         })
-    lanes.record("NSE filings", True, len(out))
-    return out
-
-
-def fetch_stocktwits(lanes):
-    """Public trending stream. Retail sentiment - weak on fact, useful on mood."""
-    r = requests.get("https://api.stocktwits.com/api/2/streams/trending.json",
-                     timeout=20, headers={"User-Agent": UA})
-    r.raise_for_status()
-    out = []
-    for m in (r.json().get("messages") or [])[:40]:
-        body = clean(m.get("body"))
-        if len(body) < 15:
-            continue
-        basic = ((m.get("entities") or {}).get("sentiment") or {}).get("basic")
-        try:
-            ts = int(datetime.fromisoformat(m["created_at"].replace("Z", "+00:00")).timestamp())
-        except Exception:  # noqa: BLE001
-            ts = int(time.time())
-        out.append({
-            "source": "StockTwits", "headline": body[:220],
-            "sentiment": 2.0 if basic == "Bullish" else (-2.0 if basic == "Bearish" else 0.0),
-            "impact": "low", "kind": "chatter", "ts": ts,
-            "symbols": [s.get("symbol") for s in (m.get("symbols") or [])][:6],
-            "url": "https://stocktwits.com/",
-        })
-    lanes.record("StockTwits", True, len(out))
     return out
 
 
@@ -187,8 +174,11 @@ def main():
     lanes = Lanes()
 
     filings = []
-    filings += lanes.run("BSE filings", lambda: fetch_bse(Lanes()))
-    filings += lanes.run("NSE filings", lambda: fetch_nse(Lanes()))
+    # Lanes.run already records the result. The fetchers used to also record
+    # into a throwaway Lanes() passed in here, which printed every lane twice
+    # into the workflow log for no gain.
+    filings += lanes.run("BSE filings", fetch_bse)
+    filings += lanes.run("NSE filings", fetch_nse)
 
     seen, deduped = set(), []
     for f in sorted(filings, key=lambda x: -x["ts"]):
@@ -207,13 +197,6 @@ def main():
         "filings": deduped,
     })
 
-    chatter = lanes.run("StockTwits", lambda: fetch_stocktwits(Lanes()))
-    write_json("social.json", {
-        "updated_iso": now_iso(),
-        "count": len(chatter),
-        "lanes": lanes.as_list(),
-        "items": chatter,
-    })
     return 0
 
 
