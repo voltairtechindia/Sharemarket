@@ -295,9 +295,62 @@
         </div>
         <div class="kv"><span class="kv-k">Inside the 68% band <em>(target 68%)</em></span><span class="kv-v" id="acc-68">&mdash;</span></div>
         <div class="kv"><span class="kv-k">Inside the 95% band <em>(target 95%)</em></span><span class="kv-v" id="acc-95">&mdash;</span></div>
-        <div class="kv"><span class="kv-k">Direction called right</span><span class="kv-v" id="acc-dir">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Direction called right <em>(95% interval)</em></span><span class="kv-v" id="acc-dir">&mdash;</span></div>
         <div class="kv"><span class="kv-k">Versus a &ldquo;no change&rdquo; guess</span><span class="kv-v" id="acc-skill">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Band width, how it was set</span><span class="kv-v" id="acc-band">&mdash;</span></div>
+        <!-- The one line that answers "can I act on this". It is deliberately
+             the loudest thing in the section, because a direction rate whose
+             interval contains 50% has been the single most over-read number
+             on this page. -->
+        <p class="verdict-line" id="acc-verdict">&mdash;</p>
         <p class="fine" id="acc-note">&mdash;</p>
+      </div>
+
+      <!-- ================================================== HOW IT ACTUALLY WENT
+           The forward record. calibrate() above replays the model against
+           history it was built on; this scores forecasts that were written
+           down before the outcome existed, and says why each one landed or
+           did not. The two are kept apart on purpose - only the second kind
+           of evidence is worth money. -->
+      <div class="section" id="ledger-section">
+        <div class="section-head">
+          <span class="label">How it actually went</span>
+          <span class="label" id="ledger-n">&mdash;</span>
+        </div>
+
+        <div id="ledger-empty" class="fine">&mdash;</div>
+
+        <div id="ledger-body" class="hidden">
+          <div class="kv"><span class="kv-k">Forecast said</span><span class="kv-v" id="lg-said">&mdash;</span></div>
+          <div class="kv"><span class="kv-k">Price actually did</span><span class="kv-v" id="lg-did">&mdash;</span></div>
+          <div class="kv"><span class="kv-k">Missed by</span><span class="kv-v" id="lg-err">&mdash;</span></div>
+          <p class="verdict-line" id="lg-mode">&mdash;</p>
+
+          <table class="analog-table" id="lg-lane-table">
+            <thead><tr><th>Lane</th><th class="num-col">Asked for</th><th class="num-col">Verdict</th></tr></thead>
+            <tbody id="lg-lane-rows"></tbody>
+          </table>
+
+          <div class="kv" style="margin-top:8px">
+            <span class="kv-k">Move no lane called <em>(the surprise)</em></span>
+            <span class="kv-v" id="lg-residual">&mdash;</span>
+          </div>
+          <div class="kv"><span class="kv-k">News story vs chart story</span><span class="kv-v" id="lg-winner">&mdash;</span></div>
+          <div id="lg-arrivals"></div>
+
+          <div class="section-head" style="margin-top:14px">
+            <span class="label">Running record</span>
+            <span class="label" id="lg-agg-n">&mdash;</span>
+          </div>
+          <div class="kv"><span class="kv-k">Inside the 68% band</span><span class="kv-v" id="lg-cov">&mdash;</span></div>
+          <div class="kv"><span class="kv-k">Direction called right</span><span class="kv-v" id="lg-dir">&mdash;</span></div>
+          <div class="kv"><span class="kv-k">Versus a &ldquo;no change&rdquo; guess</span><span class="kv-v" id="lg-skill">&mdash;</span></div>
+          <table class="analog-table">
+            <thead><tr><th>Lane</th><th class="num-col">Right</th><th class="num-col">95% interval</th></tr></thead>
+            <tbody id="lg-agg-rows"></tbody>
+          </table>
+          <p class="fine" id="lg-note">&mdash;</p>
+        </div>
       </div>
 
       <!-- ================================================ HISTORICAL ANALOGUE
@@ -594,7 +647,9 @@
 
 <!-- Load order is a dependency order, not an alphabet. config and core come
      first because everything reads them; indicators before levels, levels
-     before structures, structures before forecast, forecast before engine. -->
+     before structures, structures before forecast, forecast before engine.
+     vol before forecast: forecast.js fits the band through KT.vol. ledger
+     after forecast, because it records what forecast.js produced. -->
 <script src="assets/js/config.js"></script>
 <script src="assets/local-config.js" onerror="void 0"></script>
 <script src="assets/js/core.js"></script>
@@ -606,7 +661,9 @@
 <script src="assets/js/portfolio.js"></script>
 <script src="assets/js/data.js"></script>
 <script src="assets/js/analogs.js"></script>
+<script src="assets/js/vol.js"></script>
 <script src="assets/js/forecast.js"></script>
+<script src="assets/js/ledger.js"></script>
 <script src="assets/js/engine.js"></script>
 <script src="assets/js/chart.js"></script>
 <script src="assets/js/app.js"></script>

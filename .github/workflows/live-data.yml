@@ -98,6 +98,15 @@ jobs:
         run: python scripts/fetch_news.py
         continue-on-error: true
 
+      # The news lane is the heaviest in the forecast (0.24) and has never been
+      # scored, because nothing ever kept the headlines. calibrate() can replay
+      # momentum and levels from the price series; it cannot replay a feed that
+      # was not saved. This starts saving it. It becomes backtestable in about
+      # three months, which is why it ships now rather than when it is needed.
+      - name: Archive today's headlines
+        run: python scripts/archive_news.py
+        continue-on-error: true
+
       - name: Publish to the live branch
         run: bash scripts/publish_live.sh
 
@@ -111,5 +120,6 @@ jobs:
             sleep 60
             python scripts/fetch_news.py || true
             python scripts/fetch_filings.py || true
+            python scripts/archive_news.py || true
             bash scripts/publish_live.sh || true
           done

@@ -130,12 +130,35 @@ constantly and the auto-router survives that. With reasoning off it was usable
 
 ## Load order is a dependency order
 
-`config` → `core` → `indicators` → `levels` → `structures` → `forecast` →
-`engine` → `chart` → `app`. The script tags in `index.html` are commented with
-this. Reordering them breaks the page silently.
+`config` → `core` → `indicators` → `levels` → `structures` → `vol` →
+`forecast` → `ledger` → `engine` → `chart` → `app`. The script tags in
+`index.html` are commented with this. Reordering them breaks the page silently.
 
 `forecast.js` owns the model (seven lanes, clock-aware path, bands,
 `calibrate()`). `engine.js` is only reason points — the forecast moved out of it.
+`vol.js` owns the variance model and every statistic that judges the band.
+`ledger.js` owns the forward record.
+
+Three invariants that were each a real bug, found by measuring rather than by
+reading:
+
+- **`build()` and `calibrate()` must draw the band through `bandPath()` and
+  `volContext()`.** They used to build it twice and drifted, so the accuracy
+  panel scored a model the chart never showed.
+- **A replay reads its outcome by time, not by index.** `candles[at + bars]` is
+  not the bar the band ends on: a session holds 75 five-minute bars across 74
+  intervals, so index arithmetic lands a whole overnight gap late. Measured, 19
+  of 20 endpoints disagreed. Use `closeAtTime()`.
+- **Every interval and p-value in `calibrate()` uses `nEff`, never `n`.**
+  Windows overlap on purpose — that is what makes the estimate stable — but
+  scoring them as independent made the panel swing by tens of points when the
+  replay grid moved five bars.
+
+A fourth, in `vol.js`: **deseasonalise before fitting.** `volProfile()` already
+models the intraday cycle and re-applies it bar by bar, so a GARCH fitted on raw
+5-minute returns spends its ARCH coefficient describing the clock. Measured,
+persistence fell 0.741 → 0.509 and QLIKE improved 13% once the profile was
+divided out first.
 
 ---
 

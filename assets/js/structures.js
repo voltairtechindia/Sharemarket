@@ -560,7 +560,7 @@
 
   /* -------------------------------------------------- measured-move blend */
   function impliedBias(structures, price, stats) {
-    if (!structures || !structures.length || !price) return { score: 0, note: 'no structure', target: null };
+    if (!structures || !structures.length || !price) return { score: 0, note: 'no structure', target: null, hasData: false };
     var num = 0, den = 0, bestTarget = null, bestW = 0;
     structures.forEach(function (s) {
       if (!s.dir) return;
@@ -578,11 +578,11 @@
       den += w;
       if (w > bestW) { bestW = w; bestTarget = s; }
     });
-    if (!den) return { score: 0, note: 'no directional structure', target: null };
+    if (!den) return { score: 0, note: 'no directional structure', target: null, hasData: false };
     return {
       score: Math.max(-1, Math.min(1, num / den)),
       note: bestTarget ? (bestTarget.name + ' ' + bestTarget.status + ', target ' + bestTarget.target) : '',
-      target: bestTarget,
+      target: bestTarget, hasData: true,
     };
   }
 

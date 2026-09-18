@@ -404,6 +404,11 @@
       global: S.global,
       flows: S.flows,
       vix: S.vix,
+      /* The band multiplier that the last replay says would have delivered the
+         coverage the band claims. Absent on the first load, which is correct -
+         the panel then says the width is uncalibrated rather than implying a
+         measurement that has not happened. */
+      conformal: (S.calibration && S.calibration.conformal) || null,
     });
     S.reasons = engine.buildReasons(S.candles, news, S.timeframe);
 
@@ -420,8 +425,27 @@
     renderIndicators();
     renderLanes();
     renderPortfolio();
+    updateLedger(news);
     maybeCalibrate();
     maybeEnrichNarrative();
+  }
+
+  /* ============================================================== LEDGER
+
+     Write down what was forecast, then score it when its horizon elapses.
+     This is the only evidence on the page that the model has not already
+     seen: calibrate() replays history the model was built on, which answers
+     a weaker question. Both are shown, kept apart, and labelled. */
+  function updateLedger(news) {
+    if (!KT.ledger || !S.forecast) return;
+    // arrivalsIn() scans this to name what landed inside a forecast window.
+    KT.ledger.newsSource = function () { return news || S.news || []; };
+    try {
+      KT.ledger.record(S.forecast, { symbol: S.symbol, vix: S.vix });
+      KT.ledger.settle(S.candles, S.symbol, S.timeframe);
+      maybeSeedLedger();
+    } catch (e) { /* a full localStorage must not take the page down */ }
+    renderLedger();
   }
 
   /* The band is only worth showing if it has been checked. This replays the
@@ -443,15 +467,25 @@
     // Yield first: on a long series this is tens of milliseconds of maths, and
     // running it inline would show up as a stutter in the 1 second tick.
     var forKey = key, forCandles = S.candles, forTf = S.timeframe;
-    setTimeout(function () {
-      var result = null;
-      try { result = KT.forecast.calibrate(forCandles, forTf); } catch (e) { result = null; }
-      // The view can change while this runs. Dropping a late result is right:
-      // showing it would label the new chart with the old chart's score.
-      if (forKey !== S.calibratedKey) return;
-      S.calibration = result;
+    /* Sliced, not deferred. Ninety-six replays measured just under five
+       seconds of arithmetic; running that in one setTimeout still froze the
+       chart and the live price for five seconds, it just froze them slightly
+       later. calibrate() now yields between batches of windows and calls back
+       when it is done. */
+    try {
+      KT.forecast.calibrate(forCandles, forTf, { slice: 4 }, function (result) {
+        // The view can change while this runs. Dropping a late result is right:
+        // showing it would label the new chart with the old chart's score.
+        if (forKey !== S.calibratedKey) return;
+        S.calibration = result;
+        renderAccuracy();
+        // The band multiplier the replay just produced feeds the next build.
+        if (result && result.conformal) recompute();
+      });
+    } catch (e) {
+      S.calibration = null;
       renderAccuracy();
-    }, 0);
+    }
   }
 
   /* =============================================================== LOOPS */
@@ -1236,27 +1270,34 @@
     var c = S.calibration;
     if (!c) {
       text('acc-n', '—');
-      ['acc-68', 'acc-95', 'acc-dir', 'acc-skill'].forEach(function (id) { text(id, '—'); });
+      ['acc-68', 'acc-95', 'acc-dir', 'acc-skill', 'acc-band'].forEach(function (id) { text(id, '—'); });
+      setVerdict('acc-verdict', '', 'Scoring the band against history…');
       text('acc-note', 'Not enough loaded history on this timeframe to score the forecast. Switch to Daily or Monthly for a measured number.');
       return;
     }
-    text('acc-n', c.n + ' replays');
-    var c68 = el('acc-68');
-    if (c68) {
-      c68.textContent = c.coverage68 + '%';
-      c68.className = 'kv-v ' + (Math.abs(c.coverage68 - 68) <= 8 ? 'up' : 'down');
-    }
-    var c95 = el('acc-95');
-    if (c95) {
-      c95.textContent = c.coverage95 + '%';
-      c95.className = 'kv-v ' + (Math.abs(c.coverage95 - 95) <= 6 ? 'up' : 'down');
-    }
+    /* Both numbers, always. n alone reads as far more evidence than it is;
+       nEff alone reads as noisier than the estimate really is. */
+    text('acc-n', c.n + ' replays / ' + c.nEff + ' independent');
+
+    /* Coverage is coloured by the Kupiec verdict, not by how close the number
+       looks. The old rule painted green whenever the gap was under 8 points,
+       which on 53 replays is true of almost any result the model can produce -
+       it was reporting the sample size, dressed as a result. */
+    putCoverage('acc-68', c.coverage68, c.kupiec68);
+    putCoverage('acc-95', c.coverage95, c.kupiec95);
+
     var dir = el('acc-dir');
     if (dir) {
-      dir.textContent = c.directionRate == null
-        ? 'no directional calls'
-        : c.directionRate + '% of ' + c.directionCalls;
-      dir.className = 'kv-v ' + (c.directionRate == null ? '' : c.directionRate > 52 ? 'up' : c.directionRate < 48 ? 'down' : 'flat');
+      if (c.directionRate == null) {
+        dir.textContent = 'no directional calls';
+        dir.className = 'kv-v';
+      } else {
+        dir.textContent = c.directionRate + '% of ' + c.directionCalls +
+          (c.directionCi ? '  (' + c.directionCi[0] + '–' + c.directionCi[1] + '%)' : '');
+        // Green only when the whole interval clears a coin, not when the point
+        // estimate does.
+        dir.className = 'kv-v ' + (c.directionSignificant ? 'up' : 'flat');
+      }
     }
     var sk = el('acc-skill');
     if (sk) {
@@ -1265,10 +1306,269 @@
         : (Math.round((c.skill - 1) * 1000) / 10) + '% worse';
       sk.className = 'kv-v ' + (c.skill < 1 ? 'up' : 'down');
     }
-    text('acc-note',
-      'Measured by rebuilding the forecast at ' + c.n + ' past points on this timeframe and checking what price actually did over the next ' +
-      c.bars + ' bars. ' + c.basis.charAt(0).toUpperCase() + c.basis.slice(1) + '. ' +
-      'Coverage far from target means the band is the wrong width; a direction rate near 50% means the lean is worth little at this horizon, whatever the headline says.');
+    var band = el('acc-band');
+    if (band) {
+      band.textContent = c.conformal
+        ? 'conformal ×' + c.conformal.z68 + ' on ' + c.conformal.n + ' replays'
+        : 'uncalibrated';
+      band.className = 'kv-v ' + (c.conformal ? '' : 'flat');
+    }
+
+    /* The verdict line. This is the answer to the only question that matters
+       for someone deciding whether to act, and it is stated plainly because
+       every softer phrasing has been read as encouragement. */
+    var v = [], tone = 'warn';
+    if (c.directionSignificant && c.skill < 1) {
+      tone = 'good';
+      v.push('The direction rate clears a coin flip across its whole 95% interval and the model beats a no-change guess.');
+      v.push('That is the weakest bar worth clearing, not a green light — it says nothing about costs.');
+    } else {
+      tone = 'bad';
+      if (c.directionCi) {
+        v.push('The direction rate is ' + c.directionRate + '%, but its 95% interval runs ' +
+               c.directionCi[0] + '–' + c.directionCi[1] + '%, which contains 50%. On this evidence the lean is not distinguishable from a coin.');
+      } else {
+        v.push('There are too few directional calls to say whether the lean beats a coin.');
+      }
+      if (c.skill >= 1) {
+        v.push('The model is also ' + (Math.round((c.skill - 1) * 1000) / 10) +
+               '% worse than assuming no change at this horizon.');
+      }
+      v.push('Do not size a position off this number.');
+    }
+    setVerdict('acc-verdict', tone, v.join(' '));
+
+    var note = 'Measured by rebuilding the forecast at ' + c.n + ' past points on this timeframe and checking what price ' +
+      'actually did over the next ' + c.bars + ' bars. ';
+    note += 'Those windows overlap by ' + c.overlapFraction + '%, so they cover about ' + c.nEff +
+            ' independent horizons. Every percentage above is the estimate from all ' + c.n +
+            ' — overlap costs precision, not validity — and every interval and p-value is computed on the ' +
+            c.nEff + '. Scoring ' + c.n + ' as if they were independent is what made earlier versions of this panel ' +
+            'swing by tens of points when the replay grid moved a few bars. ';
+    note += c.basis.charAt(0).toUpperCase() + c.basis.slice(1) + '. ';
+    if (c.kupiec68 && c.kupiec68.message) note += c.kupiec68.message + ' ';
+    note += 'This is a backtest: it scores the model against history the model was built on. The forward record below is the stronger evidence.';
+    text('acc-note', note);
+  }
+
+  function putCoverage(id, value, kupiec) {
+    var node = el(id);
+    if (!node) return;
+    node.textContent = value + '%' + (kupiec && kupiec.verdict !== 'insufficient-data'
+      ? '  (p=' + kupiec.pValue + ')' : '');
+    node.className = 'kv-v ' + (!kupiec || kupiec.verdict === 'insufficient-data' ? 'flat'
+      : kupiec.verdict === 'well-calibrated' ? 'up' : 'down');
+  }
+
+  function setVerdict(id, tone, txt) {
+    var node = el(id);
+    if (!node) return;
+    node.textContent = txt;
+    node.className = 'verdict-line' + (tone ? ' ' + tone : '');
+  }
+
+  /* A forward record takes a horizon to produce its first row - 6.5 hours on
+     the daily view, longer elsewhere - and until then this panel would have
+     nothing to show and no way to demonstrate that it works. Seeding rebuilds
+     a handful of forecasts at past bars using only the candles available then,
+     settles them against the bars that really followed, and marks them.
+
+     They are excluded from every forward statistic. They are here to show what
+     the post-mortem looks like and to prove the plumbing runs, not to pad the
+     sample - see aggregate() in ledger.js, which filters them out. */
+  function maybeSeedLedger() {
+    if (!KT.ledger || !S.candles || S.candles.length < 250) return;
+    var key = S.symbol + ':' + S.timeframe;
+    if (S.seededKey === key) return;
+    S.seededKey = key;
+    // Off the critical path: this runs build() several times over.
+    setTimeout(function () {
+      if (S.seededKey !== key) return;
+      try {
+        KT.ledger.seedFromHistory(S.candles, S.symbol, S.timeframe,
+                                  { count: 6, seasonality: S.seasonality });
+        renderLedger();
+      } catch (e) { /* seeding is a nicety, never a reason to break the page */ }
+    }, 1200);
+  }
+
+  /* ========================================================= HOW IT WENT */
+  function renderLedger() {
+    if (!KT.ledger) return;
+    var body = el('ledger-body'), empty = el('ledger-empty');
+    var row = KT.ledger.latest(S.symbol, S.timeframe, 'settled');
+    var agg = KT.ledger.aggregate(S.symbol, S.timeframe);
+    var pending = KT.ledger.all().filter(function (r) {
+      return r.symbol === S.symbol && r.timeframe === S.timeframe && r.status !== 'settled';
+    }).length;
+
+    text('ledger-n', agg.n ? agg.n + ' scored, ' + pending + ' pending' : (pending + ' pending'));
+
+    if (!row || !row.explain) {
+      if (body) body.classList.add('hidden');
+      if (empty) {
+        empty.classList.remove('hidden');
+        // An empty panel is indistinguishable from a broken one, so say which.
+        empty.textContent = pending
+          ? 'No forecast on this view has reached the end of its horizon yet. ' + pending +
+            ' is waiting; the oldest settles once ' + (S.forecast ? S.forecast.horizonLabel : 'the horizon') +
+            ' of trading has passed since it was written down. Nothing is scored until then.'
+          : 'Nothing recorded on this view yet. A row is written the first time a forecast is built here, ' +
+            'and scored when its horizon elapses.';
+      }
+      return;
+    }
+    if (empty) empty.classList.add('hidden');
+    if (body) body.classList.remove('hidden');
+
+    var e = row.explain;
+    var seeded = row.origin === 'seeded';
+    var did0 = el('ledger-n');
+    if (did0 && seeded && !agg.n) {
+      did0.textContent = 'example from history · ' + pending + ' pending';
+    }
+    var said = el('lg-said'), did = el('lg-did'), err = el('lg-err');
+    if (said) { said.textContent = fmt.pct(e.forecastPct) + '  (' + row.direction.toLowerCase() + ')'; said.className = 'kv-v ' + fmt.cls(e.forecastPct); }
+    if (did)  { did.textContent = fmt.pct(e.realisedPct); did.className = 'kv-v ' + fmt.cls(e.realisedPct); }
+    if (err)  { err.textContent = fmt.pct(e.errorPct); err.className = 'kv-v ' + (Math.abs(e.errorPct) < 0.15 ? 'up' : 'down'); }
+
+    var tone = e.mode === 'hit' ? 'good'
+      : e.mode === 'vol-surprise' ? 'bad'
+      : e.mode === 'lean-wrong-range-held' ? 'warn' : 'bad';
+    setVerdict('lg-mode', tone, e.modeText);
+
+    var host = el('lg-lane-rows');
+    if (host) {
+      host.innerHTML = '';
+      e.lanes.forEach(function (l) {
+        var tr = document.createElement('tr');
+        var scored = l.verdict === 'right' || l.verdict === 'wrong';
+        if (!scored) tr.className = 'idle';
+        var td1 = document.createElement('td'); td1.textContent = l.label;
+        var td2 = document.createElement('td'); td2.className = 'num-col';
+        td2.textContent = scored || l.askedPct ? fmt.pct(l.askedPct) : '—';
+        var td3 = document.createElement('td'); td3.className = 'num-col ' +
+          (l.verdict === 'right' ? 'lg-verdict-right' : l.verdict === 'wrong' ? 'lg-verdict-wrong' : 'lg-verdict-idle');
+        td3.textContent = l.verdict;
+        tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3);
+        host.appendChild(tr);
+      });
+    }
+
+    var res = el('lg-residual');
+    if (res) {
+      res.textContent = fmt.pct(e.residualPct);
+      // A residual larger than everything the lanes asked for together means
+      // the model did not merely get the direction wrong, it was blind.
+      res.className = 'kv-v ' + (Math.abs(e.residualPct) > Math.abs(e.askedTotalPct) * 2 ? 'down' : '');
+    }
+    var win = el('lg-winner');
+    if (win) {
+      win.textContent = e.componentWinner === 'news' ? 'the headlines were closer'
+        : e.componentWinner === 'pattern' ? 'the chart was closer'
+        : e.componentWinner === 'neither' ? 'neither, they finished level' : '—';
+      win.className = 'kv-v';
+    }
+
+    var arr = el('lg-arrivals');
+    if (arr) {
+      arr.innerHTML = '';
+      var a = e.arrivals;
+      if (a && a.top && a.top.length) {
+        a.top.forEach(function (n) {
+          var p = document.createElement('p');
+          p.className = 'lg-arrival';
+          // Descriptive only. Naming the loudest headline in the window is
+          // checkable; saying it caused the move is not.
+          p.innerHTML = '<strong>Landed inside the window:</strong> ' +
+            fmt.stamp(n.ts, 3600) + ' &middot; ' + escapeHtml(n.headline) +
+            ' <em>(' + escapeHtml(n.source || '') + ', ' + n.impact + ')</em>';
+          arr.appendChild(p);
+        });
+      } else if (a && a.scanned) {
+        var p2 = document.createElement('p');
+        p2.className = 'fine';
+        p2.textContent = 'Nothing scored in the live feed arrived inside this window. The fast lane only holds the current sweep, ' +
+          'so a headline that has since aged out cannot be recovered — the workflow archive is what fixes that over time.';
+        arr.appendChild(p2);
+      }
+    }
+
+    /* ----------------------------------------------- the running record */
+    text('lg-agg-n', agg.n + ' settled' + (agg.seeded ? ' (' + agg.seeded + ' seeded, excluded)' : ''));
+    var cov = el('lg-cov');
+    if (cov) {
+      // With nothing settled there is no coverage, and printing "undefined%"
+      // is worse than printing nothing at all.
+      cov.textContent = agg.n
+        ? agg.coverage68 + '%' + (agg.coverage68Ci ? '  (' + agg.coverage68Ci[0] + '–' + agg.coverage68Ci[1] + '%)' : '')
+        : 'nothing settled yet';
+      cov.className = 'kv-v ' + (!agg.n ? 'flat'
+        : agg.kupiec68 && agg.kupiec68.verdict === 'well-calibrated' ? 'up'
+        : agg.kupiec68 && agg.kupiec68.verdict === 'insufficient-data' ? 'flat' : 'down');
+    }
+    var ld = el('lg-dir');
+    if (ld) {
+      ld.textContent = agg.directionRate == null ? 'no calls yet'
+        : agg.directionRate + '% of ' + agg.directionCalls +
+          (agg.directionCi ? '  (' + agg.directionCi[0] + '–' + agg.directionCi[1] + '%)' : '');
+      ld.className = 'kv-v ' + (agg.directionSignificant ? 'up' : 'flat');
+    }
+    var ls = el('lg-skill');
+    if (ls) {
+      ls.textContent = agg.skill == null ? '—'
+        : agg.skill < 1 ? (Math.round((1 - agg.skill) * 1000) / 10) + '% better'
+        : (Math.round((agg.skill - 1) * 1000) / 10) + '% worse';
+      ls.className = 'kv-v ' + (agg.skill != null && agg.skill < 1 ? 'up' : 'down');
+    }
+
+    var aggHost = el('lg-agg-rows');
+    if (aggHost) {
+      aggHost.innerHTML = '';
+      if (!agg.lanes.length) {
+        var tr0 = document.createElement('tr');
+        var td0 = document.createElement('td');
+        td0.colSpan = 3; td0.className = 'lg-verdict-idle';
+        td0.textContent = 'No lane has been scored often enough to have a record.';
+        tr0.appendChild(td0); aggHost.appendChild(tr0);
+      }
+      agg.lanes.forEach(function (l) {
+        var tr = document.createElement('tr');
+        if (!l.significant) tr.className = 'idle';
+        var a1 = document.createElement('td'); a1.textContent = l.label;
+        var a2 = document.createElement('td'); a2.className = 'num-col';
+        a2.textContent = l.right + '/' + l.n + '  ' + l.rate + '%';
+        var a3 = document.createElement('td'); a3.className = 'num-col ' + (l.significant ? 'lg-verdict-right' : 'lg-verdict-idle');
+        a3.textContent = l.ci ? l.ci[0] + '–' + l.ci[1] + '%' : '—';
+        tr.appendChild(a1); tr.appendChild(a2); tr.appendChild(a3);
+        aggHost.appendChild(tr);
+      });
+    }
+
+    var note = '';
+    if (seeded && !agg.n) {
+      note += 'The post-mortem above is rebuilt from history, using only candles that existed at that bar, ' +
+              'because no forecast written down in this browser has settled yet. It shows what the panel will say; ' +
+              'it is not forward evidence and it is excluded from the totals below. ';
+    }
+    note += 'Each counted row was written down before its outcome existed, which is what separates this from the backtest above. ';
+    if (agg.seeded) note += agg.seeded + ' seeded row' + (agg.seeded === 1 ? ' is' : 's are') + ' excluded. ';
+    if (agg.n < 30) {
+      note += 'At ' + agg.n + ' settled forecast' + (agg.n === 1 ? '' : 's') + ' none of these rates means anything yet — ' +
+              'read the intervals, not the percentages. ';
+    }
+    if (agg.callsNeeded) {
+      note += 'For a ' + agg.directionRate + '% direction rate to be distinguishable from a coin at 80% power would take about ' +
+              agg.callsNeeded + ' independent calls. ';
+    }
+    note += 'Rows marked seeded are rebuilt from history to exercise the machinery and are excluded from these totals.';
+    text('lg-note', note);
+  }
+
+  function escapeHtml(str) {
+    return String(str || '').replace(/[&<>"']/g, function (ch) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+    });
   }
 
   /* ========================================================== STRUCTURES */

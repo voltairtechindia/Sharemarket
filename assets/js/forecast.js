@@ -6,7 +6,7 @@
    at 10:30 and at 15:15, and the honest answer to both is a range with a
    probability attached rather than a price.
 
-   Eight lanes feed a directional bias, each normalised to -1..+1:
+   Seven lanes feed a directional bias, each normalised to -1..+1:
 
      news         recency and impact weighted sentiment from the RSS stream
      seasonal     month, weekday and expiry-week effects from ~19 years
@@ -15,7 +15,10 @@
      structure    measured moves from triangles, flags, double tops
      levels       how much room there is to the nearest wall on each side
      flow         breadth and FII/DII when the workflow has them
-     intraday     the average shape of the trading day at this clock time
+
+   The average shape of the session is an eighth input but not an eighth lane:
+   it enters as a drift term through dayShape(), carries no weight in CONFIG,
+   and cannot swing the bias on its own.
 
    Three things make the band trustworthy rather than decorative:
 
@@ -129,10 +132,21 @@
     var base = all.reduce(function (s, x) { return s + x; }, 0) / all.length;
     if (!base) return flat;
 
+    /* The upper bound used to be 4. Measured on the live NIFTY 5-minute series
+       the 09:15-09:29 bucket runs at 13.196x the average bar variance - the
+       overnight gap lands in that first bar - so clamping to 4 made the band
+       sqrt(13.196/4) = 1.8x too narrow at the open, every session, which is
+       the single worst-calibrated moment of the day. The lower bound hit too:
+       the 12:30 bucket's true multiplier is 0.257 against a floor of 0.3.
+
+       The clamp exists to stop one freak session defining a bucket, and that
+       job is done by the counts[b] < 5 guard above and by the median-style
+       trim below. So the bounds widen to what the data actually shows, and a
+       bucket that lands outside them is recorded rather than flattened. */
     var mult = {};
     Object.keys(sums).forEach(function (b) {
       if (counts[b] < 5) return;                       // too thin to trust
-      mult[b] = core.clamp((sums[b] / counts[b]) / base, 0.3, 4);
+      mult[b] = core.clamp((sums[b] / counts[b]) / base, 0.15, 20);
     });
     if (Object.keys(mult).length < 3) return flat;
 
@@ -203,9 +217,9 @@
       var strength = Math.abs(n.sentiment) * IMPACT_W[n.impact] * Math.pow(0.5, age / halfLife);
       if (strength > topW) { topW = strength; top = n; }
     });
-    if (!den) return { score: 0, n: 0, high: 0, top: null, raw: 0 };
+    if (!den) return { score: 0, n: 0, high: 0, top: null, raw: 0, hasData: false };
     var raw = num / den;
-    return { score: core.clamp(raw / 2.5, -1, 1), raw: raw, n: counted, high: high, top: top };
+    return { score: core.clamp(raw / 2.5, -1, 1), raw: raw, n: counted, high: high, top: top, hasData: true };
   }
 
   function lastThursday(year, monthIdx) {
@@ -215,10 +229,10 @@
   }
 
   function seasonalLane(seasonality, whenIst) {
-    if (!seasonality || !seasonality.months) return { score: 0, note: 'no seasonal data', month: null };
+    if (!seasonality || !seasonality.months) return { score: 0, note: 'no seasonal data', month: null, hasData: false };
     var d = whenIst || core.fmt.ist();
     var month = seasonality.months.filter(function (m) { return m.m === d.getMonth() + 1; })[0];
-    if (!month || !month.n) return { score: 0, note: 'no seasonal data', month: null };
+    if (!month || !month.n) return { score: 0, note: 'no seasonal data', month: null, hasData: false };
     var byReturn = core.clamp(month.avg / 3, -1, 1);
     var byWin = core.clamp((month.win - 50) / 20, -1, 1);
     var s = byReturn * 0.6 + byWin * 0.4;
@@ -231,11 +245,11 @@
       s += core.clamp((ew.avg - ew.other_avg) / 0.1, -1, 1) * 0.1;
       parts.push('expiry week (avg ' + core.fmt.pct(ew.avg, 3) + ' vs ' + core.fmt.pct(ew.other_avg, 3) + ')');
     }
-    return { score: core.clamp(s, -1, 1), note: parts.join(', '), month: month };
+    return { score: core.clamp(s, -1, 1), note: parts.join(', '), month: month, hasData: true };
   }
 
   function momentumLane(snap, candles) {
-    if (!snap) return { score: 0, note: 'not enough history' };
+    if (!snap) return { score: 0, note: 'not enough history', hasData: false };
     var price = snap.price, bits = [];
     var s = 0, w = 0;
     if (snap.ema20) { s += core.clamp((price - snap.ema20) / snap.ema20 * 100 / 1.2, -1, 1) * 0.28; w += 0.28;
@@ -251,7 +265,7 @@
     // chosen. A trendless tape gets its momentum vote cut.
     var conviction = snap.adx == null ? 0.75 : core.clamp(snap.adx / 30, 0.35, 1.25);
     if (snap.adx != null) bits.push('ADX ' + snap.adx.toFixed(0));
-    return { score: core.clamp((w ? s / w : 0) * conviction, -1, 1), note: bits.join(', '), adx: snap.adx };
+    return { score: core.clamp((w ? s / w : 0) * conviction, -1, 1), note: bits.join(', '), adx: snap.adx, hasData: w > 0 };
   }
 
   /* Global cues, read from data/global.json when the workflow has produced it.
@@ -272,7 +286,7 @@
     if (!cues || !cues.items) {
       return { score: newsGlobal ? newsGlobal.score : 0,
                note: newsGlobal && newsGlobal.n ? (newsGlobal.n + ' international headlines') : 'no global data',
-               parts: [] };
+               parts: [], hasData: !!(newsGlobal && newsGlobal.n) };
     }
     var s = 0, w = 0, parts = [];
     Object.keys(GLOBAL_MAP).forEach(function (k) {
@@ -284,7 +298,7 @@
       s += v * m.w; w += m.w;
       parts.push({ label: m.label, changePct: row.changePct, contribution: Math.round(v * m.w * 1000) / 1000 });
     });
-    if (!w) return { score: newsGlobal ? newsGlobal.score : 0, note: 'no global data', parts: [] };
+    if (!w) return { score: newsGlobal ? newsGlobal.score : 0, note: 'no global data', parts: [], hasData: !!(newsGlobal && newsGlobal.n) };
     var blended = core.clamp(s / w, -1, 1);
     // Overnight prices are hard evidence; global headlines are colour. Weight
     // accordingly rather than averaging them as equals.
@@ -292,7 +306,7 @@
     parts.sort(function (a, b) { return Math.abs(b.contribution) - Math.abs(a.contribution); });
     var lead = parts[0];
     return {
-      score: blended, parts: parts,
+      score: blended, parts: parts, hasData: true,
       note: lead ? (lead.label + ' ' + core.fmt.pct(lead.changePct) +
                     (parts[1] ? ', ' + parts[1].label + ' ' + core.fmt.pct(parts[1].changePct) : '')) : 'global cues flat',
     };
@@ -301,9 +315,9 @@
   /* Room to run. Price pinned under a wall it has failed at four times is not
      the same setup as price in clear air, whatever the momentum says. */
   function levelsLane(lv, price, atr) {
-    if (!lv || !price) return { score: 0, note: 'no levels' };
+    if (!lv || !price) return { score: 0, note: 'no levels', hasData: false };
     var up = lv.nearestResistance, dn = lv.nearestSupport;
-    if (!up && !dn) return { score: 0, note: 'no level nearby' };
+    if (!up && !dn) return { score: 0, note: 'no level nearby', hasData: false };
     var a = atr || price * 0.004;
     var dUp = up ? (up.level - price) / a : 8;
     var dDn = dn ? (price - dn.level) / a : 8;
@@ -315,11 +329,11 @@
     var note = [];
     if (up) note.push('resistance ' + core.fmt.price(up.level) + ' (' + up.touches + ' touches, ' + core.fmt.pct(up.distPct, 1) + ')');
     if (dn) note.push('support ' + core.fmt.price(dn.level) + ' (' + dn.touches + ' touches, ' + core.fmt.pct(dn.distPct, 1) + ')');
-    return { score: s, note: note.join(', '), up: up, down: dn, atrToUp: dUp, atrToDown: dDn };
+    return { score: s, note: note.join(', '), up: up, down: dn, atrToUp: dUp, atrToDown: dDn, hasData: true };
   }
 
   function flowLane(flows) {
-    if (!flows) return { score: 0, note: 'no flow data' };
+    if (!flows) return { score: 0, note: 'no flow data', hasData: false };
     var s = 0, w = 0, bits = [];
     if (flows.breadth && (flows.breadth.advances + flows.breadth.declines) > 0) {
       var b = flows.breadth, tot = b.advances + b.declines;
@@ -334,8 +348,157 @@
       s += core.clamp(flows.dii.netCr / 3000, -1, 1) * 0.2; w += 0.2;
       bits.push('DII net ' + core.fmt.signed(flows.dii.netCr, 0) + ' cr');
     }
-    if (!w) return { score: 0, note: 'no flow data' };
-    return { score: core.clamp(s / w, -1, 1), note: bits.join(', ') };
+    if (!w) return { score: 0, note: 'no flow data', hasData: false };
+    return { score: core.clamp(s / w, -1, 1), note: bits.join(', '), hasData: true };
+  }
+
+  /* ====================================================== the band, once
+
+     build() and calibrate() used to draw this twice, and they drifted: the
+     chart showed a band built from a GARCH term structure, the intraday
+     volatility profile and a calibrated multiplier, while the accuracy panel
+     scored a flat stdev(rets)*sqrt(t) band with a fixed 1.15 on it. The panel
+     was therefore reporting the coverage of a model nobody could see, and the
+     number it printed said nothing about the band on screen.
+
+     One function now, called by both. The only thing a caller varies is where
+     the drift comes from - which is the part that genuinely differs, because
+     the news, global and flow lanes cannot be replayed historically. The
+     variance, the profile, the multiplier and the level tempering are shared
+     by construction and cannot diverge again. */
+  function bandPath(cfg) {
+    var path = [], upper = [], lower = [], upper2 = [], lower2 = [];
+    var cumVar = 0, t = cfg.lastCandle.time;
+    var useProfile = cfg.vp && cfg.vp.intraday;
+    for (var k = 1; k <= cfg.bars; k++) {
+      t = advance(t, cfg.barSec);
+      var frac = k / cfg.bars;
+
+      // accumulated variance with the intraday profile applied bar by bar
+      cumVar += (cfg.varPath ? cfg.varPath[k - 1] : Math.pow(cfg.sigmaBlend, 2)) *
+                (useProfile ? cfg.vp.mult(t) : 1);
+      var sd = Math.sqrt(cumVar);
+
+      var driftPct = core.clamp(cfg.drift(k, frac, t), -cfg.capPct, cfg.capPct);
+      // A wall does not stop price, it slows it. Beyond a level with a real
+      // record, the remaining drift is halved rather than cut off, which keeps
+      // the path continuous and still reflects the resistance.
+      var mid = temper(cfg.lastClose * (1 + driftPct / 100), cfg.lastClose, cfg.lv);
+
+      var band1 = cfg.lastClose * sd / 100 * cfg.z68;
+      var band2 = cfg.lastClose * sd / 100 * cfg.z95;
+      path.push({ time: t, value: r2(mid) });
+      upper.push({ time: t, value: r2(mid + band1) });
+      lower.push({ time: t, value: r2(mid - band1) });
+      upper2.push({ time: t, value: r2(mid + band2) });
+      lower2.push({ time: t, value: r2(mid - band2) });
+    }
+    return { path: path, upper: upper, lower: lower, upper2: upper2, lower2: lower2 };
+  }
+
+  /* Everything the band needs that is not the drift: the profile, the fitted
+     variance model, its forward path and its calibrated multipliers. Built the
+     same way for a live forecast and for a replay, from whatever history it is
+     handed - so a replay cannot accidentally see the future through a profile
+     fitted on the whole series. */
+  /* One slot, because build() is the only caller that repeats. The page polls
+     once a second while the market is open and every one of those ticks used
+     to refit the whole variance model - measured at 462ms on a 600-bar window,
+     which is half a second of blocked main thread per second of market. The
+     fit only changes when a new bar closes, so that is exactly what the key
+     is. calibrate() walks distinct histories and misses on purpose. */
+  var volCache = { key: null, value: null };
+
+  function volContext(hist, barSec, bars, vix, opts) {
+    opts = opts || {};
+    var lastBar = hist.length ? hist[hist.length - 1] : null;
+    var cacheKey = lastBar ? [barSec, bars, hist.length, lastBar.time, lastBar.close,
+                              vix || 0, opts.conformal ? opts.conformal.z68 : 0].join(':') : null;
+    if (cacheKey && volCache.key === cacheKey) return volCache.value;
+    /* Fitting on every bar ever loaded is not more accurate, only slower, and
+       on a 1651-bar series it measured 1292ms against 16ms on 300 - the
+       optimiser needs far more iterations to satisfy a longer likelihood, so
+       the cost is worse than linear. A GARCH's memory is short by construction
+       (persistence 0.988 on this series has a half-life of about 57 bars), so
+       history beyond a few hundred bars contributes almost nothing to the
+       current variance and a great deal to the wait. */
+    var MAX_FIT_BARS = opts.maxFitBars || 600;
+    if (hist.length > MAX_FIT_BARS) hist = hist.slice(hist.length - MAX_FIT_BARS);
+    var vp = volProfile(hist, barSec);
+    var rets = [];
+    for (var i = Math.max(1, hist.length - 120); i < hist.length; i++) {
+      var pv = hist[i - 1].close;
+      if (pv) rets.push((hist[i].close - pv) / pv);
+    }
+    var sigmaBar = stdev(rets) * 100;
+
+    var volModel = null;
+    try {
+      if (KT.vol) volModel = KT.vol.model(hist, { profile: vp.intraday ? vp.mult : null, minBars: 80 });
+    } catch (e) { volModel = null; }
+    if (volModel && !(volModel.sigma2 && volModel.sigma2.length)) volModel = null;
+    if (volModel) {
+      var fitted = Math.sqrt(volModel.sigma2[volModel.sigma2.length - 1]);
+      if (fitted > 0 && isFinite(fitted)) sigmaBar = fitted;
+    }
+    if (!(sigmaBar > 0)) sigmaBar = 0.25;
+
+    var vixBar = null;
+    if (vix && vix > 3) {
+      var barsPerYear = 365.25 * 24 * 3600 / barSec;
+      if (barSec < 86400) barsPerYear = 252 * (6.25 * 3600 / barSec);
+      vixBar = vix / Math.sqrt(barsPerYear);
+    }
+    var vixWeight = volModel && volModel.kind !== 'ewma' ? 0.25 : 0.4;
+    var sigmaBlend = vixBar ? (sigmaBar * (1 - vixWeight) + vixBar * vixWeight) : sigmaBar;
+
+    var varPath = null;
+    if (volModel) {
+      try {
+        var fwd = KT.vol.forecastPath(volModel, bars,
+          volModel.rv[volModel.rv.length - 1], volModel.rets[volModel.rets.length - 1]);
+        if (fwd && fwd.length === bars && fwd[0] > 0) {
+          var k0 = Math.pow(sigmaBlend, 2) / fwd[0];
+          varPath = fwd.map(function (v) { return v * k0; });
+        }
+      } catch (e) { varPath = null; }
+    }
+
+    var z68 = C.forecast.coneVolMultiplier, z95 = C.forecast.coneVolMultiplier * 1.96;
+    var zBasis = 'fixed multiplier (no fitted model)';
+    if (volModel && volModel.z68 && volModel.z68.z > 0) {
+      z68 = volModel.z68.z;
+      z95 = volModel.z95 && volModel.z95.z > 0 ? volModel.z95.z : z68 * 1.96;
+      zBasis = volModel.z68.basis + ', ' + volModel.z68.n + ' one-bar residuals';
+    }
+
+    /* The multiplier above is calibrated on ONE-BAR standardised residuals,
+       and the band it is used for spans seventy-five. Those are different
+       distributions: a horizon error accumulates drift error and model error
+       on top of the variance, so the one-bar quantile is systematically too
+       small. Replayed properly the first version of this covered 45% against
+       a nominal 68% - Kupiec p=0.034, a real failure, not noise.
+
+       So the horizon multiplier is calibrated at the horizon, by split
+       conformal prediction: score every past replay by |actual - forecast|
+       divided by the band's own sigma, and take the quantile of those scores.
+       That is distribution-free and needs no assumption about the shape of
+       the horizon error at all. calibrate() produces it; this uses it as soon
+       as it exists, and falls back to the one-bar number before then while
+       saying which it used. */
+    if (opts.conformal && opts.conformal.z68 > 0) {
+      z68 = opts.conformal.z68;
+      z95 = opts.conformal.z95 > 0 ? opts.conformal.z95 : z68 * 1.96;
+      zBasis = 'split conformal at the ' + bars + '-bar horizon, ' +
+               opts.conformal.n + ' replays';
+    }
+    var out = {
+      vp: vp, volModel: volModel, sigmaBar: sigmaBar, sigmaBlend: sigmaBlend,
+      vixBar: vixBar, varPath: varPath, z68: z68, z95: z95, zBasis: zBasis,
+      rets: rets,
+    };
+    if (cacheKey) { volCache.key = cacheKey; volCache.value = out; }
+    return out;
   }
 
   /* ============================================================ the build */
@@ -368,24 +531,32 @@
     var flow = flowLane(ctx.flows);
 
     var shape = dayShape(candles, tf.barSec);
-    var vp = volProfile(candles, tf.barSec);
 
     var W = C.forecast.weights;
     var lanes = [
-      { id: 'news', label: 'News flow', score: nAll.score, weight: W.news,
+      { id: 'news', label: 'News flow', score: nAll.score, weight: W.news, hasData: nAll.hasData,
         note: nAll.n ? (nAll.n + ' scored headlines, ' + nAll.high + ' high impact') : 'no headlines yet' },
-      { id: 'seasonal', label: 'Seasonal', score: seasonal.score, weight: W.seasonal, note: seasonal.note },
-      { id: 'momentum', label: 'Momentum', score: mom.score, weight: W.momentum, note: mom.note },
-      { id: 'global', label: 'Global cue', score: glob.score, weight: W.global, note: glob.note },
-      { id: 'structure', label: 'Chart structure', score: struct.score, weight: W.structure,
+      { id: 'seasonal', label: 'Seasonal', score: seasonal.score, weight: W.seasonal, note: seasonal.note, hasData: seasonal.hasData },
+      { id: 'momentum', label: 'Momentum', score: mom.score, weight: W.momentum, note: mom.note, hasData: mom.hasData },
+      { id: 'global', label: 'Global cue', score: glob.score, weight: W.global, note: glob.note, hasData: glob.hasData },
+      { id: 'structure', label: 'Chart structure', score: struct.score, weight: W.structure, hasData: struct.hasData,
         note: struct.note || 'no structure in play' },
-      { id: 'levels', label: 'Room to run', score: lvl.score, weight: W.levels, note: lvl.note },
-      { id: 'flow', label: 'Flows and breadth', score: flow.score, weight: W.flow, note: flow.note },
+      { id: 'levels', label: 'Room to run', score: lvl.score, weight: W.levels, note: lvl.note, hasData: lvl.hasData },
+      { id: 'flow', label: 'Flows and breadth', score: flow.score, weight: W.flow, note: flow.note, hasData: flow.hasData },
     ];
 
-    // Lanes with no data must not drag the bias toward zero. Renormalise over
-    // the lanes that actually reported something.
-    var live = lanes.filter(function (l) { return l.score !== 0 || /headlines|touches|RSI|averages|net|advancing/.test(l.note); });
+    /* Lanes with no data must not drag the bias toward zero. Renormalise over
+       the lanes that actually reported. hasData means the lane received input,
+       not that it formed an opinion - a lane that read forty headlines and
+       concluded neutral is live and belongs in the denominator.
+
+       This was a regex over each lane's own English note until 18 Sep 2026, so
+       rewording a note silently changed the bias. It also read the news lane as
+       live when it was dark, because the fallback string "no headlines yet"
+       contains "headlines" and matched the pattern meant to detect the opposite.
+       The heaviest lane in CONFIG (0.24) therefore voted a hard zero whenever
+       the RSS sweep came back empty, instead of dropping out. */
+    var live = lanes.filter(function (l) { return l.hasData; });
     var wsum = live.reduce(function (s, l) { return s + l.weight; }, 0) || 1;
     var bias = core.clamp(live.reduce(function (s, l) { return s + l.score * l.weight; }, 0) / wsum, -1, 1);
     lanes.forEach(function (l) { l.contribution = Math.round(l.score * l.weight / wsum * 1000) / 1000; });
@@ -401,22 +572,20 @@
     // so a drift projection should be trimmed. Positive means it follows on.
     var persistence = core.clamp(1 + ac1 * 1.6, 0.45, 1.5);
 
-    /* ---------------------------------------------------- volatility ----- */
-    var sigmaBar = stdev(rets) * 100;                       // % per bar, realised
-    if (!(sigmaBar > 0)) sigmaBar = 0.25;
-    // India VIX is an annualised 30-day implied number. Converting it to this
-    // bar size and blending gives the band a forward-looking component instead
-    // of purely backward-looking realised vol.
-    var vixBar = null;
-    if (ctx.vix && ctx.vix > 3) {
-      var barsPerYear = 365.25 * 24 * 3600 / tf.barSec;
-      if (tf.barSec < 86400) barsPerYear = 252 * (6.25 * 3600 / tf.barSec);
-      vixBar = ctx.vix / Math.sqrt(barsPerYear);
-    }
-    var sigmaBlend = vixBar ? (sigmaBar * 0.6 + vixBar * 0.4) : sigmaBar;
 
     var bars = Math.max(6, Math.round(tf.visibleBars * tf.forecastRatio));
     if (tf.maxForecastBars) bars = Math.min(bars, tf.maxForecastBars);
+
+    /* ---------------------------------------------------- volatility -----
+       The intraday profile, the fitted model, the VIX blend, the forward
+       variance and the calibrated multipliers all come from one place that
+       calibrate() also calls. That is the point: the band scored in the
+       accuracy panel is now the band drawn on the chart, by construction
+       rather than by two pieces of code agreeing to stay in step. */
+    var vc = volContext(candles, tf.barSec, bars, ctx.vix, { conformal: ctx.conformal || null });
+    var vp = vc.vp, volModel = vc.volModel;
+    var sigmaBar = vc.sigmaBar, sigmaBlend = vc.sigmaBlend, vixBar = vc.vixBar;
+    var varPath = vc.varPath, z68 = vc.z68, z95 = vc.z95, zBasis = vc.zBasis;
 
     /* ---------------------------------------------------- drift shape ----
        News pushes early and fades; seasonality accrues evenly; structure
@@ -432,47 +601,47 @@
     var scale = horizonSigma * 1.1 * persistence;
     var capPct = C.forecast.maxDriftPctPerBar * bars;
 
-    var path = [], upper = [], lower = [], upper2 = [], lower2 = [], checkpoints = [];
-    var cumVar = 0, t = lastCandle.time;
-    var newsHalfBars = Math.max(2, bars * 0.35);
-
-    for (var k = 1; k <= bars; k++) {
-      t = advance(t, tf.barSec);
-      var frac = k / bars;
-
-      // accumulated variance with the intraday profile applied bar by bar
-      cumVar += Math.pow(sigmaBlend, 2) * (vp.intraday ? vp.mult(t) : 1);
-      var sd = Math.sqrt(cumVar);
-
-      var newsDecay = 1 - Math.pow(0.5, k / newsHalfBars);     // front-loaded
-      var structRamp = Math.pow(frac, 1.4);                    // back-loaded
-      var driftPct = (newsPart * newsDecay + evenPart * frac + structPart * structRamp) * scale;
-
-      // The clock's own average path, where there is enough history for it.
-      // Four sessions of shape is an anecdote and twenty is a pattern, so the
-      // contribution is scaled by how many sessions went into it rather than
-      // trusted flat.
-      if (shape) {
-        var sv = shape.at(t), s0 = shape.at(lastCandle.time);
-        if (sv !== null && s0 !== null) {
-          driftPct += (sv - s0) * 0.35 * core.clamp(shape.sessions / 15, 0.15, 1);
+    /* Adaptive conformal inference over what the ledger has actually settled.
+       Inert until there are rows, and it says so rather than pretending. */
+    var aciState = null;
+    try {
+      if (KT.vol && KT.ledger && KT.ledger.missRecord) {
+        aciState = KT.vol.aci(0.68, KT.ledger.missRecord(ctx.symbol, tfKey, 68));
+        if (aciState && aciState.active) {
+          // Widen or tighten to the coverage the record says is honest.
+          var zTarget = KT.vol.tquantile((1 + aciState.coverageAdapted) / 2, volModel ? volModel.df : 6);
+          var zNominal = KT.vol.tquantile(0.84, volModel ? volModel.df : 6);
+          if (zNominal > 0) { z68 *= zTarget / zNominal; z95 *= zTarget / zNominal; }
         }
       }
-      driftPct = core.clamp(driftPct, -capPct, capPct);
+    } catch (e) { aciState = null; }
 
-      var mid = lastClose * (1 + driftPct / 100);
-      // A wall does not stop price, it slows it. Beyond a level with a real
-      // record, the remaining drift is halved rather than cut off, which keeps
-      // the path continuous and still reflects the resistance.
-      mid = temper(mid, lastClose, lv);
+    var checkpoints = [];
+    var newsHalfBars = Math.max(2, bars * 0.35);
 
-      var band1 = lastClose * sd / 100 * C.forecast.coneVolMultiplier;
-      path.push({ time: t, value: r2(mid) });
-      upper.push({ time: t, value: r2(mid + band1) });
-      lower.push({ time: t, value: r2(mid - band1) });
-      upper2.push({ time: t, value: r2(mid + band1 * 1.96) });
-      lower2.push({ time: t, value: r2(mid - band1 * 1.96) });
-    }
+    var drawn = bandPath({
+      lastCandle: lastCandle, lastClose: lastClose, bars: bars, barSec: tf.barSec,
+      sigmaBlend: sigmaBlend, varPath: varPath, vp: vp, z68: z68, z95: z95,
+      lv: lv, capPct: capPct,
+      drift: function (k, frac, t) {
+        var newsDecay = 1 - Math.pow(0.5, k / newsHalfBars);   // front-loaded
+        var structRamp = Math.pow(frac, 1.4);                  // back-loaded
+        var d = (newsPart * newsDecay + evenPart * frac + structPart * structRamp) * scale;
+        // The clock's own average path, where there is enough history for it.
+        // Four sessions of shape is an anecdote and twenty is a pattern, so the
+        // contribution is scaled by how many sessions went into it rather than
+        // trusted flat.
+        if (shape) {
+          var sv = shape.at(t), s0 = shape.at(lastCandle.time);
+          if (sv !== null && s0 !== null) {
+            d += (sv - s0) * 0.35 * core.clamp(shape.sessions / 15, 0.15, 1);
+          }
+        }
+        return d;
+      },
+    });
+    var path = drawn.path, upper = drawn.upper, lower = drawn.lower,
+        upper2 = drawn.upper2, lower2 = drawn.lower2;
 
     /* ------------------------------------------------- historical analogue
        A drift formula draws a smooth line because it is a smooth formula. Here
@@ -525,7 +694,7 @@
       for (var j = 1; j <= bars; j++) {
         tc = advance(tc, tf.barSec);
         var fr = j / bars;
-        cv += Math.pow(sigmaBlend, 2) * (vp.intraday ? vp.mult(tc) : 1);
+        cv += (varPath ? varPath[j - 1] : Math.pow(sigmaBlend, 2)) * (vp.intraday ? vp.mult(tc) : 1);
         var nd = 1 - Math.pow(0.5, j / newsHalfBars);
         var sr = Math.pow(fr, 1.4);
         var d = ((parts.news || 0) * nd + (parts.even || 0) * fr + (parts.struct || 0) * sr) * scale;
@@ -576,7 +745,7 @@
       var idx = k2 - 1;
       if (idx < 0 || idx >= path.length) return;
       var mid = path[idx].value, band = mid - lower[idx].value;
-      var sd = band / C.forecast.coneVolMultiplier;
+      var sd = band / z68;
       var z = sd > 0 ? (mid - lastClose) / sd : 0;
       checkpoints.push({
         time: path[idx].time,
@@ -619,6 +788,29 @@
       volPerBar: Math.round(sigmaBlend * 1000) / 1000,
       volRealised: Math.round(sigmaBar * 1000) / 1000,
       volImplied: vixBar ? Math.round(vixBar * 1000) / 1000 : null,
+      /* What produced the band, so the panel can show its working rather than
+         asserting a width. Null volModel means vol.js could not fit and the
+         old realised-vol path ran - which is a fact worth displaying, not
+         hiding behind a number that looks the same either way. */
+      volModel: volModel ? {
+        kind: volModel.kind,
+        omega: r2(volModel.omega * 10000) / 10000,
+        alpha: Math.round(volModel.alpha * 1000) / 1000,
+        beta: Math.round(volModel.beta * 1000) / 1000,
+        gamma: Math.round((volModel.gamma || 0) * 1000) / 1000,
+        df: Math.round(volModel.df * 10) / 10,
+        persistence: Math.round((volModel.effectivePersistence != null ? volModel.effectivePersistence : volModel.persistence) * 1000) / 1000,
+        qlike: Math.round(volModel.qlike * 10000) / 10000,
+        deseasonalised: !!volModel.deseasonalised,
+        rangeBars: volModel.used ? volModel.used.range : null,
+        fallbackBars: volModel.used ? volModel.used.fallback : null,
+        candidates: volModel.candidates || null,
+        reason: volModel.reason || null,
+      } : null,
+      z68: Math.round(z68 * 1000) / 1000,
+      z95: Math.round(z95 * 1000) / 1000,
+      zBasis: zBasis,
+      aci: aciState,
       persistence: Math.round(persistence * 100) / 100,
       autocorr: Math.round(ac1 * 1000) / 1000,
       intradayProfile: vp.intraday,
@@ -646,6 +838,37 @@
     if (beyond <= 0) return mid;
     var damp = core.clamp(1 - wall.touches * 0.12, 0.3, 0.7);
     return mid > from ? wall.level + beyond * damp : wall.level - beyond * damp;
+  }
+
+  /* The close at or immediately before a time.
+
+     calibrate() used to read its outcome from candles[at + bars], on the
+     assumption that advancing the clock by `bars` bar-widths lands on the bar
+     `bars` indices later. It does not. A NIFTY session holds 75 five-minute
+     bars but spans 74 intervals, so on the 1D view the band ended at 15:30 on
+     the day it was drawn while index at+75 was the *next* day's 09:15 open.
+     Measured over the loaded series, 19 of 20 replay endpoints disagreed, by a
+     median of 213 bars.
+
+     That mattered more than an off-by-one usually does, because the gap being
+     skipped over is the overnight one - the 09:15 bucket runs at 13.2x the
+     average bar variance. Coverage was being scored against a price one
+     overnight jump beyond where the band actually ended, which made the band
+     look far too narrow and would have had the conformal step widening it to
+     cover an error the model never made.
+
+     The band's time axis is what the chart draws and what horizonLabel
+     describes, so the time axis is authoritative and the outcome is read at
+     the time the band ends. */
+  function closeAtTime(candles, t) {
+    if (!candles || !candles.length || candles[0].time > t) return null;
+    var lo = 0, hi = candles.length - 1, best = null;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (candles[mid].time <= t) { best = candles[mid]; lo = mid + 1; }
+      else hi = mid - 1;
+    }
+    return best ? best.close : null;
   }
 
   function pickCheckpoints(bars) {
@@ -715,77 +938,325 @@
   }
 
   /* ========================================================= calibration
-     Walk the series, build the same band from data available at that bar, and
-     check whether the future actually landed inside it. Only the lanes that
-     exist historically are used - there is no archive of the RSS stream, so
-     the news lane is excluded and the result is labelled as the technical
-     core rather than the full model. Reporting a number that flatters the
-     model by peeking at today's news would defeat the point. */
-  function calibrate(candles, tfKey, opts) {
+
+     Walk the series, rebuild the band from data available at that bar, and
+     check whether the future actually landed inside it.
+
+     Two things were wrong with the version this replaces, and both flattered
+     the model.
+
+     First, it scored a band nobody could see. It built a flat
+     stdev(rets)*sqrt(t) cone with a fixed 1.15 multiplier, while the chart drew
+     a band shaped by the intraday volatility profile, a fitted variance model
+     and a calibrated multiplier. The coverage number therefore described a
+     model that does not exist. It now calls volContext() and bandPath() - the
+     same two functions build() calls - so the thing scored is the thing drawn.
+
+     Second, it counted the same evidence several times. The step was a third
+     of the horizon, so consecutive replays shared two thirds of their window
+     and their outcomes were strongly correlated. Measured on the 1D timeframe
+     that turned about 15 independent observations into a reported 45, and the
+     confidence interval that follows from 45 is roughly half as wide as the
+     truth. Windows are now non-overlapping by default, and the overlapping
+     count is reported alongside so the difference is visible rather than
+     silently absorbed.
+
+     Only the lanes that exist historically are used. There is no archive of
+     the RSS stream, so news, global and flow cannot be replayed - together
+     that is 47% of the model's weight, and the result is labelled as the
+     technical core rather than the full model. Reporting a number that peeked
+     at today's news would defeat the point. */
+  function calibrate(candles, tfKey, opts, onDone) {
     opts = opts || {};
     var tf = C.timeframes[tfKey];
     if (!candles || candles.length < 200 || !tf) return null;
     var bars = Math.max(6, Math.round(tf.visibleBars * tf.forecastRatio));
     if (tf.maxForecastBars) bars = Math.min(bars, tf.maxForecastBars);
-    var step = Math.max(3, Math.round(bars / 3));
-    var warm = 120;
-    var in68 = 0, in95 = 0, n = 0, dirRight = 0, dirCalls = 0, absErr = 0, naiveErr = 0;
 
-    for (var at = warm; at + bars < candles.length; at += step) {
+    /* Overlapping windows for the estimate, deflated sample size for the
+       interval. This is the fix for the thing that made every number on this
+       panel meaningless.
+
+       Non-overlapping windows gave an honest n but only about twenty of them,
+       and twenty is not enough: shifting the replay grid by five bars on the
+       same series moved the direction rate from 33.3% to 92.3% and the
+       conformal band multiplier from 0.738 to 1.642. The panel was reporting
+       where the grid happened to start.
+
+       Overlapping windows do not bias the estimate - every window is a valid
+       replay - they only make it look more precise than it is. So all of them
+       feed the point estimates and the conformal quantile, and every interval
+       and significance test is computed on the effective sample size instead:
+
+           nEff = nWindows * step / bars
+
+       which is how many genuinely independent horizons the evidence covers.
+       The panel shows both, because a reader who sees only the large number
+       will over-read it, and a reader who sees only the small one will think
+       the estimate is noisier than it is. */
+    var step = opts.step || Math.max(1, Math.round(bars / 5));
+    var warm = Math.max(150, bars * 2);
+    if (candles.length < warm + bars + 1) return null;
+
+    var W = C.forecast.weights;
+    var wsum = W.momentum + W.levels + W.structure + W.seasonal;
+    var capPct = C.forecast.maxDriftPctPerBar * bars;
+
+    var in68 = 0, in95 = 0, n = 0, dirRight = 0, dirCalls = 0, scores = [];
+    var absErr = 0, naiveErr = 0, crpsSum = 0, crpsN = 0;
+    var missRecord = [], fits = 0, budgetMs = 0, laneUsed = {};
+    var windowIdx = 0, lastVc = null, VOL_REFIT_EVERY = opts.volRefitEvery || 5;
+    var t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+
+    /* The loop still steps by index because that is how the history is
+       walked, but a window is only usable if its *time* endpoint is loaded.
+       The margin is generous: one session of daily bars spans fewer indices
+       than bar-widths, never more. */
+    function runWindow(at) {
       var hist = candles.slice(0, at + 1);
-      var price = hist[hist.length - 1].close;
+      var last = hist[hist.length - 1];
+      var price = last.close;
+      if (!(price > 0)) return;
+
       var snap = KT.ind.snapshot(hist);
-      if (!snap) continue;
+      if (!snap) return;
 
-      var rets = [];
-      for (var i = Math.max(1, hist.length - 120); i < hist.length; i++) {
-        var pv = hist[i - 1].close;
-        if (pv) rets.push((hist[i].close - pv) / pv);
+      /* Everything below is built from hist only. A profile or a variance model
+         fitted on the whole series would be reading the future through the back
+         door, and would be the single easiest way to make this number look
+         good while meaning nothing. */
+      /* The variance fit is almost all of the cost here - measured at 216ms a
+         window against about 2ms for everything else - and conditional
+         volatility does not turn over in fifteen bars. Refitting every fifth
+         window keeps the five-fold increase in sample size roughly free. The
+         reused model is still re-anchored to each window's own last bar
+         through forecastPath(), so what carries over is the shape of the
+         variance process, not a stale level. */
+      var vc;
+      if (windowIdx % VOL_REFIT_EVERY === 0 || !lastVc) {
+        vc = volContext(hist, tf.barSec, bars, null,
+          { conformal: opts.conformal || null, maxFitBars: opts.maxFitBars || 300 });
+        fits++;
+        lastVc = vc;
+      } else {
+        vc = lastVc;
       }
-      var sigmaBar = stdev(rets) * 100;
-      if (!(sigmaBar > 0)) continue;
-      var persistence = core.clamp(1 + autocorr(rets, 1) * 1.6, 0.45, 1.5);
+      windowIdx++;
 
-      var mom = momentumLane(snap, hist);
+      var ac = autocorr(vc.rets, 1);
+      var persistence = core.clamp(1 + ac * 1.6, 0.45, 1.5);
+      var shape = dayShape(hist, tf.barSec);
+
       var lv = KT.levels.build(hist);
+      var mom = momentumLane(snap, hist);
       var lvl = levelsLane(lv, price, snap.atr);
-      var W = C.forecast.weights;
-      var wsum = W.momentum + W.levels;
-      var bias = core.clamp((mom.score * W.momentum + lvl.score * W.levels) / wsum, -1, 1);
+      var seasonal = seasonalLane(opts.seasonality, core.fmt.ist(last.time));
+      var structs = [];
+      try { structs = KT.structures.detect(hist) || []; } catch (e) { structs = []; }
+      var struct = KT.structures.impliedBias(structs, price, opts.structureStats);
 
-      var scale = sigmaBar * Math.sqrt(bars) * 1.1 * persistence;
-      var driftPct = core.clamp(bias * scale, -C.forecast.maxDriftPctPerBar * bars, C.forecast.maxDriftPctPerBar * bars);
-      var mid = price * (1 + driftPct / 100);
-      var sd = price * sigmaBar / 100 * Math.sqrt(bars) * C.forecast.coneVolMultiplier;
+      var liveW = 0;
+      if (mom.hasData) { liveW += W.momentum; laneUsed.momentum = 1; }
+      if (lvl.hasData) { liveW += W.levels; laneUsed.levels = 1; }
+      if (struct.hasData) { liveW += W.structure; laneUsed.structure = 1; }
+      if (seasonal.hasData) { liveW += W.seasonal; laneUsed.seasonal = 1; }
+      if (!liveW) return;
 
-      var actual = candles[at + bars].close;
-      if (Math.abs(actual - mid) <= sd) in68++;
-      if (Math.abs(actual - mid) <= sd * 1.96) in95++;
+      var evenPart = ((mom.hasData ? mom.score * W.momentum : 0) +
+                      (lvl.hasData ? lvl.score * W.levels : 0) +
+                      (seasonal.hasData ? seasonal.score * W.seasonal : 0)) / liveW;
+      var structPart = (struct.hasData ? struct.score * W.structure : 0) / liveW;
+      var bias = core.clamp(evenPart + structPart, -1, 1);
+
+      var scale = vc.sigmaBlend * Math.sqrt(bars) * 1.1 * persistence;
+
+      var drawn = bandPath({
+        lastCandle: last, lastClose: price, bars: bars, barSec: tf.barSec,
+        sigmaBlend: vc.sigmaBlend, varPath: vc.varPath, vp: vc.vp,
+        z68: vc.z68, z95: vc.z95, lv: lv, capPct: capPct,
+        drift: function (k, frac, t) {
+          var d = (evenPart * frac + structPart * Math.pow(frac, 1.4)) * scale;
+          if (shape) {
+            var sv = shape.at(t), s0 = shape.at(last.time);
+            if (sv !== null && s0 !== null) {
+              d += (sv - s0) * 0.35 * core.clamp(shape.sessions / 15, 0.15, 1);
+            }
+          }
+          return d;
+        },
+      });
+
+      var idx = drawn.path.length - 1;
+      var mid = drawn.path[idx].value;
+      var lo68 = drawn.lower[idx].value, hi68 = drawn.upper[idx].value;
+      var lo95 = drawn.lower2[idx].value, hi95 = drawn.upper2[idx].value;
+      /* Read the outcome at the time the band ends, not at an index offset.
+         See closeAtTime(). A replay whose endpoint falls past the last loaded
+         candle is dropped rather than scored against the nearest thing to
+         hand. */
+      var endTime = drawn.path[idx].time;
+      if (endTime > candles[candles.length - 1].time) return;
+      var actual = closeAtTime(candles, endTime);
+      if (!(actual > 0)) return;
+
+      var inside68 = actual >= lo68 && actual <= hi68;
+      if (inside68) in68++;
+      if (actual >= lo95 && actual <= hi95) in95++;
+      missRecord.push(inside68 ? 0 : 1);
+
       absErr += Math.abs(actual - mid) / price * 100;
       naiveErr += Math.abs(actual - price) / price * 100;
+
+      /* Split-conformal nonconformity score: how many band-sigmas away the
+         outcome actually landed. The quantile of these is the multiplier that
+         would have given exactly the coverage asked for. */
+      var sdBand = (mid - lo68) / (vc.z68 || 1);
+      if (sdBand > 0) scores.push(Math.abs(actual - mid) / sdBand);
+
+      // CRPS scores the whole band, which a hit rate cannot: it rewards a
+      // sharp forecast that was right and refuses to reward a wide one that
+      // merely failed to be wrong.
+      if (KT.vol && KT.vol.crpsGaussian) {
+        var sdPrice = (mid - lo68) / (vc.z68 || 1);
+        var sc = KT.vol.crpsGaussian(actual, mid, sdPrice);
+        if (sc != null && isFinite(sc)) { crpsSum += sc / price * 100; crpsN++; }
+      }
+
       if (Math.abs(bias) > 0.08) {
         dirCalls++;
         if ((actual > price) === (bias > 0)) dirRight++;
       }
       n++;
     }
-    if (n < 12) return null;
+
+    /* Straight through when no callback is given - that is the path the tests
+       take and it keeps the function easy to reason about. With a callback,
+       the same windows run in slices with a yield between them.
+
+       The yield is not a nicety. Ninety-six windows measured just under five
+       seconds, all of it inside one macrotask, and the page polls the live
+       price every second: without slicing, the chart stops repainting and the
+       price stops ticking for five seconds every time this runs. */
+
+    /* Everything after the walk, as a closure over the counters above, so the
+       straight-through driver and the sliced one cannot produce two different
+       summaries. Same reason bandPath() exists. */
+    function finish() {
+    budgetMs = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - t0;
+
+    if (n < 8) return null;
+
+    /* How many independent horizons this evidence really covers. Every
+       interval below is computed on this, not on n. */
+    var nEff = Math.max(1, Math.round(n * step / bars));
+    var effHits68 = Math.round(in68 / n * nEff);
+    var effHits95 = Math.round(in95 / n * nEff);
+
+    var k68 = KT.vol ? KT.vol.kupiec(effHits68, nEff, 0.68) : null;
+    var k95 = KT.vol ? KT.vol.kupiec(effHits95, nEff, 0.95) : null;
+
+    /* Conformal quantile with the finite-sample correction: the k-th smallest
+       score where k = ceil((n+1) * coverage). When k exceeds n the sample
+       cannot certify that coverage at all, and the honest answer is null
+       rather than the largest score pretending to be a 95% quantile. */
+    function conformalQ(coverage) {
+      if (!scores.length) return null;
+      var s = scores.slice().sort(function (a, b) { return a - b; });
+      var k = Math.ceil((s.length + 1) * coverage);
+      return k > s.length ? null : s[k - 1];
+    }
+    var cz68 = conformalQ(0.68), cz95 = conformalQ(0.95);
+
+    /* Wilson interval on the direction rate. The point estimate on its own has
+       been the most over-read number on this panel: 57.8% of 45 reads like an
+       edge and its interval runs from 43.3% to 71.0%, which contains a coin. */
+    var dirCallsEff = Math.max(1, Math.round(dirCalls * step / bars));
+    var dirCi = null;
+    if (dirCallsEff >= 5) {
+      var ph = dirRight / dirCalls, z = 1.96, den = 1 + z * z / dirCallsEff;
+      var centre = ph + z * z / (2 * dirCallsEff);
+      var margin = z * Math.sqrt(ph * (1 - ph) / dirCallsEff + z * z / (4 * dirCallsEff * dirCallsEff));
+      dirCi = [Math.round((centre - margin) / den * 1000) / 10,
+               Math.round((centre + margin) / den * 1000) / 10];
+    }
+
     return {
-      n: n, bars: bars,
+      /* n is how many replays ran; nEff is how many independent horizons they
+         cover. Every interval on this object uses nEff. Showing only n would
+         overstate the evidence by exactly the factor the windows overlap. */
+      n: n, nEff: nEff, bars: bars, step: step,
+      overlapFraction: Math.round((1 - step / bars) * 100),
+      directionCallsEff: dirCallsEff,
       coverage68: Math.round(in68 / n * 1000) / 10,
       coverage95: Math.round(in95 / n * 1000) / 10,
+      kupiec68: k68, kupiec95: k95,
       mae: Math.round(absErr / n * 1000) / 1000,
       naiveMae: Math.round(naiveErr / n * 1000) / 1000,
       // Below 1 the model beats "tomorrow equals today", which is a much
       // harder benchmark than it sounds on a near random walk.
       skill: Math.round(absErr / (naiveErr || 1) * 1000) / 1000,
+      crps: crpsN ? Math.round(crpsSum / crpsN * 1000) / 1000 : null,
       directionCalls: dirCalls,
       directionRight: dirRight,
       directionRate: dirCalls ? Math.round(dirRight / dirCalls * 1000) / 10 : null,
-      basis: 'technical core only (momentum and levels); the news, seasonal, global and flow lanes cannot be replayed historically',
+      directionCi: dirCi,
+      /* The direction rate is only worth acting on if its interval clears the
+         break-even after costs, not merely 50%. This says whether it clears
+         50% at all, which is the weaker of the two tests and still usually
+         fails at these sample sizes. */
+      directionSignificant: !!(dirCi && dirCi[0] > 50),
+      /* The conformal quantile is the one number that genuinely benefits from
+         every window: it is a quantile, not a rate, so overlap costs it
+         precision but not validity, and averaging over five times as many
+         windows is what stops the band width swinging by a factor of two on a
+         five-bar shift of the grid. */
+      conformalWindows: scores.length,
+      missRecord: missRecord,
+      /* Feed this straight back into the next build(): it is the multiplier
+         that would have delivered the coverage the band claims. */
+      conformal: (cz68 > 0) ? {
+        z68: Math.round(cz68 * 1000) / 1000,
+        z95: cz95 > 0 ? Math.round(cz95 * 1000) / 1000 : null,
+        n: n,
+        certifies95: cz95 != null,
+      } : null,
+      fits: fits, elapsedMs: Math.round(budgetMs),
+      volModel: null,
+      /* Name the lanes that actually voted, not the ones that could have.
+         seasonality and the pattern hit-rate table are only passed in when the
+         caller supplies them, and describing a lane as scored when it sat out
+         is the same class of error as the regex that used to decide liveness. */
+      lanesUsed: Object.keys(laneUsed),
+      basis: (function () {
+        var used = Object.keys(laneUsed);
+        var usedW = used.reduce(function (t, k) { return t + (W[k] || 0); }, 0);
+        var missing = ['news', 'momentum', 'global', 'structure', 'seasonal', 'levels', 'flow']
+          .filter(function (k) { return !laneUsed[k]; });
+        return 'replayed with ' + (used.join(', ') || 'no lanes') + ' - ' +
+               Math.round(usedW * 100) + '% of the model weight. ' +
+               'Unscored here: ' + missing.join(', ') + '. ' +
+               'News, global and flow cannot be replayed at all because no archive of the feed ' +
+               'exists yet; the rest sit out when the caller does not supply their inputs. ' +
+               'Pattern hit rates and seasonal averages are deliberately not passed in, because ' +
+               'both are computed over the whole series and would let the replay see its own future';
+      })(),
     };
-  }
+    }
 
+    var at = warm;
+    if (typeof onDone !== 'function') {
+      for (; at + bars < candles.length; at += step) runWindow(at);
+      return finish();
+    }
+    var SLICE = opts.slice || 6;
+    (function chunk() {
+      var budget = SLICE;
+      while (budget-- > 0 && at + bars < candles.length) { runWindow(at); at += step; }
+      if (at + bars < candles.length) { setTimeout(chunk, 0); return; }
+      onDone(finish());
+    })();
+    return null;
+  }
   /* ------------------------------------------------------------- helpers */
   function r2(n) { return Math.round(n * 100) / 100; }
   function stdev(a) {
@@ -810,5 +1281,6 @@
     newsLane: newsLane, seasonalLane: seasonalLane, momentumLane: momentumLane,
     globalLane: globalLane, levelsLane: levelsLane, flowLane: flowLane,
     volProfile: volProfile, dayShape: dayShape, ncdf: ncdf,
+    bandPath: bandPath, volContext: volContext, advance: advance,
   };
 })(window.KT);

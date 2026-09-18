@@ -10,3 +10,8 @@ Thumbs.db
 data/*.tmp
 .vscode/
 .idea/
+
+# The news archive belongs on the live-data branch only. That branch is
+# rewritten as one orphan commit so it costs one tree; main keeps history, and
+# ~25 MB of rolling JSON committed here would be permanent.
+data/news_archive/

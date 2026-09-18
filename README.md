@@ -112,24 +112,121 @@ target needs time for the break to happen, so it ramps in late.
 
 ### How good is this forecast
 
-The panel scores itself. `calibrate()` rebuilds the model at dozens of past
-points on the loaded series and checks what price actually did next. On NIFTY
-5-minute data, over 53 replays:
+Short version: **not good enough to trade on, and the panel now says so in those
+words.** The long version is worth reading, because the previous version of this
+section reported numbers that were wrong in three separate ways.
+
+`calibrate()` rebuilds the forecast at past points on the loaded series and
+checks what price actually did next. On NIFTY 5-minute data:
 
 | Measure | Result | Target |
 |---|---|---|
-| Finished inside the 68% band | 67.9% | 68% |
-| Finished inside the 95% band | 94.3% | 95% |
-| Direction called right | 57.8% of 45 calls | >50% |
-| Error vs assuming no change | 1.3% better | <0% is useless |
+| Finished inside the 68% band | 62.5%, Kupiec p=0.65 | 68% |
+| Finished inside the 95% band | 94.8%, Kupiec p=0.96 | 95% |
+| Direction called right | 59.7%, 95% interval **33.1–81.6%** | interval clears 50% |
+| Error vs assuming no change | 2.3% better | <0% is useless |
 
-Only the technical core is replayed — there is no archive of the RSS stream, so
-the news, seasonal, global and flow lanes cannot be scored historically, and the
-panel says so rather than quietly including them.
+The direction interval contains 50%. That is the whole story: on this evidence
+the lean is not distinguishable from a coin, and the panel prints exactly that
+sentence next to the number.
+
+**What was wrong before.** The old table read 67.9% coverage and 57.8% direction
+over 53 replays, and all three parts of that were unreliable:
+
+1. **It scored a band the page never drew.** `calibrate()` built a flat
+   `stdev × √t` cone with a fixed 1.15 multiplier while the chart drew a band
+   shaped by the volatility profile and a fitted variance model. The coverage
+   number described a model nobody could see. `build()` and `calibrate()` now
+   call the same `bandPath()` and `volContext()`, so they cannot diverge again.
+
+2. **It read the outcome from the wrong bar.** The replay took its answer from
+   `candles[at + bars]`, assuming that advancing the clock by `bars` bar-widths
+   lands `bars` indices later. A NIFTY session holds 75 five-minute bars but
+   spans 74 intervals, so on the daily view the band ended at 15:30 while index
+   `at+75` was the *next* day's 09:15. Measured: 19 of 20 endpoints disagreed.
+   The gap being skipped was the overnight one — the 09:15 bucket runs at 13.2×
+   the average bar variance — so the band looked far narrower than it was.
+
+3. **It counted the same evidence several times.** Windows overlapped by two
+   thirds and every interval treated them as independent. Shifting the replay
+   grid five bars on the same series moved the direction rate from 33.3% to
+   92.3% and the band multiplier from 0.738 to 1.642. The panel was reporting
+   where the grid happened to start.
+
+The fix for the third is the one worth stating: overlapping windows do not bias
+an estimate, they only make it look more precise. So every percentage is now the
+estimate from all ~96 windows, and every interval and p-value is computed on the
+~19 independent horizons they actually cover. Both numbers are on the panel.
+That cut the spread under a grid shift from 59 points to 8.
+
+**Coverage is tested, not eyeballed.** The old panel painted green whenever
+coverage was within 8 points of target, which at that sample size is true of
+almost any result the model can produce. It now runs a Kupiec proportion-of-
+failures test and reports `well-calibrated`, `too-narrow`, `too-wide` or
+`insufficient-data` — and `insufficient-data` is a real verdict, shown as one.
+
+**The band width is measured, not chosen.** `coneVolMultiplier: 1.15` was a
+constant standing where a measurement belongs, and it was used for both the 68%
+and the 95% band. The multiplier now comes from split conformal prediction at
+the horizon: score every past replay by how many band-sigmas away the outcome
+landed, and take the quantile. Distribution-free, and it needs no assumption
+about the shape of the horizon error.
+
+Only part of the model is replayed. News, global and flow cannot be replayed at
+all, because nothing kept the feed — `scripts/archive_news.py` starts keeping it
+now, and the lane becomes testable in about three months. Seasonal averages and
+pattern hit rates are deliberately withheld from the replay, because both are
+computed over the whole series and would let it see its own future.
 
 Those numbers are shown whether or not they flatter the model. On the yearly
 view the same test scores *worse* than assuming no change, and the panel reports
 that too. A forecast panel that only displays its wins is a marketing page.
+
+### How it actually went
+
+The section above is a backtest: it scores the model against history the model
+was built on. It is the weaker kind of evidence, and it is the only kind this
+project had until now.
+
+`ledger.js` writes every forecast down when it is made — direction, band, each
+lane's weighted contribution, the loudest headline at the time — and scores it
+when its horizon elapses. For each settled forecast the panel shows:
+
+- what was forecast, what happened, and the gap
+- **which failure it was**: the lean was wrong but the range held, or price left
+  the band entirely. Those are different failures with different fixes, and the
+  old panel could not tell them apart
+- **per-lane verdict** — what each lane asked the price to do, and whether it
+  went that way
+- **the residual**: the part of the move no lane called. A large one means the
+  model was not merely wrong, it was blind
+- **what arrived** inside the window, ranked by impact × sentiment. Descriptive
+  only: naming the loudest headline is checkable, asserting it caused the move
+  is not
+
+and across all settled forecasts, per-lane hit rates with intervals, plus how
+many independent calls it would take for the current rate to be distinguishable
+from a coin.
+
+A forward record accumulates at one row per horizon. On the daily view that is
+roughly a year before a direction rate means anything, and the panel says so
+rather than implying otherwise. A handful of rows are seeded from history on
+first load so the machinery is visible immediately; they are labelled and
+excluded from every forward total.
+
+### Can it be traded
+
+Not on this evidence. Three things have to be true and none of them is yet:
+
+- the direction interval has to clear 50%, not just the point estimate
+- it has to clear the break-even rate *after costs* — 52.7% on NIFTY futures at
+  0.03% round trip, higher on options
+- the record has to be forward, not a backtest, because the parameters were
+  chosen while looking at the same history
+
+At one forecast per session, establishing a 58% edge at 80% power takes about
+240 independent calls. There is no shortcut, and better modelling does not
+shorten it.
 
 ### Patterns, drawn rather than claimed
 
@@ -337,7 +434,9 @@ assets/js/structures.js        chart patterns with drawable geometry, targets an
 assets/js/journal.js           your trades, browser only
 assets/js/portfolio.js         your holdings, news matching and alerts, browser only
 assets/js/data.js              fetch lanes, RSS parsing, news store, OpenRouter
+assets/js/vol.js               GARCH/GJR variance, Parkinson RV, conformal z, Kupiec, CRPS, ACI
 assets/js/forecast.js          the model: seven lanes, clock-aware path, bands, calibration
+assets/js/ledger.js            records every forecast, settles it, explains why it did or did not
 assets/js/engine.js            reason points (the forecast moved to forecast.js)
 assets/js/chart.js             candles, projection, bands, pattern geometry, overlays, markers
 assets/js/app.js               boot, polling loops, all rendering
