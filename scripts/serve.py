@@ -55,7 +55,7 @@ def main():
 
     threading.Thread(target=loop, args=("fetch_market.py", args.market_every), daemon=True).start()
     threading.Thread(target=loop, args=("fetch_news.py", args.news_every), daemon=True).start()
-    threading.Thread(target=loop, args=("fetch_social.py", args.news_every), daemon=True).start()
+    threading.Thread(target=loop, args=("fetch_flows.py", args.news_every), daemon=True).start()
 
     handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(ROOT))
     httpd = http.server.ThreadingHTTPServer(("0.0.0.0", args.port), handler)
