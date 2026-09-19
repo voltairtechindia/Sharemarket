@@ -214,6 +214,54 @@ rather than implying otherwise. A handful of rows are seeded from history on
 first load so the machinery is visible immediately; they are labelled and
 excluded from every forward total.
 
+### The only lane that looks forward
+
+Everything else in the model reads backwards. Momentum, levels, structure and
+seasonality are functions of prices that have already printed; the news lane
+reads what has already been published. The NIFTY option chain is the one free
+source here that says what money is positioned for **next**, and it moves
+intraday.
+
+`fetch_options.py` pulls three things out of it:
+
+| Signal | What it says | Weight inside the lane |
+|---|---|---|
+| PCR on change in open interest | who is writing today — puts sold into a holding tape is support being sold | 0.45 |
+| Standing PCR | the same idea across the whole book; slower, harder to move with one trade | 0.20 |
+| Max pain | the strike writers pay out least at; scaled by closeness to expiry, near zero a week out | 0.20 |
+| Open-interest walls | room to the nearest *positioning* wall, which often disagrees with the price wall | 0.15 |
+
+Two honest limits. The lane carries **0.10** of the model — the seven existing
+weights were scaled by 0.9 to make room rather than re-argued — and that number
+is a judgement like every other weight in `config.js`, because nothing has been
+fitted yet. And NSE answers with `Access-Control-Allow-Origin: beta.nseindia.com`,
+so the browser cannot fetch it: this arrives through the workflow and is hours
+old by construction. The lane drops itself past four hours rather than voting on
+positioning that has since moved.
+
+`data/options_archive/` starts recording a row per run, for the same reason the
+news archive does: the lane votes and cannot be replayed, so `calibrate()` will
+stay silent about it forever unless the record starts now.
+
+### The exchange actually closes sometimes
+
+`advance()` used to know about weekends and nothing else, and said so:
+
+> Exchange holidays are not modelled — there is no free holiday feed in the repo.
+
+There is one: `/api/holiday-master?type=trading`, twenty cash-market rows a
+year. A daily projection that walked through Diwali put every date after it one
+session wrong, and the checkpoint table is the part of the panel people read
+dates off. With no list loaded the behaviour degrades to exactly what it was.
+
+The same fetcher pulls ForexFactory's weekly calendar for scheduled global
+releases. **It carries no INR rows at all** — measured 19 Sep 2026, 105 rows
+across USD, EUR, CAD, GBP, CNY, NZD, JPY, AUD and CHF, and no India. So RBI
+policy and India CPI are *not* in it. That gap is recorded in the payload rather
+than papered over; no free India macro calendar answered when probed. RBI
+announcements still reach the model through the news lane once published — what
+is missing is advance warning.
+
 ### Can it be traded
 
 Not on this evidence. Three things have to be true and none of them is yet:
@@ -227,6 +275,26 @@ Not on this evidence. Three things have to be true and none of them is yet:
 At one forecast per session, establishing a 58% edge at 80% power takes about
 240 independent calls. There is no shortcut, and better modelling does not
 shorten it.
+
+### Why the line is where it is
+
+Hovering the traded half of the chart asks what happened. Hovering the
+**projected** half asks a different question, and the card that appears answers
+it for that minute specifically: which lane is pulling hardest *there*, how far
+each lane's push has travelled by then, the 68% range at that bar, and the
+chance of trading above the current price.
+
+That last distinction is the point. The drift is not a straight line — news
+decays so it lands early, seasonality accrues evenly, a structure target ramps
+in late because the break needs time to happen. So the lane doing most of the
+work at 09:20 is usually not the one doing it at 15:30, and until now nothing on
+the page showed that. The decomposition is computed once in `build()` and the
+per-lane parts sum exactly to the drift the band was drawn with.
+
+The card also names a scheduled release landing inside that bar, and says
+plainly that the band is **not** widened for it — India VIX already prices
+scheduled risk in aggregate and is already in the variance, so widening again
+would double-count it.
 
 ### Patterns, drawn rather than claimed
 
@@ -435,7 +503,7 @@ assets/js/journal.js           your trades, browser only
 assets/js/portfolio.js         your holdings, news matching and alerts, browser only
 assets/js/data.js              fetch lanes, RSS parsing, news store, OpenRouter
 assets/js/vol.js               GARCH/GJR variance, Parkinson RV, conformal z, Kupiec, CRPS, ACI
-assets/js/forecast.js          the model: seven lanes, clock-aware path, bands, calibration
+assets/js/forecast.js          the model: eight lanes, clock-aware path, bands, calibration
 assets/js/ledger.js            records every forecast, settles it, explains why it did or did not
 assets/js/engine.js            reason points (the forecast moved to forecast.js)
 assets/js/chart.js             candles, projection, bands, pattern geometry, overlays, markers
@@ -453,6 +521,8 @@ scripts/fetch_global.py        overnight cues: futures, crude, dollar, rupee, yi
 scripts/fetch_flows.py         breadth, FII and DII
 scripts/fetch_stocks.py        per-stock quotes for the holdings panel
 scripts/build_universe.py      NSE ticker to company name and aliases
+scripts/fetch_options.py       NIFTY option chain: PCR, max pain, OI walls, IV surface
+scripts/fetch_events.py        NSE trading holidays + scheduled global releases
 scripts/fetch_filings.py       BSE and NSE corporate announcements
 scripts/serve.py               dev server: static files plus the fetch loops
 scripts/publish_live.sh        force-pushes data/ to the live-data branch
@@ -498,6 +568,8 @@ Running locally
 ---------------
 
 ```bash
+node scripts/selftest.js          # 57 invariants, no dependencies, a few seconds
+
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python scripts/feeds_build.py    # writes data/feeds_index.json
 .venv/bin/python scripts/fetch_market.py   # candles, quote, seasonality

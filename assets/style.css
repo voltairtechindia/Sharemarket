@@ -950,3 +950,38 @@ html, body { max-width: 100%; overflow-x: clip; }
   border-left: 2px solid var(--border);
 }
 .lg-arrival strong { color: var(--ink-strong); font-weight: 600; }
+
+/* ------------------------------------------------- why the line is there
+   The projection's hover card. Same surface treatment as .reason-card so the
+   two read as one family, but wider and with room for the per-lane bars: the
+   question "why does it lean up here" needs the sizes compared, not listed. */
+.forecast-card {
+  position: absolute; z-index: 11; width: 300px;
+  background: var(--bg-raised); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);
+  padding: 10px 11px; pointer-events: none;
+  border-left: 3px solid var(--forecast);
+}
+.fcard-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.fcard-when { font: 600 10px/1 var(--mono); color: var(--ink-muted); text-transform: uppercase; letter-spacing: .04em; }
+.fcard-move { font: 700 12px/1 var(--mono); }
+.fcard-centre { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 5px 0 6px; }
+.fcard-price { font: 700 16px/1 var(--mono); color: var(--ink-strong); }
+.fcard-prob { font-size: 10px; color: var(--ink-muted); }
+.fcard-lead { font-size: 11px; line-height: 1.4; color: var(--ink-strong); margin: 0 0 7px; }
+
+/* One row per lane: name, a bar whose length is its share of the push, and the
+   signed number. The bar is what makes a glance enough - a list of seven
+   percentages is not something anyone reads while a chart is moving. */
+.fcard-bars { display: flex; flex-direction: column; gap: 3px; margin-bottom: 7px; }
+.fcard-row { display: grid; grid-template-columns: 82px 1fr 52px; align-items: center; gap: 6px; }
+.fcard-name { font-size: 10px; color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fcard-track { position: relative; height: 7px; background: var(--grid); border-radius: 2px; }
+/* Zero sits in the middle so up and down are legible without reading the sign. */
+.fcard-fill { position: absolute; top: 0; height: 7px; border-radius: 2px; }
+.fcard-fill.pos { background: var(--up); left: 50%; }
+.fcard-fill.neg { background: var(--down); right: 50%; }
+.fcard-zero { position: absolute; left: 50%; top: -1px; width: 1px; height: 9px; background: var(--axis); }
+.fcard-val { font: 600 10px/1 var(--mono); text-align: right; }
+.fcard-foot { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--ink-muted); }
+.fcard-fine { font-size: 9.5px; line-height: 1.4; color: var(--ink-faint); margin: 6px 0 0; }

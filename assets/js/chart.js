@@ -104,6 +104,7 @@
     els.now = document.getElementById('now-divider');
     els.zone = document.getElementById('forecast-zone');
     els.card = document.getElementById('reason-card');
+    els.fcard = document.getElementById('forecast-card');
     els.empty = document.getElementById('chart-empty');
 
     if (chart) { chart.remove(); chart = null; }
@@ -184,6 +185,9 @@
   /* ------------------------------------------------------------------ data */
   function setData(candles, forecast, reasons, tfKey, symbol) {
     if (!chart) return;
+    // A card left over from the previous series would describe bars that no
+    // longer exist on this one.
+    hideForecastCard();
     state.tf = tfKey;
     if (symbol) state.symbol = symbol;
     state.candles = candles || [];
@@ -504,11 +508,149 @@
 
   function hideCard() { if (els.card && !state.pinned) els.card.classList.add('hidden'); }
 
+  /* Hovering the traded half and the projected half are different questions.
+     Left of NOW the useful answer is what happened; right of it there is no
+     "what happened" to give, so the card explains why the line sits where it
+     does at that minute instead. */
   function onCrosshair(param) {
     if (state.pinned) return;
-    if (!param || !param.point || !param.time) { hideCard(); return; }
+    if (!param || !param.point || !param.time) { hideCard(); hideForecastCard(); return; }
+
+    if (state.lastCandleTime && param.time > state.lastCandleTime) {
+      hideCard();
+      var a = nearestAttribution(param.time);
+      if (a) showForecastCard(a, param.point); else hideForecastCard();
+      return;
+    }
+    hideForecastCard();
     var r = nearestReason(param.time);
     if (r) showCard(r, param.point); else hideCard();
+  }
+
+  function nearestAttribution(time) {
+    var att = state.forecast && state.forecast.attribution;
+    if (!att || !att.length) return null;
+    var best = null, bestD = Infinity;
+    for (var i = 0; i < att.length; i++) {
+      var d = Math.abs(att[i].time - time);
+      if (d < bestD) { bestD = d; best = att[i]; }
+    }
+    // One bar-width of tolerance: beyond that the pointer is not on the line.
+    var barSec = C.timeframes[state.tf] ? C.timeframes[state.tf].barSec : 300;
+    return bestD <= barSec * 1.5 ? best : null;
+  }
+
+  function hideForecastCard() { if (els.fcard) els.fcard.classList.add('hidden'); }
+
+  /* A scheduled release inside one bar-width of this projected bar. */
+  function eventNear(time) {
+    var evs = state.events && state.events.events;
+    if (!evs || !evs.length) return null;
+    var barSec = C.timeframes[state.tf] ? C.timeframes[state.tf].barSec : 300;
+    var span = Math.max(barSec, 900);
+    for (var i = 0; i < evs.length; i++) {
+      if (Math.abs(evs[i].ts - time) <= span) return evs[i];
+    }
+    return null;
+  }
+
+  function showForecastCard(a, point) {
+    if (!els.fcard || !state.forecast) return;
+    var f = state.forecast, last = f.lastClose;
+    var centre = last * (1 + a.driftPct / 100);
+
+    core.text('fcd-when', a.label + '  ·  bar ' + a.bar + ' of ' + f.forecastBars);
+    var mv = core.el('fcd-move');
+    if (mv) { mv.textContent = core.fmt.pct(a.driftPct); mv.className = 'fcard-move num ' + core.fmt.cls(a.driftPct); }
+    core.text('fcd-price', core.fmt.price(centre));
+    core.text('fcd-prob', a.pUp + '% chance above ' + core.fmt.price(last));
+
+    /* The lead sentence names the lane doing the most work at THIS bar, which
+       is often not the lane doing the most work overall - that is the whole
+       reason this card exists. */
+    var top = a.lanes[0], second = a.lanes[1];
+    var lead;
+    if (!top) {
+      lead = 'No lane is pushing measurably at this point. The line is flat here because the inputs cancel, not because they are absent.';
+    } else {
+      var dir = top.pct > 0 ? 'up' : 'down';
+      lead = top.label + ' is the strongest pull ' + dir + ' here (' + top.note + ')';
+      if (second) {
+        lead += (second.pct > 0) === (top.pct > 0)
+          ? ', with ' + second.label.toLowerCase() + ' adding to it'
+          : ', against ' + second.label.toLowerCase() + ' pulling the other way';
+      }
+      lead += '.';
+    }
+    core.text('fcd-lead', lead);
+
+    /* Bars, scaled to the largest contribution at this bar so the comparison is
+       between lanes rather than against the whole horizon - a 0.01% push that
+       is the only thing moving the line should look like the thing moving the
+       line. */
+    var host = core.el('fcd-bars');
+    if (host) {
+      host.innerHTML = '';
+      var rows = a.lanes.slice(0, 5);
+      if (a.shapePct) rows.push({ label: 'Time of day', pct: a.shapePct, arrived: null, id: 'shape' });
+      var max = 0;
+      rows.forEach(function (r) { max = Math.max(max, Math.abs(r.pct)); });
+      if (!max) max = 1;
+      rows.forEach(function (r) {
+        var row = document.createElement('div'); row.className = 'fcard-row';
+        var nm = document.createElement('span'); nm.className = 'fcard-name'; nm.textContent = r.label;
+        var track = document.createElement('span'); track.className = 'fcard-track';
+        var fill = document.createElement('span');
+        fill.className = 'fcard-fill ' + (r.pct >= 0 ? 'pos' : 'neg');
+        fill.style.width = (Math.abs(r.pct) / max * 50) + '%';
+        var zero = document.createElement('span'); zero.className = 'fcard-zero';
+        track.appendChild(fill); track.appendChild(zero);
+        var val = document.createElement('span');
+        val.className = 'fcard-val ' + core.fmt.cls(r.pct);
+        val.textContent = core.fmt.pct(r.pct, 3);
+        row.appendChild(nm); row.appendChild(track); row.appendChild(val);
+        host.appendChild(row);
+      });
+    }
+
+    var lo = last * (1 + (a.driftPct - a.sdPct * (f.z68 || 1)) / 100);
+    var hi = last * (1 + (a.driftPct + a.sdPct * (f.z68 || 1)) / 100);
+    core.text('fcd-range', 'Likely range ' + core.fmt.price(lo) + ' – ' + core.fmt.price(hi));
+    core.text('fcd-width', '±' + core.fmt.pct(a.sdPct * (f.z68 || 1), 2).replace('+', ''));
+
+    /* The small print carries the two things that make the number checkable:
+       how far each timing curve has travelled, and what set the width. */
+    var fine = [];
+    if (top && top.arrived != null) fine.push(top.arrived + '% of the ' + top.label.toLowerCase() + ' push has landed by this bar');
+    if (a.profileMult && Math.abs(a.profileMult - 1) > 0.15) {
+      fine.push('this slot runs at ' + a.profileMult + '× the average bar variance, so the band is ' +
+                (a.profileMult > 1 ? 'wider' : 'tighter') + ' here');
+    }
+    if (a.temperPct) fine.push('a level with a record trimmed ' + core.fmt.pct(a.temperPct, 3) + ' off the push');
+    if (a.cappedPct) fine.push('the per-bar drift cap removed ' + core.fmt.pct(a.cappedPct, 3));
+    /* A scheduled release inside this bar is worth naming, because it is the
+       one thing on the card the model does NOT price: India VIX already
+       carries event risk in aggregate, so widening the band here as well would
+       double-count it the way the GARCH double-counted the intraday profile.
+       Saying it is coming is honest; pretending to have calibrated it is not. */
+    var ev = eventNear(a.time);
+    if (ev) {
+      fine.push(ev.country + ' ' + ev.title + ' lands in this bar (' + ev.impact +
+                ' impact) - the band does not widen for it, VIX already prices scheduled risk in aggregate');
+    }
+    if (f.zBasis) fine.push('band width: ' + f.zBasis);
+    core.text('fcd-fine', fine.join(' · ') + '.');
+
+    els.fcard.classList.remove('hidden');
+    if (point && els.stage) {
+      var w = els.stage.clientWidth, h = els.stage.clientHeight;
+      var cw = els.fcard.offsetWidth || 300, ch = els.fcard.offsetHeight || 200;
+      // Flip to the left of the pointer near the right edge, which on the
+      // forecast half is where the pointer usually is.
+      var x = point.x + 16 + cw > w - 8 ? point.x - cw - 16 : point.x + 16;
+      els.fcard.style.left = core.clamp(x, 8, Math.max(8, w - cw - 8)) + 'px';
+      els.fcard.style.top = core.clamp(point.y - ch / 2, 8, Math.max(8, h - ch - 8)) + 'px';
+    }
   }
 
   function onClick(param) {
@@ -524,7 +666,10 @@
     }
   }
 
+  function setEvents(e) { state.events = e || null; }
+
   function showEmpty(message, detail) {
+    hideForecastCard();
     if (!els.empty) return;
     els.empty.classList.remove('hidden');
     els.empty.innerHTML = '';
@@ -536,6 +681,7 @@
   KT.chart = {
     init: init, setData: setData, tick: tick, retheme: retheme,
     frameView: frameView, showEmpty: showEmpty, refreshMarkers: applyMarkers,
+    setEvents: setEvents,
     setPatterns: function (m) { state.patternMarkers = m || []; applyMarkers(); },
     setStructures: function (list) { state.structures = list || []; drawStructures(); drawLevels(); applyMarkers(); },
     setLevels: function (lv) { state.levels = lv || null; drawLevels(); },

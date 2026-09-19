@@ -37,6 +37,18 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m http.server 8080          # then http://localhost:8080
 ```
 
+**Run `node scripts/selftest.js` first.** No dependencies, no build step - it
+loads the real browser modules into a vm context whose global *is* `window` and
+asserts 57 invariants, each of which has been a real bug here: band/outcome
+alignment, lane liveness, effective sample size, the attribution reconstructing
+the drift, the holiday clock, and the variance model degrading rather than
+returning NaN. It runs in a few seconds and catches most regressions before the
+browser is involved.
+
+The previous set of these lived in a scratch directory and did not survive the
+session, which is why they are in the repo now. A check you cannot re-run is not
+a check.
+
 Playwright is the fastest honest check (`.venv/bin/pip install playwright &&
 .venv/bin/python -m playwright install chromium`). What to assert:
 
@@ -66,10 +78,25 @@ Re-verified 18 Sep 2026. Do not "restore" any of these.
 | `nseindia.com/api/equity-stockIndices?index=…` | HTTP 404 for every index | `nseindia.com/api/allIndices` — each row carries `advances` / `declines` / `unchanged` already counted |
 | `www.moneycontrol.com/rss/*.xml` **from a browser** | HTTP 403, all eight paths | dropped from `directFeeds`; still fine **server side**, so the deep lane keeps them |
 | `api.bseindia.com/.../AnnGetData/w` | 200 with the bare JSON string `"No Record Found!"` | nothing — BSE blocks datacentre addresses. The lane records a clean failure and NSE filings carry it |
+| `nseindia.com/api/option-chain-indices?symbol=…` | HTTP 404 | `nseindia.com/api/option-chain-v3?type=Indices&symbol=NIFTY&expiry=<DD-MMM-YYYY>`, with the expiry from `/api/option-chain-contract-info`. Found by reading the `/api/` paths out of NSE's own `option-chain-v3.js` bundle, not by guessing |
 | Yahoo `meta.chartPreviousClose` as prev close | off by as many sessions as the range is long | derive from the daily candle series (`prev_close()` in `fetch_market.py`) |
 
 `priceapi.moneycontrol.com` (live index price) is a **different host** and works
 fine from the browser. Do not confuse the two when a Moneycontrol lane fails.
+
+**Two NSE endpoints that are alive and were not being used.** Both re-verified
+19 Sep 2026:
+
+- `/api/option-chain-v3` — the only forward-looking input in the model. Feeds
+  `fetch_options.py` → `data/options.json` → `optionsLane()`.
+- `/api/holiday-master?type=trading` — twenty cash-market rows a year. This
+  removes the limitation `advance()` used to document: a daily projection that
+  walked through Diwali put every later date one session wrong.
+
+Both answer with `Access-Control-Allow-Origin: beta.nseindia.com`, so **neither
+can be fetched from the browser.** They are workflow lanes and therefore as old
+as the last run. `optionsLane()` drops itself past four hours rather than voting
+on stale positioning; the holiday list does not care, because it changes yearly.
 
 NSE in general: hand out the homepage cookie first (`session()` in
 `fetch_flows.py`), send a `Referer`, and expect waves of blocking by IP. Every
@@ -134,7 +161,7 @@ constantly and the auto-router survives that. With reasoning off it was usable
 `forecast` → `ledger` → `engine` → `chart` → `app`. The script tags in
 `index.html` are commented with this. Reordering them breaks the page silently.
 
-`forecast.js` owns the model (seven lanes, clock-aware path, bands,
+`forecast.js` owns the model (eight lanes, clock-aware path, bands,
 `calibrate()`). `engine.js` is only reason points — the forecast moved out of it.
 `vol.js` owns the variance model and every statistic that judges the band.
 `ledger.js` owns the forward record.
@@ -154,7 +181,14 @@ reading:
   scoring them as independent made the panel swing by tens of points when the
   replay grid moved five bars.
 
-A fourth, in `vol.js`: **deseasonalise before fitting.** `volProfile()` already
+A fourth, in `forecast.js`: **the band must not be widened for a scheduled
+event.** India VIX is an implied number and already prices scheduled risk, and
+it is already blended into `sigmaBlend`. Adding an event multiplier on top
+double-counts it, which is the same mistake as fitting a GARCH on unadjusted
+intraday returns. `data/events.json` is therefore shown in the hover card and
+deliberately does **not** vote.
+
+A fifth, in `vol.js`: **deseasonalise before fitting.** `volProfile()` already
 models the intraday cycle and re-applies it bar by bar, so a GARCH fitted on raw
 5-minute returns spends its ARCH coefficient describing the clock. Measured,
 persistence fell 0.741 → 0.509 and QLIKE improved 13% once the profile was

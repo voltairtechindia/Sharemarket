@@ -86,6 +86,23 @@ jobs:
         run: python scripts/fetch_flows.py
         continue-on-error: true
 
+      # The only forward-looking lane in the model: PCR on today's open
+      # interest, the OI walls and max pain. Browser-side is impossible - NSE
+      # answers with Access-Control-Allow-Origin: beta.nseindia.com - so it has
+      # to come from here, and it is therefore as old as the last run. The lane
+      # drops itself past four hours rather than voting on stale positioning.
+      - name: Fetch the NIFTY option chain
+        run: python scripts/fetch_options.py
+        continue-on-error: true
+
+      # NSE trading holidays, which advance() needs so a projection does not
+      # walk through Diwali, plus the scheduled global releases. Both change
+      # rarely, so this is cheap to run every cycle and there is no value in
+      # scheduling it separately.
+      - name: Fetch the exchange calendar
+        run: python scripts/fetch_events.py
+        continue-on-error: true
+
       - name: Fetch stock quotes
         run: python scripts/fetch_stocks.py
         continue-on-error: true

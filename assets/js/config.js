@@ -157,6 +157,8 @@ KT.CONFIG = {
     index:       'data/feeds_index.json',
     global:      'data/global.json',
     flows:       'data/flows.json',
+    options:     'data/options.json',
+    events:      'data/events.json',
     stocks:      'data/stocks.json',
     universe:    'data/universe.json',
     lexicon:     'config/lexicon.json',
@@ -175,14 +177,25 @@ KT.CONFIG = {
     /* Seven lanes. Weights are renormalised at runtime over the lanes that
        actually reported, so a missing global feed shifts weight to the rest
        instead of quietly dragging the bias toward zero. */
+    /* Eight lanes. Every weight here is a judgement, not a measurement - none
+       of them has been fitted, because until the ledger has settled rows there
+       is nothing to fit against. When options joined, the seven existing
+       weights were scaled by 0.9 rather than re-argued, so their relative
+       order is unchanged and the new lane paid for itself out of all of them
+       equally. That is the least opinionated way to make room. */
     weights: {
-      news: 0.24,       // the loudest short-horizon input, and the fastest to decay
-      momentum: 0.20,   // trend, RSI, MACD, supertrend, scaled by ADX
-      global: 0.16,     // overnight futures, crude, dollar, rupee, US 10y
-      structure: 0.13,  // measured moves from triangles, flags, double tops
-      seasonal: 0.12,   // month, weekday and expiry-week effects
-      levels: 0.08,     // how much room there is before the next wall
-      flow: 0.07,       // breadth, FII and DII when the workflow has them
+      news: 0.216,      // the loudest short-horizon input, and the fastest to decay
+      momentum: 0.180,  // trend, RSI, MACD, supertrend, scaled by ADX
+      global: 0.144,    // overnight futures, crude, dollar, rupee, US 10y
+      structure: 0.117, // measured moves from triangles, flags, double tops
+      seasonal: 0.108,  // month, weekday and expiry-week effects
+      levels: 0.072,    // how much room there is before the next wall
+      flow: 0.063,      // breadth, FII and DII when the workflow has them
+      /* The only forward-looking lane: PCR on today's open interest, the OI
+         walls and max pain. Deliberately modest - the direction convention it
+         uses is standard practice rather than something measured here, and it
+         arrives through the workflow so it is hours old by construction. */
+      options: 0.100,
     },
     maxDriftPctPerBar: 0.06,   // cap so the projection never runs away
     coneVolMultiplier: 1.15,   // widen the likely-range band a touch

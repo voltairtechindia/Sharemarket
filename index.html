@@ -195,6 +195,31 @@
           <span id="rc-source">&mdash;</span>
         </div>
       </div>
+
+      <!-- ============================================== WHY THE LINE IS THERE
+           Hovering the projected half of the chart asks a different question
+           from hovering the traded half. On the left the useful answer is what
+           happened; on the right it is why the model thinks what it thinks at
+           that particular minute - which is not the same at 09:20 as at 15:30,
+           because each lane's push arrives on its own curve. -->
+      <div class="forecast-card hidden" id="forecast-card" role="status">
+        <div class="fcard-head">
+          <span class="fcard-when" id="fcd-when">&mdash;</span>
+          <span class="fcard-move num" id="fcd-move">&mdash;</span>
+        </div>
+        <div class="fcard-centre">
+          <span class="fcard-price num" id="fcd-price">&mdash;</span>
+          <span class="fcard-prob" id="fcd-prob">&mdash;</span>
+        </div>
+        <p class="fcard-lead" id="fcd-lead">&mdash;</p>
+        <div class="fcard-bars" id="fcd-bars"></div>
+        <div class="fcard-foot">
+          <span id="fcd-range">&mdash;</span>
+          <span id="fcd-width">&mdash;</span>
+        </div>
+        <p class="fcard-fine" id="fcd-fine">&mdash;</p>
+      </div>
+
       <div class="chart-empty" id="chart-empty">
         <strong>Loading NIFTY candles&hellip;</strong>
         <span class="muted">Pulling live OHLC, then overlaying the news-driven forecast.</span>

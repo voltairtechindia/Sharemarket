@@ -15,3 +15,4 @@ data/*.tmp
 # rewritten as one orphan commit so it costs one tree; main keeps history, and
 # ~25 MB of rolling JSON committed here would be permanent.
 data/news_archive/
+data/options_archive/

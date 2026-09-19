@@ -40,6 +40,8 @@
     calibratedKey: null,    // symbol:timeframe the calibration above belongs to
     global: null,           // overnight cues from the workflow
     flows: null,            // breadth, FII and DII
+    options: null,          // option chain: PCR, max pain, OI walls
+    events: null,           // NSE trading holidays + scheduled global releases
     vix: null,
     alertsOpen: false,
   };
@@ -85,6 +87,8 @@
           data.loadBaked(C.baked.index).then(function (i) { if (!S.feedsTotal) { S.feedsTotal = i.count; renderFeedCount(null); } }).catch(noop),
           data.loadBaked(C.baked.global).then(function (g) { S.global = g; renderCues(); }).catch(noop),
           data.loadBaked(C.baked.flows).then(function (f) { S.flows = f; }).catch(noop),
+          data.loadBaked(C.baked.options).then(function (o) { S.options = o; }).catch(noop),
+          data.loadBaked(C.baked.events).then(applyEvents).catch(noop),
           // The universe is what turns "RELIANCE" into "Reliance Industries"
           // for headline matching, so it has to land before the first scan.
           data.loadBaked(C.baked.universe).then(function (u) { KT.portfolio.setUniverse(u); fillUniverseList(); }).catch(noop),
@@ -358,6 +362,8 @@
       loadFilings().catch(noop),
       data.loadBaked(C.baked.global).then(function (g) { S.global = g; renderCues(); }).catch(noop),
       data.loadBaked(C.baked.flows).then(function (f) { S.flows = f; }).catch(noop),
+      data.loadBaked(C.baked.options).then(function (o) { S.options = o; }).catch(noop),
+      data.loadBaked(C.baked.events).then(applyEvents).catch(noop),
       data.loadBaked(C.baked.stocks).then(function (q) { KT.portfolio.setQuotes(q); }).catch(noop),
     ]).then(function () { renderNews(); scanAlerts(); });
   }
@@ -403,6 +409,7 @@
       structureStats: S.structureStats,
       global: S.global,
       flows: S.flows,
+      options: S.options,
       vix: S.vix,
       /* The band multiplier that the last replay says would have delivered the
          coverage the band claims. Absent on the first load, which is correct -
@@ -428,6 +435,20 @@
     updateLedger(news);
     maybeCalibrate();
     maybeEnrichNarrative();
+  }
+
+  /* The exchange calendar. Until this landed, advance() knew about weekends
+     and nothing else, so a daily projection walked straight through Diwali and
+     put every date after it one session wrong. A failed fetch leaves the
+     holiday table empty, which is exactly the old weekends-only behaviour. */
+  function applyEvents(e) {
+    if (!e) return;
+    S.events = e;
+    try { chart.setEvents(e); } catch (err) { /* chart may not be up yet */ }
+    try {
+      var n = KT.forecast.setHolidays(e.holidays || []);
+      if (n) recompute();
+    } catch (err) { /* a bad calendar must not take the clock down */ }
   }
 
   /* ============================================================== LEDGER

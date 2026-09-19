@@ -39,7 +39,7 @@ jobs:
           # branch keeps history, and roughly 25 MB of rolling JSON committed
           # four times a day would be permanent. The archive exists to be
           # backtested against, not to be a same-origin fallback.
-          rm -rf data/news_archive
+          rm -rf data/news_archive data/options_archive
           echo "--- snapshot contents ---"
           ls -la data/
 

@@ -67,20 +67,55 @@
      it be at X" answer meaningless, which is the one thing the panel exists
      for. So the step function skips the overnight gap and the weekend.
 
-     Exchange holidays are not modelled - there is no free holiday feed in the
-     repo, and being one session out in a month-ahead projection is a smaller
-     error than being fourteen hours out in an intraday one. */
+     Exchange holidays used to be unmodelled, on the grounds that there was no
+     free holiday feed in the repo. There is one now - NSE serves
+     /api/holiday-master?type=trading, twenty cash-market rows a year - and
+     scripts/fetch_events.py pulls it into data/events.json, which app.js hands
+     to setHolidays() below.
+
+     It matters more than "one session out" suggested. A daily projection that
+     walks straight through Diwali puts every date after it one session wrong,
+     and the checkpoint table is the part of this panel people read dates off.
+     That is the same class of error as reading an outcome from the wrong bar.
+
+     With no holiday list loaded the behaviour is exactly what it was before -
+     weekends only - so a failed fetch degrades to the old accuracy instead of
+     breaking the clock. */
   var OPEN_MIN = C.market.regular.from, CLOSE_MIN = C.market.regular.to;
 
   function isWeekend(d) { return C.market.weekdays.indexOf(d.getDay()) === -1; }
 
+  /* Trading holidays, keyed YYYY-MM-DD in IST. Empty until app.js supplies
+     them, and every consumer below treats empty as "weekends only". */
+  var HOLIDAYS = {};
+  function setHolidays(list) {
+    HOLIDAYS = {};
+    (list || []).forEach(function (h) {
+      var key = typeof h === 'string' ? h : (h && h.date);
+      if (key) HOLIDAYS[key] = (h && h.name) || true;
+    });
+    return Object.keys(HOLIDAYS).length;
+  }
+  function dateKey(d) {
+    return d.getFullYear() + '-' +
+           ('0' + (d.getMonth() + 1)).slice(-2) + '-' +
+           ('0' + d.getDate()).slice(-2);
+  }
+  function isHoliday(d) { return !!HOLIDAYS[dateKey(d)]; }
+  // One predicate for "the exchange is shut", so a caller cannot check one and
+  // forget the other.
+  function isClosed(d) { return isWeekend(d) || isHoliday(d); }
+
   function nextSessionOpen(epochSec) {
     var d = core.fmt.ist(epochSec);
-    var day = epochSec;
+    var day = epochSec, guard = 0;
     do {
       day += 86400;
       d = core.fmt.ist(day);
-    } while (isWeekend(d));
+      // A corrupt holiday list must not spin forever; ten shut days in a row
+      // has never happened and would be a data fault, not a calendar.
+      if (++guard > 10) break;
+    } while (isClosed(d));
     var mins = d.getHours() * 60 + d.getMinutes();
     return day + (OPEN_MIN - mins) * 60;
   }
@@ -88,16 +123,16 @@
   function advance(epochSec, barSec) {
     if (barSec >= 604800) return epochSec + barSec;
     if (barSec >= 86400) {
-      var t = epochSec;
-      do { t += 86400; } while (isWeekend(core.fmt.ist(t)));
+      var t = epochSec, g = 0;
+      do { t += 86400; } while (isClosed(core.fmt.ist(t)) && ++g <= 10);
       return t;
     }
     var next = epochSec + barSec;
     var nd = core.fmt.ist(next);
     var m = nd.getHours() * 60 + nd.getMinutes();
-    if (isWeekend(nd) || m > CLOSE_MIN) {
+    if (isClosed(nd) || m > CLOSE_MIN) {
       var over = Math.max(0, (m - CLOSE_MIN) * 60);
-      if (isWeekend(nd)) over = 0;
+      if (isClosed(nd)) over = 0;
       return nextSessionOpen(epochSec) + over;
     }
     if (m < OPEN_MIN) {
@@ -352,6 +387,105 @@
     return { score: core.clamp(s / w, -1, 1), note: bits.join(', '), hasData: true };
   }
 
+  /* ============================================================= options
+
+     The only forward-looking lane in the model. Everything else reads prices
+     that have already printed or headlines that have already been published;
+     this reads what money is positioned for next.
+
+     Three signals, weighted by how much a 6.5-hour horizon can actually use:
+
+     Change in open interest, put against call. Who is writing today. Puts
+     written into a tape that is holding is support being sold; calls written
+     into one that has stalled is a ceiling being built. Read on a log scale
+     because the ratio is multiplicative - 2.5 and 0.4 are the same distance
+     from neutral, and a linear read would not treat them that way.
+
+     Standing open interest, put against call. The same idea over the whole
+     book rather than today's flow. Slower, so weaker over this horizon, but it
+     does not flip on one large trade.
+
+     Max pain. Price does drift toward the strike where writers pay out least,
+     but the pull is weak and concentrated in the last day or two, so it is
+     scaled by how close expiry is rather than applied flat. A week out it
+     contributes essentially nothing, which is the honest weight for it.
+
+     The direction convention here - heavy put-side activity reads bullish - is
+     the standard intraday reading for an index, and it is a convention rather
+     than something this repo has measured. The ledger is what will eventually
+     say whether it earns its weight. Until then the lane carries a deliberately
+     modest 0.10 and the panel says the weight is a guess. */
+  function optionsLane(opt, price, nowMs) {
+    if (!opt || !opt.ok || !price) {
+      return { score: 0, note: 'no option chain', hasData: false };
+    }
+
+    /* Staleness is the real constraint. NSE answers with
+       Access-Control-Allow-Origin: beta.nseindia.com, so the browser cannot
+       fetch this and it arrives through the workflow - which CLAUDE.md measured
+       at roughly one run every two and a half hours, not the five minutes the
+       cron asks for. Max pain and the OI walls tolerate that; today's
+       change-in-OI does not. Past four hours the lane drops out rather than
+       voting on positioning that has since moved. */
+    var stamp = Date.parse(opt.generated_at || '');
+    var ageMin = isFinite(stamp) ? ((nowMs || Date.now()) - stamp) / 60000 : null;
+    if (ageMin != null && ageMin > 240) {
+      return { score: 0, hasData: false, ageMin: Math.round(ageMin),
+               note: 'option chain is ' + Math.round(ageMin / 60) + 'h old, too stale to vote' };
+    }
+
+    var s = 0, w = 0, bits = [];
+
+    if (opt.pcrChgOi != null && opt.pcrChgOi > 0) {
+      // log base 2.5: a ratio of 2.5 or 0.4 is a full-strength vote.
+      var v1 = core.clamp(Math.log(opt.pcrChgOi) / Math.log(2.5), -1, 1);
+      s += v1 * 0.45; w += 0.45;
+      bits.push('puts outwritten calls ' + opt.pcrChgOi + ':1 today');
+    }
+
+    if (opt.pcrOi != null && opt.pcrOi > 0) {
+      var v2 = core.clamp((opt.pcrOi - 1) / 0.35, -1, 1);
+      s += v2 * 0.20; w += 0.20;
+      bits.push('standing PCR ' + opt.pcrOi);
+    }
+
+    if (opt.maxPainPct != null && opt.expiryDays != null) {
+      // Full weight on expiry day, nothing a week out.
+      var prox = core.clamp(1 - opt.expiryDays / 7, 0, 1);
+      var v3 = core.clamp(opt.maxPainPct / 0.5, -1, 1) * prox;
+      s += v3 * 0.20; w += 0.20;
+      if (prox > 0.2) {
+        bits.push('max pain ' + core.fmt.price(opt.maxPain) + ' (' +
+                  core.fmt.pct(opt.maxPainPct) + ', ' + opt.expiryDays + 'd to expiry)');
+      }
+    }
+
+    /* Room to the nearest positioning wall, up against down. Same shape as
+       levelsLane, but these walls are where options are stacked rather than
+       where price happened to turn - and the two often disagree, which is
+       itself worth seeing. */
+    var up = (opt.resistance || [])[0], dn = (opt.support || [])[0];
+    if (up && dn && up.distPct != null && dn.distPct != null) {
+      var room = core.clamp((up.distPct + dn.distPct) / 1.5, -1, 1);
+      s += room * 0.15; w += 0.15;
+      bits.push('OI wall ' + core.fmt.price(up.strike) + ' above, ' +
+                core.fmt.price(dn.strike) + ' below');
+    }
+
+    if (!w) return { score: 0, note: 'option chain carried no usable signal', hasData: false };
+
+    var note = bits.join(', ');
+    if (ageMin != null && ageMin > 60) note += ' (as of ' + Math.round(ageMin) + ' min ago)';
+    return {
+      score: core.clamp(s / w, -1, 1), note: note, hasData: true,
+      ageMin: ageMin == null ? null : Math.round(ageMin),
+      pcrOi: opt.pcrOi, pcrChgOi: opt.pcrChgOi,
+      maxPain: opt.maxPain, maxPainPct: opt.maxPainPct,
+      ivSkew: opt.ivSkew, atmIv: opt.atmIv,
+      resistance: up || null, support: dn || null,
+    };
+  }
+
   /* ====================================================== the band, once
 
      build() and calibrate() used to draw this twice, and they drifted: the
@@ -367,7 +501,7 @@
      variance, the profile, the multiplier and the level tempering are shared
      by construction and cannot diverge again. */
   function bandPath(cfg) {
-    var path = [], upper = [], lower = [], upper2 = [], lower2 = [];
+    var path = [], upper = [], lower = [], upper2 = [], lower2 = [], detail = [];
     var cumVar = 0, t = cfg.lastCandle.time;
     var useProfile = cfg.vp && cfg.vp.intraday;
     for (var k = 1; k <= cfg.bars; k++) {
@@ -375,15 +509,27 @@
       var frac = k / cfg.bars;
 
       // accumulated variance with the intraday profile applied bar by bar
-      cumVar += (cfg.varPath ? cfg.varPath[k - 1] : Math.pow(cfg.sigmaBlend, 2)) *
-                (useProfile ? cfg.vp.mult(t) : 1);
+      var barVar = (cfg.varPath ? cfg.varPath[k - 1] : Math.pow(cfg.sigmaBlend, 2));
+      var profileMult = useProfile ? cfg.vp.mult(t) : 1;
+      cumVar += barVar * profileMult;
       var sd = Math.sqrt(cumVar);
 
-      var driftPct = core.clamp(cfg.drift(k, frac, t), -cfg.capPct, cfg.capPct);
+      /* The drift callback may return a plain number or, when the caller wants
+         the projection explained rather than merely drawn, an object carrying
+         the same total plus the pieces it was built from. Keeping the
+         decomposition here rather than recomputing it elsewhere is the same
+         rule bandPath itself exists for: two places computing the drift is two
+         places that can disagree about it. */
+      var out = cfg.drift(k, frac, t);
+      var rawPct = typeof out === 'number' ? out : out.total;
+      var parts = typeof out === 'number' ? null : out.parts;
+
+      var driftPct = core.clamp(rawPct, -cfg.capPct, cfg.capPct);
       // A wall does not stop price, it slows it. Beyond a level with a real
       // record, the remaining drift is halved rather than cut off, which keeps
       // the path continuous and still reflects the resistance.
-      var mid = temper(cfg.lastClose * (1 + driftPct / 100), cfg.lastClose, cfg.lv);
+      var untempered = cfg.lastClose * (1 + driftPct / 100);
+      var mid = temper(untempered, cfg.lastClose, cfg.lv);
 
       var band1 = cfg.lastClose * sd / 100 * cfg.z68;
       var band2 = cfg.lastClose * sd / 100 * cfg.z95;
@@ -392,8 +538,27 @@
       lower.push({ time: t, value: r2(mid - band1) });
       upper2.push({ time: t, value: r2(mid + band2) });
       lower2.push({ time: t, value: r2(mid - band2) });
+
+      if (parts) {
+        detail.push({
+          time: t, bar: k, frac: frac,
+          parts: parts,
+          rawPct: r3(rawPct),
+          // What the cap and the level tempering took off, separately, because
+          // "the model wanted more but a wall was in the way" is a different
+          // statement from "the model wanted more but the cap said no".
+          cappedPct: r3(driftPct - rawPct),
+          temperPct: r3((mid - untempered) / cfg.lastClose * 100),
+          driftPct: r3((mid - cfg.lastClose) / cfg.lastClose * 100),
+          sdPct: r3(sd),
+          profileMult: Math.round(profileMult * 100) / 100,
+          // Probability of finishing above the current price at this bar.
+          pUp: sd > 0 ? Math.round(ncdf((mid - cfg.lastClose) / (cfg.lastClose * sd / 100)) * 100) : 50,
+        });
+      }
     }
-    return { path: path, upper: upper, lower: lower, upper2: upper2, lower2: lower2 };
+    return { path: path, upper: upper, lower: lower, upper2: upper2, lower2: lower2,
+             detail: detail };
   }
 
   /* Everything the band needs that is not the drift: the profile, the fitted
@@ -529,6 +694,7 @@
     var struct = KT.structures.impliedBias(structs, lastClose, ctx.structureStats);
     var lvl = levelsLane(lv, lastClose, atr);
     var flow = flowLane(ctx.flows);
+    var opts = optionsLane(ctx.options, lastClose, Date.now());
 
     var shape = dayShape(candles, tf.barSec);
 
@@ -543,6 +709,7 @@
         note: struct.note || 'no structure in play' },
       { id: 'levels', label: 'Room to run', score: lvl.score, weight: W.levels, note: lvl.note, hasData: lvl.hasData },
       { id: 'flow', label: 'Flows and breadth', score: flow.score, weight: W.flow, note: flow.note, hasData: flow.hasData },
+      { id: 'options', label: 'Options positioning', score: opts.score, weight: W.options, note: opts.note, hasData: opts.hasData },
     ];
 
     /* Lanes with no data must not drag the bias toward zero. Renormalise over
@@ -594,7 +761,8 @@
        behave instead of following one arbitrary curve. */
     var newsPart = (nAll.score * W.news + glob.score * W.global) / wsum;
     var evenPart = (seasonal.score * W.seasonal + mom.score * W.momentum +
-                    lvl.score * W.levels + flow.score * W.flow) / wsum;
+                    lvl.score * W.levels + flow.score * W.flow +
+                    opts.score * W.options) / wsum;
     var structPart = (struct.score * W.structure) / wsum;
 
     var horizonSigma = sigmaBlend * Math.sqrt(bars);
@@ -626,22 +794,73 @@
       drift: function (k, frac, t) {
         var newsDecay = 1 - Math.pow(0.5, k / newsHalfBars);   // front-loaded
         var structRamp = Math.pow(frac, 1.4);                  // back-loaded
-        var d = (newsPart * newsDecay + evenPart * frac + structPart * structRamp) * scale;
+        var newsAt = newsPart * newsDecay * scale;
+        var evenAt = evenPart * frac * scale;
+        var structAt = structPart * structRamp * scale;
         // The clock's own average path, where there is enough history for it.
         // Four sessions of shape is an anecdote and twenty is a pattern, so the
         // contribution is scaled by how many sessions went into it rather than
         // trusted flat.
+        var shapeAt = 0;
         if (shape) {
           var sv = shape.at(t), s0 = shape.at(lastCandle.time);
           if (sv !== null && s0 !== null) {
-            d += (sv - s0) * 0.35 * core.clamp(shape.sessions / 15, 0.15, 1);
+            shapeAt = (sv - s0) * 0.35 * core.clamp(shape.sessions / 15, 0.15, 1);
           }
         }
-        return d;
+        return {
+          total: newsAt + evenAt + structAt + shapeAt,
+          /* The three timing groups and the clock term, plus how far each
+             timing curve has travelled by this bar. That second part is what
+             makes the hover worth reading: the same lane mix produces a
+             different push at 10:30 and at 15:15, and nothing on the page
+             showed that before. */
+          parts: {
+            news: newsAt, even: evenAt, struct: structAt, shape: shapeAt,
+            newsDecay: newsDecay, evenRamp: frac, structRamp: structRamp,
+          },
+        };
       },
     });
     var path = drawn.path, upper = drawn.upper, lower = drawn.lower,
         upper2 = drawn.upper2, lower2 = drawn.lower2;
+
+    /* ------------------------------------------------- per-bar attribution
+       Why the line is where it is, at every bar, not just at the end.
+
+       Each lane belongs to one timing group, and the group's curve says how
+       much of that lane's push has landed by bar k: news decays so it arrives
+       early, the even group accrues linearly, a structure target ramps in late
+       because the break needs time to happen. So a lane's contribution at bar
+       k is its share of the bias times its group's curve at k, and those sum
+       exactly to the drift the band was drawn with.
+
+       Computed once here rather than in the chart, because the chart drawing
+       its own version of this is how build() and calibrate() drifted apart. */
+    var GROUP_OF = { news: 'news', global: 'news', structure: 'struct',
+                     seasonal: 'even', momentum: 'even', levels: 'even', flow: 'even',
+                     options: 'even' };
+    var attribution = drawn.detail.map(function (d) {
+      var curve = { news: d.parts.newsDecay, even: d.parts.evenRamp,
+                    struct: d.parts.structRamp, shape: 1 };
+      var laneParts = lanes.filter(function (l) { return l.hasData; }).map(function (l) {
+        var g = GROUP_OF[l.id] || 'even';
+        return { id: l.id, label: l.label, group: g,
+                 pct: r3(l.contribution * curve[g] * scale),
+                 note: l.note, arrived: Math.round(curve[g] * 100) };
+      }).filter(function (l) { return Math.abs(l.pct) >= 0.0005; })
+        .sort(function (a, b) { return Math.abs(b.pct) - Math.abs(a.pct); });
+
+      return {
+        time: d.time, bar: d.bar,
+        label: timeLabel(d.time, tf.barSec),
+        driftPct: d.driftPct, rawPct: d.rawPct,
+        cappedPct: d.cappedPct, temperPct: d.temperPct,
+        sdPct: d.sdPct, profileMult: d.profileMult, pUp: d.pUp,
+        shapePct: r3(d.parts.shape),
+        lanes: laneParts,
+      };
+    });
 
     /* ------------------------------------------------- historical analogue
        A drift formula draws a smooth line because it is a smooth formula. Here
@@ -816,6 +1035,7 @@
       intradayProfile: vp.intraday,
       dayShapeSessions: shape ? shape.sessions : 0,
       lanes: lanes,
+      attribution: attribution,
       path: path, upper: upper, lower: lower, upper2: upper2, lower2: lower2,
       pathNews: pathNews, pathPattern: pathPattern, components: componentSummary,
       analog: analog,
@@ -825,6 +1045,7 @@
       rsi: snap ? snap.rsi : null,
       structure: struct.target || null,
       globalParts: glob.parts || [],
+      options: opts.hasData ? opts : null,
       narrative: narrate(direction, lanes, nAll, checkpoints, lastClose),
       generatedAt: Date.now(),
     };
@@ -1259,6 +1480,7 @@
   }
   /* ------------------------------------------------------------- helpers */
   function r2(n) { return Math.round(n * 100) / 100; }
+  function r3(n) { return Math.round(n * 1000) / 1000; }
   function stdev(a) {
     if (!a || a.length < 2) return 0;
     var m = a.reduce(function (s, x) { return s + x; }, 0) / a.length;
@@ -1280,7 +1502,9 @@
     build: build, calibrate: calibrate,
     newsLane: newsLane, seasonalLane: seasonalLane, momentumLane: momentumLane,
     globalLane: globalLane, levelsLane: levelsLane, flowLane: flowLane,
+    optionsLane: optionsLane,
     volProfile: volProfile, dayShape: dayShape, ncdf: ncdf,
     bandPath: bandPath, volContext: volContext, advance: advance,
+    setHolidays: setHolidays, isClosed: isClosed,
   };
 })(window.KT);
