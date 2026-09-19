@@ -1,0 +1,1 @@
+{"generated_at":1789835678,"keep_days":90,"days":[{"day":"2026-09-18","count":1572,"bytes":200449},{"day":"2026-09-19","count":1872,"bytes":228982}],"total_bytes":429431,"note":"Compact per-day archive of scored headlines. Only the fields newsLane() reads are kept. Exists so the news lane can eventually be backtested; it cannot be today."}

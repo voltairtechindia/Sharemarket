@@ -1,0 +1,1 @@
+{"generated_at":"2026-09-19T06:11:14+00:00","keep_days":90,"days":[{"day":"2026-09-19","bytes":255}],"note":"Per-run option-chain summaries. Exists so optionsLane can eventually be backtested; it cannot be today."}

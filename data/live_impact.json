@@ -1,0 +1,55 @@
+{
+  "updated_at": "2026-09-14 16:39:24",
+  "market": {
+    "nifty_spot": 23398.1,
+    "banknifty_spot": 56606.55
+  },
+  "industry_news_impact": [
+    {
+      "news": "SBI aims DPDP compliance; banking regulations loosening",
+      "industry": "Banking",
+      "sentiment": "positive",
+      "impact_level": "medium",
+      "predicted_move_nifty": "+0.15%",
+      "predicted_move_bank": "+0.40%",
+      "updated_at": "2026-09-14 16:39:24"
+    },
+    {
+      "news": "IT sector sees new AI contracts from US clients",
+      "industry": "IT / Pharma",
+      "sentiment": "positive",
+      "impact_level": "low",
+      "predicted_move_nifty": "+0.08%",
+      "predicted_move_bank": "+0.02%",
+      "updated_at": "2026-09-14 16:39:24"
+    },
+    {
+      "news": "Oil prices surge on Middle East supply concerns",
+      "industry": "Oil / Refineries",
+      "sentiment": "negative",
+      "impact_level": "high",
+      "predicted_move_nifty": "-0.22%",
+      "predicted_move_bank": "0.00%",
+      "updated_at": "2026-09-14 16:39:24"
+    },
+    {
+      "news": "Auto sales up 12% in Aug; capital goods orders rise",
+      "industry": "Auto / Capital Goods",
+      "sentiment": "positive",
+      "impact_level": "medium",
+      "predicted_move_nifty": "+0.18%",
+      "predicted_move_bank": "+0.05%",
+      "updated_at": "2026-09-14 16:39:24"
+    },
+    {
+      "news": "Power generation hits record; grid stability improves",
+      "industry": "Power / Energy",
+      "sentiment": "positive",
+      "impact_level": "low",
+      "predicted_move_nifty": "+0.05%",
+      "predicted_move_bank": "+0.10%",
+      "updated_at": "2026-09-14 16:39:24"
+    }
+  ],
+  "news_source": "RSS feeds — Indian (Moneycontrol, ET, Reuters India) + International (Reuters Global, Yahoo Finance)"
+}
