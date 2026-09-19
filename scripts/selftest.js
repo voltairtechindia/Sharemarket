@@ -29,8 +29,12 @@ const path = require('path');
 const vm = require('vm');
 
 const ROOT = path.resolve(__dirname, '..');
+/* Load order matters and mirrors index.html. data.js is here because the JS
+   option-chain summariser lives in it and has to be checked against the Python
+   one. */
 const MODULES = ['config', 'core', 'indicators', 'levels', 'patterns',
-                 'structures', 'analogs', 'vol', 'forecast', 'ledger'];
+                 'structures', 'journal', 'portfolio', 'data', 'analogs',
+                 'vol', 'forecast', 'ledger'];
 
 let pass = 0, fail = 0;
 function ok(name, cond, detail) {
@@ -66,6 +70,12 @@ function loadKT() {
     createElement: stub, addEventListener() {}, body: stub(), documentElement: stub(),
   };
   sb.addEventListener = () => {};
+  /* data.js builds a DOMParser at module scope for the RSS lane. Nothing in
+     this suite parses XML, so a stub that refuses is enough and keeps the file
+     dependency-free - pulling in jsdom to test arithmetic would be absurd. */
+  sb.DOMParser = function () {
+    this.parseFromString = () => { throw new Error('XML parsing is not exercised by selftest'); };
+  };
   sb.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
   sb.setTimeout = setTimeout; sb.clearTimeout = clearTimeout;
   sb.fetch = () => Promise.reject(new Error('no network in selftest'));
@@ -236,6 +246,20 @@ section('FORECAST — the clock');
   } else {
     ok('holiday list present (run scripts/fetch_events.py to exercise this)', true, 'skipped, no data/events.json');
   }
+  /* The header used to read LIVE on Diwali: marketState() knew about weekends
+     and nothing else. One table in core now serves both it and the clock. */
+  if (holidays.length) {
+    const hol = holidays.find(h => h.date > '2026-01-01') || holidays[0];
+    const parts = hol.date.split('-').map(Number);
+    // 12:00 IST on a holiday = 06:30 UTC, squarely inside regular hours
+    const noonIst = Date.UTC(parts[0], parts[1] - 1, parts[2], 6, 30, 0);
+    const st = KT.core.marketState(noonIst);
+    ok('marketState reports a trading holiday as closed',
+       st.live === false && st.holiday === true, `${hol.date} -> ${st.label}`);
+    const openDay = KT.core.marketState(Date.UTC(2026, 8, 18, 6, 30, 0)); // Fri 18 Sep
+    ok('an ordinary weekday is still live', openDay.live === true, openDay.label);
+  }
+
   KT.forecast.setHolidays([]);
   ok('with no holiday list the clock still avoids weekends',
      (() => {
@@ -257,12 +281,86 @@ section('FORECAST — options lane');
   } else {
     ok('option chain present (run scripts/fetch_options.py to exercise this)', true, 'skipped');
   }
+  // a live chain must say so; a workflow one must print its age instead
+  {
+    const base = { ok: true, pcrOi: 1.1, pcrChgOi: 2.0, spot: 23000,
+                   resistance: [{ strike: 23200, distPct: 0.9 }],
+                   support: [{ strike: 22800, distPct: -0.9 }] };
+    const now = Date.now();
+    const live = KT.forecast.optionsLane(
+      Object.assign({}, base, { origin: 'browser', generated_at: new Date(now).toISOString() }), 23000, now);
+    const old = KT.forecast.optionsLane(
+      Object.assign({}, base, { origin: 'workflow', generated_at: new Date(now - 130 * 60000).toISOString() }), 23000, now);
+    ok('a live chain is labelled live', /\(live\)/.test(live.note), live.note.slice(-30));
+    ok('a workflow chain prints its age instead', /ago\)/.test(old.note), old.note.slice(-30));
+  }
+
+  // breadth divergence must move the flow lane and be bounded
+  {
+    const flat = KT.forecast.flowLane({ breadth: { advances: 25, declines: 25 } });
+    const broad = KT.forecast.flowLane({ breadth: { advances: 25, declines: 25 }, breadthDivergence: 0.24 });
+    const narrow = KT.forecast.flowLane({ breadth: { advances: 25, declines: 25 }, breadthDivergence: -0.24 });
+    ok('midcap breadth divergence moves the flow lane',
+       broad.score > flat.score && narrow.score < flat.score,
+       `flat=${flat.score.toFixed(3)} broad=${broad.score.toFixed(3)} narrow=${narrow.score.toFixed(3)}`);
+    ok('flow lane stays bounded on an extreme divergence',
+       Math.abs(KT.forecast.flowLane({ breadth: { advances: 50, declines: 0 }, breadthDivergence: 9 }).score) <= 1);
+  }
+
   [null, { ok: false }, { ok: true }, { ok: true, pcrOi: 0, pcrChgOi: -1 }].forEach((p, i) => {
     let threw = null, r = null;
     try { r = KT.forecast.optionsLane(p, 23000, Date.now()); } catch (e) { threw = e.message; }
     ok(`malformed option payload #${i + 1} is handled`, !threw && r && r.hasData === false,
        threw ? 'THREW ' + threw : '');
   });
+}
+
+section('DATA — JS/Python parity on the option chain');
+{
+  const fx = readJSON('references/fixtures/option-chain-nifty.json', null);
+  if (!fx) {
+    ok('option-chain fixture present', true, 'skipped - references/fixtures/option-chain-nifty.json missing');
+  } else {
+    const js = KT.data.summariseChain(fx.rows, fx.spot);
+    const py = fx.expected;
+    ok('JS summariser returns a summary', !!js);
+    if (js) {
+      /* Exact on counts and strikes; a hair of tolerance on the rounded ratios,
+         because Python's round() is banker's rounding and JS Math.round is
+         half-up, so a value landing exactly on .5 at the last kept digit can
+         differ by one unit in that digit. Anything larger is a real divergence. */
+      const exact = ['strikes', 'totalCeOi', 'totalPeOi', 'ceChgOi', 'peChgOi',
+                     'maxPain', 'atmStrike'];
+      exact.forEach(k => ok(`  ${k} matches exactly`, js[k] === py[k], `js=${js[k]} py=${py[k]}`));
+
+      const near = ['pcrOi', 'pcrChgOi', 'maxPainPct', 'atmIv', 'otmPutIv', 'otmCallIv', 'ivSkew'];
+      near.forEach(k => {
+        const a = js[k], b = py[k];
+        const same = (a === null && b === null) ||
+                     (typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) <= 0.011);
+        ok(`  ${k} matches`, same, `js=${a} py=${b}`);
+      });
+
+      ['resistance', 'support'].forEach(k => {
+        const a = js[k] || [], b = py[k] || [];
+        const same = a.length === b.length &&
+                     a.every((w, i) => w.strike === b[i].strike && w.oi === b[i].oi);
+        ok(`  ${k} walls match`, same,
+           `js=${a.map(w => w.strike).join('/')} py=${b.map(w => w.strike).join('/')}`);
+      });
+
+      // and the lane must score the JS summary the same way it scores the Python one
+      const now = Date.now();
+      js.generated_at = new Date(now).toISOString();
+      py.generated_at = new Date(now).toISOString();
+      py.ok = true; py.spot = fx.spot; py.expiry = fx.expiry;
+      js.ok = true; js.expiryDays = py.expiryDays = 2;
+      const lj = KT.forecast.optionsLane(js, fx.spot, now + 60000);
+      const lp = KT.forecast.optionsLane(py, fx.spot, now + 60000);
+      ok('  optionsLane scores both identically',
+         Math.abs(lj.score - lp.score) < 1e-6, `js=${lj.score.toFixed(6)} py=${lp.score.toFixed(6)}`);
+    }
+  }
 }
 
 section('FORECAST — calibration');

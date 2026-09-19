@@ -231,17 +231,44 @@ intraday.
 | Max pain | the strike writers pay out least at; scaled by closeness to expiry, near zero a week out | 0.20 |
 | Open-interest walls | room to the nearest *positioning* wall, which often disagrees with the price wall | 0.15 |
 
-Two honest limits. The lane carries **0.10** of the model — the seven existing
-weights were scaled by 0.9 to make room rather than re-argued — and that number
-is a judgement like every other weight in `config.js`, because nothing has been
-fitted yet. And NSE answers with `Access-Control-Allow-Origin: beta.nseindia.com`,
-so the browser cannot fetch it: this arrives through the workflow and is hours
-old by construction. The lane drops itself past four hours rather than voting on
-positioning that has since moved.
+**It is live in the browser, not hours old.** NSE answers with
+`Access-Control-Allow-Origin: beta.nseindia.com`, so a direct fetch fails — but
+the proxy chain already in the repo carries it, measured at about 1.7 seconds
+for the full 206 KB chain from a real page origin. It polls every three minutes
+while the market is open. That matters more than any additional feed would: the
+chain's fastest signal is *who is writing options today*, and at the workflow's
+measured ~2.5 hour cadence that number was noise. The workflow copy is still
+fetched and is still the fallback; the lane prints `(live)` or the age, and the
+Data Lanes panel shows `live` or `workflow`.
+
+One honest limit remains: the lane carries **0.10** of the model — the seven
+existing weights were scaled by 0.9 to make room rather than re-argued — and
+that number is a judgement like every other weight in `config.js`, because
+nothing has been fitted yet.
 
 `data/options_archive/` starts recording a row per run, for the same reason the
 news archive does: the lane votes and cannot be replayed, so `calibrate()` will
 stay silent about it forever unless the record starts now.
+
+### Market internals, one request
+
+`allIndices` returns 139 index rows, and three things in it were arriving late
+or not at all:
+
+- **NIFTY 50 breadth** — the flow lane votes on advances against declines, and
+  it was reaching the page only through the workflow, so an intraday forecast
+  was reading a count from hours earlier.
+- **India VIX** — live. The Yahoo quote rate-limits (429), and when it failed
+  the code was assigning `null`, silently dropping the forward-looking half of
+  the variance blend with nothing on screen to say so.
+- **Breadth divergence** — midcap against large-cap. Measured on one live
+  payload: NIFTY 50 at 26 up / 24 down while NIFTY MIDCAP 100 was 71 up / 28
+  down. An index carried by a few heavyweights while the broad market sags is a
+  different tape from one where everything participates, and the headline
+  advance/decline count cannot tell them apart. It is weighted lightly — it is a
+  genuine read and also the newest thing in the lane, with no measured record.
+
+One call serving all three, because the proxy hop is shared and rate-limited.
 
 ### The exchange actually closes sometimes
 

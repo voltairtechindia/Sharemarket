@@ -41,6 +41,7 @@
     global: null,           // overnight cues from the workflow
     flows: null,            // breadth, FII and DII
     options: null,          // option chain: PCR, max pain, OI walls
+    internals: null,        // live breadth, VIX and midcap divergence
     events: null,           // NSE trading holidays + scheduled global releases
     vix: null,
     alertsOpen: false,
@@ -89,6 +90,9 @@
           data.loadBaked(C.baked.flows).then(function (f) { S.flows = f; }).catch(noop),
           data.loadBaked(C.baked.options).then(function (o) { S.options = o; }).catch(noop),
           data.loadBaked(C.baked.events).then(applyEvents).catch(noop),
+          // The workflow copies above are the fallback; these try for live ones.
+          refreshOptionChain(),
+          refreshInternals(),
           // The universe is what turns "RELIANCE" into "Reliance Industries"
           // for headline matching, so it has to land before the first scan.
           data.loadBaked(C.baked.universe).then(function (u) { KT.portfolio.setUniverse(u); fillUniverseList(); }).catch(noop),
@@ -394,8 +398,19 @@
     S.structures = KT.structures.detect(S.candles);
     S.structureStats = KT.structures.outcomes(S.candles);
 
+    /* India VIX, best source first. NSE's allIndices carries it live and is
+       already being fetched for breadth, so it costs nothing extra; the Yahoo
+       quote is the fallback and rate-limits (429) often enough that it cannot
+       be the only source.
+
+       The previous line assigned null whenever the quote was missing, which
+       silently threw away a live value this function had already been handed -
+       the band then fell back to realised vol alone with no indication that the
+       forward-looking half had gone. Keep the last good number instead. */
     var vixQuote = S.quotes && S.quotes.INDIAVIX;
-    S.vix = vixQuote && vixQuote.price ? vixQuote.price : null;
+    var vixLive = S.internals && S.internals.vix;
+    var vixNext = vixLive || (vixQuote && vixQuote.price) || S.vix || null;
+    S.vix = vixNext;
 
     S.forecast = engine.buildForecast({
       candles: S.candles,
@@ -435,6 +450,67 @@
     updateLedger(news);
     maybeCalibrate();
     maybeEnrichNarrative();
+  }
+
+  /* --------------------------------------------------- live market internals
+
+     Breadth, India VIX and the midcap-against-large-cap divergence, from one
+     request. Breadth used to arrive only through the workflow, so the flow lane
+     was voting on a count that could be hours old during the session it was
+     meant to describe.
+
+     Everything here is an override on top of the workflow copies, never a
+     replacement for them: a throttled proxy leaves the older-but-real numbers
+     in place rather than blanking three lanes at once. */
+  function refreshInternals() {
+    if (!KT.data.getMarketInternals) return Promise.resolve(false);
+    var ms = core.marketState();
+    if (ms && !ms.live && S.internals) return Promise.resolve(false);
+
+    return KT.data.getMarketInternals().then(function (m) {
+      if (!m) return false;
+      S.internals = m;
+      if (m.vix) S.vix = m.vix;
+      if (m.breadth || m.breadthDivergence != null) {
+        S.flows = S.flows || {};
+        if (m.breadth) { S.flows.breadth = m.breadth; S.flows.breadthOrigin = 'browser'; }
+        if (m.breadthDivergence != null) S.flows.breadthDivergence = m.breadthDivergence;
+      }
+      recompute();
+      return true;
+    }).catch(function () { return false; });
+  }
+
+  /* ------------------------------------------------------ live option chain
+
+     The option chain is the only forward-looking input in the model and it used
+     to arrive only through the workflow, which CLAUDE.md measured at roughly one
+     run every two and a half hours. At that age its fastest signal - who is
+     writing options today - is noise. Measured from a real page origin, the
+     proxy returns the full chain in about 1.7 seconds, so the browser can have
+     it live and does.
+
+     The workflow copy is still loaded and still the fallback. A browser result
+     only replaces it when it actually parses, so a throttled proxy or a shut
+     exchange leaves the lane on the older-but-real number rather than blanking
+     it. Which one is in play is recorded on the payload, and the lane prints
+     the age, because "live" and "from this morning" are different claims. */
+  function refreshOptionChain() {
+    if (!KT.data.getOptionChain) return Promise.resolve(false);
+    // Nothing moves while the exchange is shut, and every call costs a trip
+    // through a shared public proxy that rate-limits.
+    var ms = core.marketState();
+    var haveLive = S.options && S.options.origin === 'browser';
+    if (ms && !ms.live && haveLive) return Promise.resolve(false);
+
+    return KT.data.getOptionChain(S.symbol === 'SENSEX' ? 'NIFTY' : 'NIFTY')
+      .then(function (live) {
+        if (!live) return false;
+        S.options = live;
+        recompute();
+        return true;
+      })
+      .catch(function () { return false; });
   }
 
   /* The exchange calendar. Until this landed, advance() knew about weekends
@@ -525,6 +601,8 @@
     S.timers.baked = setInterval(function () { refreshBaked().then(recompute); }, C.poll.bakedMs);
     S.timers.candles = setInterval(function () { refreshCandles().then(recompute).catch(noop); }, 300000);
     S.timers.others = setInterval(refreshOtherQuotes, 30000);
+    S.timers.options = setInterval(refreshOptionChain, C.poll.optionsMs);
+    S.timers.internals = setInterval(refreshInternals, C.poll.internalsMs);
     // Holdings outside the workflow universe are priced on their own slower
     // timer, because each one costs a trip through the shared public proxy.
     S.timers.holdings = setInterval(function () {
@@ -2186,6 +2264,13 @@
     });
   }
 
+  function ageLabel(iso) {
+    var ms = Date.now() - Date.parse(iso || '');
+    if (!isFinite(ms)) return 'age unknown';
+    var min = Math.round(ms / 60000);
+    return min < 90 ? min + ' min old' : Math.round(min / 60) + 'h old';
+  }
+
   function renderLanes() {
     var box = el('source-lanes');
     if (!box) return;
@@ -2212,6 +2297,29 @@
       { k: 'Fast news', st: fastState, hint: C.directFeeds.length + ' feeds your browser can read directly, every ' + Math.round(S.settings.newsMs / 1000) + 's' },
       { k: 'Deep news', id: null, hint: 'GitHub Actions fetches all ' + (S.feedsTotal || '') + ' feeds a run, where CORS does not apply' },
       { k: 'Model', id: 'openrouter', hint: S.settings.key ? S.settings.model : 'no key set — using the local rule engine' },
+      /* The two browser-side NSE lanes. Both have a workflow fallback, so
+         "unavailable" here means the lane is running on the older copy rather
+         than that it is dead - the distinction matters and the state text says
+         which. A lane the panel does not show is a lane nobody checks. */
+      {
+        k: 'Option chain',
+        st: S.options
+          ? { ok: S.options.origin === 'browser',
+              note: S.options.origin === 'browser'
+                ? 'live via ' + (S.options.via || 'proxy')
+                : 'workflow copy, ' + ageLabel(S.options.generated_at) }
+          : null,
+        stale: S.options && S.options.origin !== 'browser',
+        hint: 'NSE option chain: PCR, max pain, OI walls. Browser-side through the proxy, workflow copy as fallback',
+      },
+      {
+        k: 'Market internals',
+        st: S.internals
+          ? { ok: true, note: 'breadth, VIX and midcap divergence, live via ' + (S.internals.via || 'proxy') }
+          : null,
+        stale: !S.internals,
+        hint: 'NSE allIndices: NIFTY 50 breadth, India VIX and midcap-vs-large-cap breadth, one call',
+      },
     ];
     box.innerHTML = '';
     lanes.forEach(function (lane) {
@@ -2222,8 +2330,11 @@
       row.title = lane.hint + (st && st.note ? ' · ' + st.note : '');
       var k = document.createElement('span'); k.className = 'muted'; k.textContent = lane.k;
       var v = document.createElement('span');
-      v.className = 'src-state ' + (st ? (st.ok ? 'up' : 'down') : 'muted');
-      v.textContent = st ? (st.ok ? 'live' : 'unavailable') : 'idle';
+      // A lane running on its workflow fallback is not "unavailable" - it has
+      // data, just older data - so it reads "workflow" rather than red.
+      var fallback = lane.stale && st && !st.ok;
+      v.className = 'src-state ' + (st ? (st.ok ? 'up' : (fallback ? 'muted' : 'down')) : 'muted');
+      v.textContent = st ? (st.ok ? 'live' : (fallback ? 'workflow' : 'unavailable')) : 'idle';
       row.appendChild(k); row.appendChild(v);
       box.appendChild(row);
     });

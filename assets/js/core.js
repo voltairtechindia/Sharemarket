@@ -57,11 +57,41 @@
   };
 
   /* -------------------------------------------------------- market session */
+  /* Trading holidays, keyed YYYY-MM-DD in IST, from NSE's holiday-master via
+     scripts/fetch_events.py. They live in core rather than in forecast.js
+     because two different things need them and core is what loads first: the
+     projection clock, so a daily forecast does not step onto a closed session,
+     and marketState() right here - without it the header reads LIVE on Diwali.
+
+     Empty until app.js supplies them, and empty means weekends-only, which is
+     exactly the behaviour that existed before the feed was found. */
+  var HOLIDAYS = {};
+  function setHolidays(list) {
+    HOLIDAYS = {};
+    (list || []).forEach(function (h) {
+      var key = typeof h === 'string' ? h : (h && h.date);
+      if (key) HOLIDAYS[key] = (h && h.name) || true;
+    });
+    return Object.keys(HOLIDAYS).length;
+  }
+  function holidayKey(d) {
+    return d.getFullYear() + '-' +
+           ('0' + (d.getMonth() + 1)).slice(-2) + '-' +
+           ('0' + d.getDate()).slice(-2);
+  }
+  function holidayName(d) { return HOLIDAYS[holidayKey(d)] || null; }
+  function isHoliday(d) { return !!HOLIDAYS[holidayKey(d)]; }
+
   function marketState(now) {
     var d = fmt.ist(now ? now / 1000 : undefined);
     var mins = d.getHours() * 60 + d.getMinutes();
     var isWeekday = C.market.weekdays.indexOf(d.getDay()) !== -1;
     if (!isWeekday) return { state: 'closed', label: 'Weekend', live: false, ist: d };
+    var hol = holidayName(d);
+    if (hol) {
+      return { state: 'closed', live: false, ist: d, holiday: true,
+               label: typeof hol === 'string' ? hol : 'Trading holiday' };
+    }
     if (mins >= C.market.preOpen.from && mins < C.market.preOpen.to) return { state: 'pre', label: 'Pre-open', live: true, ist: d };
     if (mins >= C.market.regular.from && mins <= C.market.regular.to) return { state: 'live', label: 'Live', live: true, ist: d };
     if (mins < C.market.preOpen.from) return { state: 'closed', label: 'Pre-market', live: false, ist: d };
@@ -244,6 +274,7 @@
 
   KT.core = {
     fmt: fmt, marketState: marketState, store: store, deriveBarSec: deriveBarSec,
+    setHolidays: setHolidays, isHoliday: isHoliday, holidayName: holidayName,
     setLexicon: setLexicon, score: score, isNoise: isNoise, sectorOf: sectorOf, keyOf: keyOf,
     hasLexicon: function () { return !!lexicon; },
     el: el, text: text, cls: cls, clamp: clamp, mean: mean, stdev: stdev, debounce: debounce,

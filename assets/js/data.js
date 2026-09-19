@@ -463,9 +463,231 @@
       .catch(function (e) { mark('longhistory', false, String(e.message || e)); throw e; });
   }
 
+  /* ==================================================== market internals
+
+     One request, several lanes. NSE's /api/allIndices carries 139 index rows,
+     and among them are three things this page was getting late or not at all:
+
+       breadth            advances and declines for NIFTY 50, which the flow
+                          lane votes on and which arrived through the workflow,
+                          so it was hours old on an intraday forecast
+       India VIX          live, rather than the Yahoo quote which rate-limits
+       breadth divergence midcap against large-cap. Measured on one live
+                          payload: NIFTY 50 was 26 up / 24 down while NIFTY
+                          MIDCAP 100 was 71 up / 28 down. A tape where the
+                          broad market is much stronger than the headline index
+                          is a different tape, and nothing here could see it.
+
+     Going through the proxy costs a shared, rate-limited hop, so it is one call
+     serving all three rather than three calls. Resolves null on any failure -
+     the workflow copies stay in place, which is what the page ran on before. */
+  function getMarketInternals() {
+    return fetchJSONVia(C.endpoints.nseAllIndices, { proxyOnly: true, skipRss2json: true, timeout: 16000 })
+      .then(function (res) {
+        var payload = (res && res.data) || {};
+        var rows = payload.data || [];
+        if (!rows.length) return null;
+        var by = {};
+        rows.forEach(function (r) { if (r && r.index) by[r.index] = r; });
+
+        function breadthOf(name) {
+          var r = by[name];
+          if (!r) return null;
+          var a = r.advances == null ? null : +r.advances;
+          var d = r.declines == null ? null : +r.declines;
+          if (a == null || d == null || (a + d) <= 0) return null;
+          return { advances: a, declines: d, unchanged: +(r.unchanged || 0),
+                   ratio: r3(a / (a + d)) };
+        }
+
+        var nifty = breadthOf('NIFTY 50');
+        var mid = breadthOf('NIFTY MIDCAP 100');
+        var vixRow = by['INDIA VIX'];
+        var n50 = by['NIFTY 50'];
+
+        var out = {
+          origin: 'browser',
+          generated_at: new Date().toISOString(),
+          via: res.via,
+          source: 'nseindia.com/api/allIndices via ' + res.via,
+          breadth: nifty,
+          midcapBreadth: mid,
+          // Positive: the broad market is carrying more of the tape than the
+          // headline index is. Negative: the index is being held up by a few
+          // large names, which is the weaker version of the same print.
+          breadthDivergence: (nifty && mid) ? r3(mid.ratio - nifty.ratio) : null,
+          vix: vixRow && vixRow.last ? +vixRow.last : null,
+          vixChangePct: vixRow && vixRow.percentChange != null ? +vixRow.percentChange : null,
+          last: n50 && n50.last ? +n50.last : null,
+          previousClose: n50 && n50.previousClose ? +n50.previousClose : null,
+          pe: n50 && n50.pe ? +n50.pe : null,
+          sectors: rows.filter(function (r) {
+            return r && /^NIFTY (IT|BANK|AUTO|PHARMA|FMCG|METAL|REALTY|ENERGY)$/.test(r.index) &&
+                   r.percentChange != null;
+          }).map(function (r) {
+            return { index: r.index, changePct: +r.percentChange };
+          }).sort(function (a, b) { return b.changePct - a.changePct; }),
+        };
+        return (out.breadth || out.vix) ? out : null;
+      })
+      .catch(function () { return null; });
+  }
+
+  /* ====================================================== live option chain
+
+     The option chain is the only forward-looking input in the model, and until
+     now it reached the page through the workflow - which CLAUDE.md measured at
+     roughly one run every two and a half hours. Max pain and the OI walls
+     survive that. "Who is writing options today" does not; it is the fastest
+     signal the chain carries and it was arriving stale enough to be noise.
+
+     Measured from a real page origin: a direct fetch fails in 126ms ("Failed to
+     fetch" - NSE sends Access-Control-Allow-Origin: beta.nseindia.com), and
+     r.jina.ai returns the full 206 KB chain in about 1.7 seconds. allorigins
+     times out. So the browser can have this live, and does.
+
+     summariseChain() below deliberately mirrors summarise() in
+     scripts/fetch_options.py field for field. Two implementations of the same
+     arithmetic is exactly the shape of bug this repo keeps finding, so
+     scripts/selftest.js runs both over one stored chain and asserts they agree
+     rather than trusting that they do. */
+  var OPTION_WINDOW_PCT = 6.0;
+
+  function summariseChain(rows, spot) {
+    if (!rows || !rows.length || !spot) return null;
+
+    var lo = spot * (1 - OPTION_WINDOW_PCT / 100), hi = spot * (1 + OPTION_WINDOW_PCT / 100);
+    var near = rows.filter(function (r) {
+      return r && r.strikePrice && r.strikePrice >= lo && r.strikePrice <= hi;
+    });
+    // Too thin a window says more about the strike ladder than about the book.
+    if (near.length < 8) near = rows.filter(function (r) { return r && r.strikePrice; });
+    if (!near.length) return null;
+
+    function leg(r, side) { return r[side] || {}; }
+    function sum(side, field) {
+      return near.reduce(function (t, r) { return t + (leg(r, side)[field] || 0); }, 0);
+    }
+    var ceOi = sum('CE', 'openInterest'), peOi = sum('PE', 'openInterest');
+    var ceChg = sum('CE', 'changeinOpenInterest'), peChg = sum('PE', 'changeinOpenInterest');
+
+    // Max pain: the strike at which writers pay out least, over the same window.
+    var bestStrike = null, bestPain = null;
+    near.forEach(function (a) {
+      var k = a.strikePrice, pain = 0;
+      near.forEach(function (b) {
+        var kb = b.strikePrice;
+        pain += (leg(b, 'CE').openInterest || 0) * Math.max(0, k - kb);
+        pain += (leg(b, 'PE').openInterest || 0) * Math.max(0, kb - k);
+      });
+      if (bestPain === null || pain < bestPain) { bestStrike = k; bestPain = pain; }
+    });
+
+    function walls(side, above) {
+      return near.filter(function (r) {
+        return above ? r.strikePrice > spot : r.strikePrice < spot;
+      }).sort(function (a, b) {
+        return (leg(b, side).openInterest || 0) - (leg(a, side).openInterest || 0);
+      }).slice(0, 3).map(function (r) {
+        return {
+          strike: r.strikePrice,
+          oi: leg(r, side).openInterest || 0,
+          chgOi: leg(r, side).changeinOpenInterest || 0,
+          distPct: r2((r.strikePrice - spot) / spot * 100),
+        };
+      });
+    }
+
+    var atm = near.reduce(function (best, r) {
+      return Math.abs(r.strikePrice - spot) < Math.abs(best.strikePrice - spot) ? r : best;
+    }, near[0]);
+    var atmCe = leg(atm, 'CE').impliedVolatility || 0, atmPe = leg(atm, 'PE').impliedVolatility || 0;
+
+    function meanIv(pool, side) {
+      var vals = pool.map(function (r) { return leg(r, side).impliedVolatility; })
+                     .filter(function (v) { return v && v > 0; });
+      if (!vals.length) return null;
+      return r2(vals.reduce(function (a, b) { return a + b; }, 0) / vals.length);
+    }
+    var putIv = meanIv(near.filter(function (r) { return r.strikePrice < spot * 0.98; }), 'PE');
+    var callIv = meanIv(near.filter(function (r) { return r.strikePrice > spot * 1.02; }), 'CE');
+
+    return {
+      strikes: near.length,
+      windowPct: OPTION_WINDOW_PCT,
+      totalCeOi: ceOi, totalPeOi: peOi,
+      pcrOi: ceOi ? r3(peOi / ceOi) : null,
+      ceChgOi: ceChg, peChgOi: peChg,
+      // Unstable when either side is small or negative, so only when both built.
+      pcrChgOi: (ceChg > 0 && peChg > 0) ? r3(peChg / ceChg) : null,
+      maxPain: bestStrike,
+      maxPainPct: bestStrike ? r3((bestStrike - spot) / spot * 100) : null,
+      resistance: walls('CE', true),
+      support: walls('PE', false),
+      atmStrike: atm.strikePrice,
+      atmIv: (atmCe || atmPe) ? r2((atmCe + atmPe) / 2) : null,
+      otmPutIv: putIv, otmCallIv: callIv,
+      ivSkew: (putIv && callIv) ? r2(putIv - callIv) : null,
+    };
+  }
+
+  function r2(n) { return Math.round(n * 100) / 100; }
+  function r3(n) { return Math.round(n * 1000) / 1000; }
+
+  /* Fetch the chain and summarise it. Resolves null rather than rejecting when
+     the proxy is throttled or NSE is shut, because the caller's correct
+     response is to keep the workflow copy, not to blank the lane. */
+  function getOptionChain(symbol) {
+    var sym = symbol || 'NIFTY';
+    return fetchJSONVia(C.endpoints.nseOptionInfo(sym), { proxyOnly: true, skipRss2json: true, timeout: 14000 })
+      .then(function (infoRes) {
+        var info = (infoRes && infoRes.data) || {};
+        var expiries = info.expiryDates || [];
+        if (!expiries.length) throw new Error('no expiry dates');
+        var expiry = expiries[0];
+        return fetchJSONVia(C.endpoints.nseOptionChain(sym, expiry),
+                            { proxyOnly: true, skipRss2json: true, timeout: 20000 })
+          .then(function (chainRes) {
+            var payload = (chainRes && chainRes.data) || {};
+            var rec = payload.records || {};
+            var rows = rec.data || [];
+            var spot = rec.underlyingValue;
+            var summary = summariseChain(rows, spot);
+            if (!summary) throw new Error('chain could not be summarised');
+            summary.ok = true;
+            summary.symbol = sym;
+            summary.spot = spot;
+            summary.expiry = expiry;
+            summary.expiriesAhead = expiries.slice(0, 4);
+            summary.expiryDays = daysToExpiry(expiry);
+            summary.chainTimestamp = rec.timestamp || null;
+            // The lane keys its staleness check off this, so it must be the
+            // moment the browser actually got the data.
+            summary.generated_at = new Date().toISOString();
+            summary.origin = 'browser';
+            summary.via = chainRes.via;
+            summary.source = 'nseindia.com/api/option-chain-v3 via ' + chainRes.via;
+            return summary;
+          });
+      })
+      .catch(function () { return null; });
+  }
+
+  function daysToExpiry(expiry) {
+    var m = /^(\d{2})-([A-Za-z]{3})-(\d{4})$/.exec(expiry || '');
+    if (!m) return null;
+    var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    var mi = months.indexOf(m[2]);
+    if (mi < 0) return null;
+    var d = new Date(Date.UTC(+m[3], mi, +m[1], 10, 0, 0));   // 15:30 IST
+    return Math.max(0, Math.round((d.getTime() - Date.now()) / 86400000));
+  }
+
   KT.data = {
     fetchText: fetchText, fetchVia: fetchVia, fetchJSONVia: fetchJSONVia, loadBaked: loadBaked,
     getLongHistory: getLongHistory,
+    getOptionChain: getOptionChain, summariseChain: summariseChain,
+    getMarketInternals: getMarketInternals,
     getCandles: getCandles, getLiveQuote: getLiveQuote, getQuoteFallback: getQuoteFallback,
     fetchFastLane: fetchFastLane, mergeNews: mergeNews, adoptBakedNews: adoptBakedNews,
     restoreNews: restoreNews, getNews: getNews,

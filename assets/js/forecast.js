@@ -85,26 +85,14 @@
 
   function isWeekend(d) { return C.market.weekdays.indexOf(d.getDay()) === -1; }
 
-  /* Trading holidays, keyed YYYY-MM-DD in IST. Empty until app.js supplies
-     them, and every consumer below treats empty as "weekends only". */
-  var HOLIDAYS = {};
-  function setHolidays(list) {
-    HOLIDAYS = {};
-    (list || []).forEach(function (h) {
-      var key = typeof h === 'string' ? h : (h && h.date);
-      if (key) HOLIDAYS[key] = (h && h.name) || true;
-    });
-    return Object.keys(HOLIDAYS).length;
-  }
-  function dateKey(d) {
-    return d.getFullYear() + '-' +
-           ('0' + (d.getMonth() + 1)).slice(-2) + '-' +
-           ('0' + d.getDate()).slice(-2);
-  }
-  function isHoliday(d) { return !!HOLIDAYS[dateKey(d)]; }
+  /* The holiday table lives in core, because marketState() needs the same one
+     and core is what loads first. Keeping a second copy here would be two
+     tables to get out of step, which is the bug shape this repo keeps hitting.
+     setHolidays is re-exported below so callers have one obvious entry point. */
+  function setHolidays(list) { return core.setHolidays(list); }
   // One predicate for "the exchange is shut", so a caller cannot check one and
   // forget the other.
-  function isClosed(d) { return isWeekend(d) || isHoliday(d); }
+  function isClosed(d) { return isWeekend(d) || core.isHoliday(d); }
 
   function nextSessionOpen(epochSec) {
     var d = core.fmt.ist(epochSec);
@@ -373,7 +361,23 @@
     if (flows.breadth && (flows.breadth.advances + flows.breadth.declines) > 0) {
       var b = flows.breadth, tot = b.advances + b.declines;
       s += core.clamp((b.advances - b.declines) / tot / 0.5, -1, 1) * 0.5; w += 0.5;
-      bits.push(b.advances + ' advancing vs ' + b.declines + ' declining');
+      bits.push(b.advances + ' advancing vs ' + b.declines + ' declining' +
+                (flows.breadthOrigin === 'browser' ? ' (live)' : ''));
+    }
+
+    /* Midcap breadth against large-cap breadth. An index carried by a handful
+       of heavyweights while the broad market sags is a different tape from one
+       where everything is participating, and the headline advance/decline
+       count cannot tell them apart. Measured on one live payload: NIFTY 50 at
+       26 up / 24 down against NIFTY MIDCAP 100 at 71 up / 28 down.
+
+       Weighted lightly. It is a genuine read on risk appetite and it is also
+       the newest thing in this lane, with no measured record behind it. */
+    if (flows.breadthDivergence != null) {
+      s += core.clamp(flows.breadthDivergence / 0.25, -1, 1) * 0.15; w += 0.15;
+      bits.push('midcap breadth ' +
+                (flows.breadthDivergence > 0 ? 'stronger' : 'weaker') + ' than large-cap by ' +
+                Math.abs(Math.round(flows.breadthDivergence * 100)) + 'pts');
     }
     if (flows.fii && flows.fii.netCr != null) {
       s += core.clamp(flows.fii.netCr / 3000, -1, 1) * 0.3; w += 0.3;
@@ -474,14 +478,22 @@
 
     if (!w) return { score: 0, note: 'option chain carried no usable signal', hasData: false };
 
+    /* "Live" and "from this morning" are different claims and the panel must
+       not blur them. A browser-fetched chain is seconds old; the workflow copy
+       can be hours old, and the age is printed either way once it matters. */
     var note = bits.join(', ');
-    if (ageMin != null && ageMin > 60) note += ' (as of ' + Math.round(ageMin) + ' min ago)';
+    if (opt.origin === 'browser' && (ageMin == null || ageMin < 10)) {
+      note += ' (live)';
+    } else if (ageMin != null && ageMin > 10) {
+      note += ' (as of ' + (ageMin >= 90 ? Math.round(ageMin / 60) + 'h' : Math.round(ageMin) + ' min') + ' ago)';
+    }
     return {
       score: core.clamp(s / w, -1, 1), note: note, hasData: true,
       ageMin: ageMin == null ? null : Math.round(ageMin),
       pcrOi: opt.pcrOi, pcrChgOi: opt.pcrChgOi,
       maxPain: opt.maxPain, maxPainPct: opt.maxPainPct,
       ivSkew: opt.ivSkew, atmIv: opt.atmIv,
+      origin: opt.origin || 'workflow',
       resistance: up || null, support: dn || null,
     };
   }

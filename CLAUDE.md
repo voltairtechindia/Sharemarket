@@ -93,10 +93,31 @@ fine from the browser. Do not confuse the two when a Moneycontrol lane fails.
   removes the limitation `advance()` used to document: a daily projection that
   walked through Diwali put every later date one session wrong.
 
-Both answer with `Access-Control-Allow-Origin: beta.nseindia.com`, so **neither
-can be fetched from the browser.** They are workflow lanes and therefore as old
-as the last run. `optionsLane()` drops itself past four hours rather than voting
-on stale positioning; the holiday list does not care, because it changes yearly.
+Both answer with `Access-Control-Allow-Origin: beta.nseindia.com`, so a
+**direct** browser fetch fails — measured, "Failed to fetch" in 126 ms. But the
+proxy chain already in `config.js` carries them: `r.jina.ai` returns the full
+206 KB option chain from a real page origin in about 1.7 seconds. `allorigins`
+times out on it, and GDELT is blocked through every route.
+
+So both are browser lanes now, with the workflow copy as the fallback:
+
+- `data.getOptionChain()` — live chain, polled every 3 minutes while the market
+  is open. `optionsLane()` prints `(live)` or the age, and drops itself past
+  four hours either way.
+- `data.getMarketInternals()` — one `allIndices` call serving three things that
+  were all late or missing: NIFTY 50 breadth, India VIX, and midcap-against-
+  large-cap breadth divergence. One hop rather than three, because the proxy is
+  shared and rate-limits.
+
+A browser result only replaces the workflow copy when it actually parses, so a
+throttled proxy leaves the older-but-real number in place instead of blanking
+the lane. The Data Lanes panel shows `live` or `workflow` accordingly — a
+fallback is not an outage and must not read as one.
+
+**`fetchJSONVia` resolves `{ data, via }`, not the payload.** Reading
+`res.expiryDates` instead of `res.data.expiryDates` fails silently: the promise
+resolves, the field is `undefined`, and the lane quietly falls back to the
+workflow copy with no error anywhere. That cost a debugging cycle here.
 
 NSE in general: hand out the homepage cookie first (`session()` in
 `fetch_flows.py`), send a `Referer`, and expect waves of blocking by IP. Every
@@ -181,14 +202,30 @@ reading:
   scoring them as independent made the panel swing by tens of points when the
   replay grid moved five bars.
 
-A fourth, in `forecast.js`: **the band must not be widened for a scheduled
+A fourth, in `core.js`: **the holiday table lives in core, not in
+`forecast.js`.** Two things need it — the projection clock, so a daily forecast
+does not step onto a closed session, and `marketState()`, which without it
+reported **LIVE on Diwali**. Core loads first, so core owns it and `forecast.js`
+delegates. Two tables would be two tables to get out of step.
+
+A fifth, in `forecast.js`: **the band must not be widened for a scheduled
 event.** India VIX is an implied number and already prices scheduled risk, and
 it is already blended into `sigmaBlend`. Adding an event multiplier on top
 double-counts it, which is the same mistake as fitting a GARCH on unadjusted
 intraday returns. `data/events.json` is therefore shown in the hover card and
 deliberately does **not** vote.
 
-A fifth, in `vol.js`: **deseasonalise before fitting.** `volProfile()` already
+A sixth, in `data.js` and `fetch_options.py`: **the option chain is summarised
+twice, once in each language, and `selftest.js` proves they agree.** The browser
+needs the maths in JS to go live; the workflow needs it in Python for the
+fallback and the archive. Two implementations of one piece of arithmetic is
+precisely this repo's recurring bug, so `references/fixtures/option-chain-nifty.json`
+holds a real reduced chain and the suite asserts both produce the same PCR, max
+pain, walls and IV — and that `optionsLane()` scores them identically. Tolerance
+is 0.011 on rounded ratios only, because Python's `round()` is banker's rounding
+and JS `Math.round` is half-up.
+
+A seventh, in `vol.js`: **deseasonalise before fitting.** `volProfile()` already
 models the intraday cycle and re-applies it bar by bar, so a GARCH fitted on raw
 5-minute returns spends its ARCH coefficient describing the clock. Measured,
 persistence fell 0.741 → 0.509 and QLIKE improved 13% once the profile was

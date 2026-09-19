@@ -69,6 +69,16 @@ KT.CONFIG = {
     tickMsClosed: 30000, // gentle heartbeat when the market is shut
     newsMs: 60000,       // fast lane RSS
     bakedMs: 60000,      // re-read the workflow output (raw.githubusercontent, no Pages build)
+    /* The live option chain, browser-side through the proxy. Three minutes
+       rather than the one-second tick: NSE itself only restamps the chain every
+       minute or so, the payload is 206 KB, and r.jina.ai rate-limits with a 429
+       when leaned on. A failed or throttled fetch falls back to the workflow
+       copy, which is what the lane used to run on exclusively. */
+    optionsMs: 180000,
+    /* Breadth, VIX and the midcap divergence, one call. Five minutes: breadth
+       does not turn over faster than that in a way a 6.5-hour forecast can use,
+       and it shares a rate-limited proxy hop with the option chain above. */
+    internalsMs: 300000,
     maxBackoffMs: 60000,
   },
 
@@ -123,6 +133,28 @@ KT.CONFIG = {
       `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=${iv}&range=${rg}`,
     mcPrice: (id) =>
       `https://priceapi.moneycontrol.com/pricefeed/notapplicable/inidicesindia/${encodeURIComponent(id)}`,
+    /* The option chain, live from the browser.
+
+       NSE answers with Access-Control-Allow-Origin: beta.nseindia.com, so a
+       direct fetch from this origin fails - measured, "Failed to fetch" in
+       126ms. But r.jina.ai passes the body through untouched, and measured from
+       a real page origin it returns the full 206 KB chain in about 1.7 seconds.
+       allorigins times out on it.
+
+       That matters more than a new feed would: the chain was already the only
+       forward-looking input in the model, and going through the workflow made
+       it about two and a half hours old by the time anyone read it. The fastest
+       signal it carries - who is writing options today - is worthless at that
+       age and genuinely useful live. */
+    /* 139 index rows in one payload: NIFTY 50 breadth, live India VIX, and
+       midcap-against-large-cap breadth. One proxy hop serving three lanes,
+       because the hop is shared and rate-limited. */
+    nseAllIndices: 'https://www.nseindia.com/api/allIndices',
+    nseOptionInfo: (sym) =>
+      `https://www.nseindia.com/api/option-chain-contract-info?symbol=${encodeURIComponent(sym)}`,
+    nseOptionChain: (sym, expiry) =>
+      `https://www.nseindia.com/api/option-chain-v3?type=Indices&symbol=${encodeURIComponent(sym)}` +
+      `&expiry=${encodeURIComponent(expiry)}`,
     openrouterModels: 'https://openrouter.ai/api/v1/models',
     openrouterChat: 'https://openrouter.ai/api/v1/chat/completions',
   },
