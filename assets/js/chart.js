@@ -593,6 +593,9 @@
       host.innerHTML = '';
       var rows = a.lanes.slice(0, 5);
       if (a.shapePct) rows.push({ label: 'Time of day', pct: a.shapePct, arrived: null, id: 'shape' });
+      // The analogue bends the line without changing any lane's view, so it
+      // gets its own row rather than being smeared across theirs.
+      if (a.analogPct) rows.push({ label: 'Past analogue', pct: a.analogPct, arrived: null, id: 'analog' });
       var max = 0;
       rows.forEach(function (r) { max = Math.max(max, Math.abs(r.pct)); });
       if (!max) max = 1;

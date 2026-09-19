@@ -49,7 +49,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-from common import DATA, IST, Lanes, UA, get, now_ist, now_iso, write_json
+from common import DATA, IST, Lanes, UA, carry_forward, get, now_ist, now_iso, write_json
 
 import requests
 
@@ -199,7 +199,9 @@ def main():
     except Exception as exc:  # noqa: BLE001
         out["error"] = f"session: {exc!r}"[:200]
         lanes.record("nse session", False, 0, repr(exc))
-        write_json("options.json", out)
+        # keep_stamp: the lane judges staleness from generated_at and drops
+        # itself past four hours. Restamping a carried copy would silence that.
+        write_json("options.json", carry_forward("options.json", out))
         return 0
 
     try:
@@ -215,7 +217,7 @@ def main():
     except Exception as exc:  # noqa: BLE001
         out["error"] = f"contract-info: {exc!r}"[:200]
         lanes.record("contract-info", False, 0, repr(exc))
-        write_json("options.json", out)
+        write_json("options.json", carry_forward("options.json", out))
         return 0
 
     try:
@@ -235,6 +237,7 @@ def main():
         lanes.record("option-chain-v3", False, 0, repr(exc))
 
     out["lanes"] = lanes.as_list()
+    out = carry_forward("options.json", out)
     write_json("options.json", out)
     archive(out)
 

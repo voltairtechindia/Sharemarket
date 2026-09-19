@@ -41,7 +41,7 @@ import io
 import re
 import sys
 
-from common import Lanes, UA, get, now_ist, now_iso, write_json
+from common import Lanes, UA, carry_forward, get, now_ist, now_iso, write_json
 
 BASE = "https://niftyindices.com/IndexConstituent/"
 HDR = {"Referer": "https://niftyindices.com/", "User-Agent": UA}
@@ -142,6 +142,10 @@ def main():
                  "rather than weights, which would have to be invented."),
         "lanes": lanes.as_list(),
     }
+    # Index membership changes a few times a year. A failed fetch must not
+    # blank it, or the news lane silently stops telling a NIFTY name from a
+    # microcap and nothing on the page says why.
+    payload = carry_forward("constituents.json", payload, keep_stamp=False)
     write_json("constituents.json", payload)
     print(f"  {len(members)} symbols across {payload['tiers']}, "
           f"{len(industries)} industries")

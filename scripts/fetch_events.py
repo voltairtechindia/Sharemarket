@@ -41,7 +41,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from common import DATA, IST, Lanes, UA, get, now_ist, now_iso, write_json
+from common import DATA, IST, Lanes, UA, carry_forward, get, now_ist, now_iso, write_json
 
 NSE_HOME = "https://www.nseindia.com/"
 HOLIDAYS = "https://www.nseindia.com/api/holiday-master?type=trading"
@@ -155,6 +155,10 @@ def main():
         "lanes": lanes.as_list(),
         "ok": bool(hol or evs),
     }
+    # Holidays change a few times a year and the projection clock depends on
+    # them; losing the table to one failed fetch would put every daily forecast
+    # back to weekends-only without anything saying so.
+    payload = carry_forward("events.json", payload, keep_stamp=False)
     write_json("events.json", payload)
     print(f"  {len(hol)} holidays ({len(upcoming)} upcoming), {len(evs)} watched events "
           f"of {scanned} scanned; next holiday "

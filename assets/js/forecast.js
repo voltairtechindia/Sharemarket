@@ -265,7 +265,7 @@
     // Longest alias first, so "Tata Consultancy Services" wins over "Tata".
     CONSTITUENTS.byAlias.sort(function (a, b) { return b.alias.length - a.alias.length; });
     CONSTITUENTS.ready = CONSTITUENTS.byAlias.length > 0;
-    newsCache.key = null;                       // relevance changed, re-cluster
+    newsCacheClear();                           // relevance changed, re-cluster
     return CONSTITUENTS.byAlias.length;
   }
 
@@ -337,8 +337,28 @@
   /* Clustering is O(n^2) over a few hundred headlines and newsLane runs twice
      per build, which runs on every one-second tick. So the result is cached
      against a cheap signature of the pool - anything that changes the pool
-     changes the signature and forces a rebuild. */
-  var newsCache = { key: null, value: null };
+     changes the signature and forces a rebuild.
+
+     Several slots, not one. build() calls this twice with different pools -
+     everything, then the international subset - and a single slot meant each
+     call evicted the other's entry, so both recomputed on every tick. Measured:
+     0.25ms when called alone against 116ms per pair when alternating, which
+     was most of a 140ms build. Four slots is more than the two live callers
+     need and still bounded. */
+  var NEWS_CACHE_SLOTS = 4;
+  var newsCache = { keys: [], byKey: {} };
+
+  function newsCacheGet(sig) {
+    return Object.prototype.hasOwnProperty.call(newsCache.byKey, sig) ? newsCache.byKey[sig] : null;
+  }
+  function newsCachePut(sig, value) {
+    if (!Object.prototype.hasOwnProperty.call(newsCache.byKey, sig)) newsCache.keys.push(sig);
+    newsCache.byKey[sig] = value;
+    while (newsCache.keys.length > NEWS_CACHE_SLOTS) {
+      delete newsCache.byKey[newsCache.keys.shift()];
+    }
+  }
+  function newsCacheClear() { newsCache = { keys: [], byKey: {} }; }
 
   function clusterStories(items) {
     /* The signature has to depend on the contents, not just the shape. It was
@@ -355,7 +375,8 @@
       for (var c2 = 0; c2 < kq.length; c2++) h = ((h << 5) + h + kq.charCodeAt(c2)) | 0;
     }
     var sig = items.length + ':' + (h >>> 0).toString(36) + ':' + (CONSTITUENTS.ready ? 1 : 0);
-    if (newsCache.key === sig) return newsCache.value;
+    var hit = newsCacheGet(sig);
+    if (hit) return hit;
 
     var prepped = items.map(function (n) {
       return { item: n, tok: tokensOf(n.headline), used: false };
@@ -409,8 +430,7 @@
       };
     });
 
-    newsCache.key = sig;
-    newsCache.value = summarised;
+    newsCachePut(sig, summarised);
     return summarised;
   }
 
@@ -1173,6 +1193,26 @@
             upper2[sIdx].value = r2(upper2[sIdx].value + delta);
             lower2[sIdx].value = r2(lower2[sIdx].value + delta);
           }
+          /* The attribution was built from the pre-analogue drift, so without
+             this the hover card names a centre the chart does not draw.
+             Measured on the live series: up to 18.3 points, 0.079%. That is
+             the same two-places-compute-the-same-thing failure bandPath()
+             exists to prevent, reintroduced one layer up.
+
+             The lane parts still describe the drift the model asked for - the
+             analogue does not change any lane's view - so the shift is
+             recorded as its own contributor rather than smeared across them.
+             That is also the more useful reading: the analogue is a real input
+             and the card should name it. */
+          for (var aIdx = 0; aIdx < attribution.length && aIdx < shaped.length; aIdx++) {
+            var a = attribution[aIdx];
+            var shiftPct = (shaped[aIdx].value - path[aIdx].value) / lastClose * 100;
+            a.analogPct = r3(shiftPct);
+            a.driftPct = r3((shaped[aIdx].value - lastClose) / lastClose * 100);
+            a.pUp = a.sdPct > 0
+              ? Math.round(ncdf((shaped[aIdx].value - lastClose) / (lastClose * a.sdPct / 100)) * 100)
+              : 50;
+          }
           path = shaped;
         }
       }
@@ -1514,7 +1554,6 @@
     if (candles.length < warm + bars + 1) return null;
 
     var W = C.forecast.weights;
-    var wsum = W.momentum + W.levels + W.structure + W.seasonal;
     var capPct = C.forecast.maxDriftPctPerBar * bars;
 
     var in68 = 0, in95 = 0, n = 0, dirRight = 0, dirCalls = 0, scores = [];

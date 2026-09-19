@@ -55,6 +55,52 @@ def get(url, headers=None, timeout=20, retries=2, session=None, params=None):
     raise last
 
 
+def previous(filename):
+    """Whatever is already in data/<filename>, or {}.
+
+    The workflow seeds data/ from the live branch before any fetcher runs,
+    precisely so a lane that fails this cycle keeps its last good value instead
+    of publishing an empty file. A fetcher that unconditionally writes its
+    failure payload defeats that: one network blip replaces good data with
+    `ok: false` and everybody downstream loses it until the next success.
+
+    See fetch_flows.py, which has carried FII/DII forward this way from the
+    start - this is that pattern, shared.
+    """
+    path = DATA / filename
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def carry_forward(filename, payload, keep_stamp=True):
+    """Return the previous good payload when this run produced nothing usable.
+
+    `keep_stamp` decides whether the carried copy keeps its ORIGINAL
+    generated_at. It must, for anything whose consumer judges staleness from
+    that field - the option chain lane drops itself past four hours, and
+    restamping a carried copy to now would silence that guard and let the model
+    vote on positioning from another session. Refreshing the stamp would be a
+    lie about when the data was true.
+    """
+    if payload.get("ok"):
+        return payload
+    prev = previous(filename)
+    if not prev.get("ok"):
+        return payload                      # nothing better to fall back to
+    out = dict(prev)
+    out["carried_over"] = True
+    out["carried_at"] = now_iso()
+    out["carry_reason"] = payload.get("error") or "this run produced nothing usable"
+    if not keep_stamp:
+        out["generated_at"] = now_iso()
+    return out
+
+
 def write_json(filename, payload):
     DATA.mkdir(parents=True, exist_ok=True)
     path = DATA / filename

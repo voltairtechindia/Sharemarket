@@ -37,7 +37,9 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m http.server 8080          # then http://localhost:8080
 ```
 
-**Run `node scripts/selftest.js` first.** No dependencies, no build step - it
+**Run `node scripts/selftest.js` first.** (`node --check` is not a substitute —
+it passed a file whose test block referenced an out-of-scope variable, because
+that is a runtime error, not a syntax one.) No dependencies, no build step - it
 loads the real browser modules into a vm context whose global *is* `window` and
 asserts 57 invariants, each of which has been a real bug here: band/outcome
 alignment, lane liveness, effective sample size, the attribution reconstructing
@@ -215,7 +217,20 @@ double-counts it, which is the same mistake as fitting a GARCH on unadjusted
 intraday returns. `data/events.json` is therefore shown in the hover card and
 deliberately does **not** vote.
 
-A sixth, in `app.js`: **nothing in boot's `Promise.all` may be a network call
+A sixth, in every fetcher: **a failed run must not clobber the last good
+file.** The workflow seeds `data/` from the live branch before anything runs,
+precisely so a lane that fails keeps its previous value — a fetcher that
+unconditionally writes its failure payload defeats that, and one network blip
+then publishes `ok: false` to everybody. `common.carry_forward()` is the shared
+form of what `fetch_flows.py` has always done by hand.
+
+Its `keep_stamp` argument matters: anything whose consumer judges staleness
+from `generated_at` must keep the original. `optionsLane()` drops itself past
+four hours, and restamping a carried copy to now would silence that guard and
+let the model vote on another session's positioning. Refreshing the stamp is a
+lie about when the data was true.
+
+A seventh, in `app.js`: **nothing in boot's `Promise.all` may be a network call
 with a long timeout, and every handler it names must be declared.** Both have
 bitten. Putting the two live proxy fetches in the barrier made the chart queue
 behind 14–20 second hops. Worse, a handler was referenced there and never
@@ -224,7 +239,15 @@ so the whole chain rejected, the page sat on "Loading NIFTY candles…" forever,
 and **nothing appeared in the console**. `selftest.js` now checks both
 statically, because no numeric test would ever see it.
 
-A seventh, in `data.js` and `fetch_options.py`: **the option chain is summarised
+An eighth, in `forecast.js`: **the news cluster cache needs more than one
+slot.** `build()` calls `newsLane()` twice with different pools — everything,
+then the international subset — so a single slot meant each call evicted the
+other and both re-clustered on every one-second tick. Measured: 0.25ms called
+alone against **116ms per alternating pair**, which was most of a 140ms build.
+Four slots, and `selftest.js` asserts both the pair cost and the whole build
+fitting inside the tick.
+
+A ninth, in `data.js` and `fetch_options.py`: **the option chain is summarised
 twice, once in each language, and `selftest.js` proves they agree.** The browser
 needs the maths in JS to go live; the workflow needs it in Python for the
 fallback and the archive. Two implementations of one piece of arithmetic is
@@ -234,14 +257,22 @@ pain, walls and IV — and that `optionsLane()` scores them identically. Toleran
 is 0.011 on rounded ratios only, because Python's `round()` is banker's rounding
 and JS `Math.round` is half-up.
 
-An eighth, in `forecast.js`: **the news cluster cache key must depend on
+A tenth, in `forecast.js`: **anything derived from the band must be rebuilt
+after the analogue shifts it.** `KT.analogs.shape()` bends `path` *after*
+`attribution` is computed from it, so the hover card named a centre the chart
+did not draw — measured at 18.3 points, 0.079%. The analogue is recorded as its
+own contributor now rather than smeared across the lanes, because it changes no
+lane's view. Same two-places-compute-the-same-thing failure `bandPath()` exists
+to prevent, one layer up.
+
+An eleventh, in `forecast.js`: **the news cluster cache key must depend on
 contents, not shape.** It was length plus first and last timestamp, and two
 pools of the same size spanning the same instants collided — a split tape was
 handed a unanimous tape's clusters and scored +1.0 instead of ~0. It is a djb2
 fold over each item's key and sentiment now. Caught by `selftest.js`, not by
 the page.
 
-A ninth, in `vol.js`: **deseasonalise before fitting.** `volProfile()` already
+A twelfth, in `vol.js`: **deseasonalise before fitting.** `volProfile()` already
 models the intraday cycle and re-applies it bar by bar, so a GARCH fitted on raw
 5-minute returns spends its ARCH coefficient describing the clock. Measured,
 persistence fell 0.741 → 0.509 and QLIKE improved 13% once the profile was

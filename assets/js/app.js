@@ -1230,11 +1230,25 @@
     if (!v) return;
     var conflict = comp.agree === 'conflict';
     v.className = 'fc-split-verdict' + (conflict ? ' conflict' : '');
+
+    /* The two lines are news+global against structure+momentum+levels. That
+       leaves seasonal, flows and options positioning in neither - 27% of the
+       weight as of the options lane joining. Without saying so, a reader who
+       sees both lines agree and the blend land somewhere else has no way to
+       know why, and the sentence below would be describing a two-way
+       disagreement when the blend is a three-way one. */
+    var offLine = (f.lanes || []).filter(function (l) {
+      return l.hasData && ['seasonal', 'flow', 'options'].indexOf(l.id) !== -1;
+    });
+    var offNote = offLine.length
+      ? ' ' + offLine.map(function (l) { return l.label.toLowerCase(); }).join(', ') +
+        ' sit in neither line and still move the blend.'
+      : '';
     if (conflict) {
       v.textContent = 'The headlines and the chart disagree, ' + fmt.pct(comp.gapPct, 2).replace('+', '') +
-        ' apart at the end of the horizon. The blended line is averaging a conflict, so treat it as low conviction.';
+        ' apart at the end of the horizon. The blended line is averaging a conflict, so treat it as low conviction.' + offNote;
     } else if (comp.agree === 'flat') {
-      v.textContent = 'Neither the news nor the chart is pushing in a direction right now.';
+      v.textContent = 'Neither the news nor the chart is pushing in a direction right now.' + offNote;
     } else {
       v.textContent = 'News and chart point the same way, ' + fmt.pct(comp.gapPct, 2).replace('+', '') +
         ' apart at the end of the horizon. Agreement is the stronger case of the two.';

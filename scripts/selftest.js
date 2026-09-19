@@ -300,6 +300,31 @@ section('NEWS — clustering and relevance');
     for (let i = 0; i < 20; i++) KT.forecast.newsLane(news);
     const per = (Date.now() - t0) / 20;
     ok('repeat calls are cached and cheap', per < 5, `${per.toFixed(2)}ms each`);
+
+    /* build() calls newsLane twice with different pools - everything, then the
+       international subset. A single-slot cache meant each call evicted the
+       other and both re-clustered on every one-second tick: 0.25ms alone
+       against 116ms per alternating pair, most of a 140ms build. */
+    const intl = { region: 'international', halfLifeSec: 43200 };
+    KT.forecast.newsLane(news); KT.forecast.newsLane(news, intl);
+    const t1 = Date.now();
+    for (let i = 0; i < 20; i++) { KT.forecast.newsLane(news); KT.forecast.newsLane(news, intl); }
+    const pair = (Date.now() - t1) / 20;
+    ok('alternating pools do not thrash the cluster cache', pair < 10, `${pair.toFixed(2)}ms per pair`);
+
+    // the whole build, which the page runs once a second
+    const ctx = { candles: candles.slice(), timeframe: '1D',
+                  news: (readJSON('data/news.json', {}).news_items || []),
+                  seasonality, options, vix: 11.4,
+                  levels: KT.levels.build(candles),
+                  structures: KT.structures.detect(candles) };
+    KT.forecast.build(ctx);
+    const t2 = Date.now();
+    for (let i = 0; i < 10; i++) KT.forecast.build(ctx);
+    const per2 = (Date.now() - t2) / 10;
+    ok('a steady-state build fits inside the one-second tick',
+       per2 < 60, `${per2.toFixed(1)}ms per tick`);
+
     ok('folds real syndication', before.duplicates > 0,
        `${before.stories} stories from ${before.items} items, ${before.duplicates} folded`);
     ok('reports its own diagnostics',
@@ -325,6 +350,24 @@ section('FORECAST — per-bar attribution');
      late.lanes.length === 0 || early.lanes.length === 0 ||
      (late.lanes[0].arrived >= early.lanes[0].arrived));
   ok('probability is bounded at every bar', f.attribution.every(a => a.pUp >= 0 && a.pUp <= 100));
+
+  /* The hover card renders lastClose * (1 + driftPct/100) as the centre for a
+     bar. If that is not the point the chart draws, the card is describing a
+     line nobody can see - which is what happened: the analogue shifts the path
+     after the attribution is built, and the two disagreed by up to 18.3 points
+     on the live series. */
+  {
+    let worst = 0;
+    f.attribution.forEach((a, i) => {
+      worst = Math.max(worst, Math.abs(f.path[i].value - f.lastClose * (1 + a.driftPct / 100)));
+    });
+    ok('the hover centre is the point actually drawn',
+       worst < 1, `worst gap ${worst.toFixed(3)} points`);
+    if (f.analog && f.analog.ok && f.analog.quality > 5) {
+      ok('the analogue is named as its own contributor',
+         f.attribution.some(a => a.analogPct), 'analogue applied and attributed');
+    }
+  }
 }
 
 section('FORECAST — the clock');
