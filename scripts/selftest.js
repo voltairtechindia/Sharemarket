@@ -212,6 +212,102 @@ const f = KT.forecast.build({
      ]).hasData === true);
 }
 
+section('NEWS — clustering and relevance');
+{
+  const t = Math.floor(Date.now() / 1000) - 600;
+  // `key` is what mergeNews dedupes on and what the cluster cache hashes, so
+  // fixtures must carry one or two pools will look identical to the cache.
+  const mk = (h, sent, i, extra) => Object.assign(
+    { ts: t - i, headline: h, impact: 'high', sentiment: sent, region: 'india',
+      source: 'src' + i, key: KT.core.keyOf(h) }, extra || {});
+
+  // syndication: one story told several ways is one vote
+  const synd = KT.forecast.clusterStories([
+    mk('RBI holds repo rate steady at policy meeting', -2, 0),
+    mk('RBI holds repo rate steady after policy meeting', -2, 1),
+    mk('RBI keeps repo rate steady at policy meeting', -2, 2),
+  ]);
+  ok('three tellings of one story fold into one', synd.length === 1, `${synd.length} clusters`);
+
+  /* Token overlap alone merges opposites: "holds" and "cuts" share three
+     tokens of five. Same words is not the same story when the verdicts
+     disagree. */
+  const opp = KT.forecast.clusterStories([
+    mk('RBI holds repo rate steady', 2, 0),
+    mk('RBI cuts repo rate sharply', -2, 1),
+  ]);
+  ok('opposed readings of the same words stay apart', opp.length === 2, `${opp.length} clusters`);
+
+  // genuinely unrelated headlines must not be folded together
+  const apart = KT.forecast.clusterStories([
+    mk('Monsoon deficit widens across central districts', -1, 0),
+    mk('Steel exports climb on overseas demand', 2, 1),
+    mk('Airline adds winter capacity to metro routes', 1, 2),
+  ]);
+  ok('unrelated stories are not merged', apart.length === 3, `${apart.length} clusters`);
+
+  // consensus shrinks a split tape and leaves a unanimous one alone
+  const unanimous = [
+    mk('Steel exports climb on overseas demand', 2, 0),
+    mk('Monsoon revival lifts sowing across districts', 3, 1),
+    mk('Airline adds winter capacity to metro routes', 2, 2),
+    mk('Cement despatches accelerate into festive quarter', 3, 3),
+  ];
+  const split = [
+    mk('Steel exports climb on overseas demand', 3, 0),
+    mk('Monsoon deficit widens across central districts', -3, 1),
+    mk('Airline adds winter capacity to metro routes', 2, 2),
+    mk('Cement despatches slump into festive quarter', -2, 3),
+  ];
+  const u = KT.forecast.newsLane(unanimous);
+  const sp = KT.forecast.newsLane(split);
+  ok('a unanimous tape keeps its full vote',
+     u.opinionated >= 3 && u.consensus === 1 && u.shrink === 1, `consensus=${u.consensus} shrink=${u.shrink}`);
+  ok('a split tape has its vote shrunk',
+     sp.opinionated >= 3 && sp.consensus < 0.8 && sp.shrink < 1 && Math.abs(sp.score) < Math.abs(sp.scoreBeforeShrink),
+     `consensus=${sp.consensus} shrink=${sp.shrink} ${sp.scoreBeforeShrink.toFixed(3)} -> ${sp.score.toFixed(3)}`);
+
+  // relevance: paperwork out, macro and index names in
+  const rel = h => KT.forecast.relevanceOf({ headline: h }).why;
+  ok('recovery certificates are treated as paperwork',
+     rel('SEBI Order for Compliance - Completion Order for Recovery Certificate No. RC7374') === 'paperwork');
+  ok('KYC circulars are treated as paperwork',
+     rel('Reserve Bank of India (Rural Co-operative Banks - Know Your Customer) Directions') === 'paperwork');
+  ok('index-fund listings are treated as paperwork',
+     rel('SBI Nifty Bank Index Fund(G)-Direct Plan - Univest') === 'paperwork');
+  ok('policy headlines score as macro', rel('RBI holds repo rate steady as inflation cools') === 'macro');
+  ok('an unlisted single stock is discounted',
+     /single stock/.test(rel('Tiny Widgets Pvt announces new plant in Baddi')));
+
+  const cons = readJSON('data/constituents.json', null);
+  if (cons && cons.members) {
+    const loaded = KT.forecast.setConstituents(cons);
+    ok('constituent aliases load', loaded > 0, `${loaded} aliases, ${cons.count} symbols`);
+    ok('a NIFTY 50 name is recognised',
+       /index constituent/.test(rel('Reliance Industries posts higher refining margins')),
+       rel('Reliance Industries posts higher refining margins'));
+    ok('paperwork beats a constituent match',
+       rel('HDFC Bank board meeting intimation and trading window closure') === 'paperwork');
+  } else {
+    ok('constituents present (run scripts/fetch_constituents.py)', true, 'skipped');
+  }
+
+  // the clustering cache must not go stale when relevance changes
+  const news = (readJSON('data/news.json', {}).news_items || []).slice(0, 200);
+  if (news.length > 50) {
+    const before = KT.forecast.newsLane(news);
+    const t0 = Date.now();
+    for (let i = 0; i < 20; i++) KT.forecast.newsLane(news);
+    const per = (Date.now() - t0) / 20;
+    ok('repeat calls are cached and cheap', per < 5, `${per.toFixed(2)}ms each`);
+    ok('folds real syndication', before.duplicates > 0,
+       `${before.stories} stories from ${before.items} items, ${before.duplicates} folded`);
+    ok('reports its own diagnostics',
+       before.consensus !== undefined && before.macro >= 0 && before.suppressed >= 0,
+       `macro=${before.macro} named=${before.named} suppressed=${before.suppressed}`);
+  }
+}
+
 section('FORECAST — per-bar attribution');
 {
   ok('attribution covers every projected bar',
@@ -425,6 +521,49 @@ section('LEDGER');
   ok('ACI learns only from forward misses',
      KT.ledger.missRecord('NIFTY', '1D').length === 0);
   KT.ledger.clear();
+}
+
+/* --------------------------------------------------------------- wiring
+   app.js is not loadable here - it wants a real DOM - so it gets a static
+   check instead of an exercised one.
+
+   This exists because a callback referenced in boot's Promise.all was never
+   defined: an edit landed the call sites and not the declaration. The
+   reference threw synchronously while the array was being built, the whole
+   chain rejected, and the page sat on "Loading NIFTY candles..." forever with
+   no console error. Nothing in a numeric suite would ever catch that, and it
+   cost most of a debugging session. */
+section('WIRING — every handler app.js names is defined');
+{
+  const src = fs.readFileSync(path.join(ROOT, 'assets/js/app.js'), 'utf8');
+  const declared = new Set();
+  let m;
+  const declRx = /function\s+([A-Za-z_$][\w$]*)\s*\(/g;
+  while ((m = declRx.exec(src))) declared.add(m[1]);
+  const assignRx = /(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=/g;
+  while ((m = assignRx.exec(src))) declared.add(m[1]);
+
+  // bare identifiers handed straight to .then(...) / .catch(...)
+  const missing = [];
+  const refRx = /\.(?:then|catch|forEach|map|filter)\(\s*([A-Za-z_$][\w$]*)\s*\)/g;
+  while ((m = refRx.exec(src))) {
+    const name = m[1];
+    if (declared.has(name)) continue;
+    // globals and imports the file legitimately relies on
+    if (['JSON', 'noop', 'console', 'String', 'Number', 'Boolean'].includes(name)) continue;
+    if (/^(KT|C|S|el|text|fmt|core|data|chart|engine)$/.test(name)) continue;
+    missing.push(name);
+  }
+  ok('no handler is referenced without being declared',
+     missing.length === 0, missing.length ? 'undefined: ' + [...new Set(missing)].join(', ') : `${declared.size} declarations`);
+
+  // the boot barrier must not contain a network call with a long timeout
+  const bootStart = src.indexOf('return Promise.all([');
+  const bootEnd = src.indexOf(']);', bootStart);
+  const boot = bootStart > 0 ? src.slice(bootStart, bootEnd) : '';
+  ok('boot does not wait on the live proxy fetches',
+     boot.length > 0 && !/refreshOptionChain\(\)|refreshInternals\(\)/.test(boot),
+     'those are 14-20s proxy hops; the chart must not queue behind them');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -224,25 +224,295 @@
   }
 
   /* ========================================================== the lanes */
+  /* ====================================================== news relevance
+
+     The lane used to average sentiment over every headline it held, weighted
+     only by recency and a keyword impact tag. Two things were wrong with that,
+     both measured on one live 600-item sweep.
+
+     **Syndication counted as corroboration.** keyOf() hashes the exact
+     headline, so the same story from thirteen outlets is thirteen keys and
+     thirteen votes. Measured: 14% of the pool were near-duplicates, and
+     "Trump signs Russia sanctions bill" - high impact, sentiment -3 - appeared
+     seven times. Clustering the pool and taking one vote per story moved the
+     raw lane by 0.079, which is about a tenth of the bias threshold that
+     decides whether a direction is called at all.
+
+     **Relevance was not a dimension.** The same sweep was voting on "SEBI
+     Order for Compliance - Completion Order for Recovery Certificate" and on
+     "SBI Nifty Bank Index Fund(G)-Direct Plan" with exactly the weight it gave
+     a headline naming Reliance. A NIFTY forecast does not care about a
+     microcap recovery certificate.
+
+     Relevance is scored in tiers rather than weights. NIFTY 50 is free-float
+     market-cap weighted and no free source gives those weights, so a weight
+     here would be invented - membership is a fact, and the tier is as far as
+     the data honestly goes. See scripts/fetch_constituents.py. */
+
+  var CONSTITUENTS = { byAlias: [], ready: false };
+
+  function setConstituents(payload) {
+    CONSTITUENTS = { byAlias: [], ready: false };
+    var members = (payload && payload.members) || [];
+    members.forEach(function (m) {
+      var tier = m.tiers && m.tiers.indexOf('nifty50') !== -1 ? 'nifty50'
+               : m.tiers && m.tiers.indexOf('bank') !== -1 ? 'bank' : 'next50';
+      (m.aliases || []).forEach(function (a) {
+        if (!a || a.length < 4) return;
+        CONSTITUENTS.byAlias.push({ alias: ' ' + a.toLowerCase() + ' ', tier: tier, symbol: m.symbol });
+      });
+    });
+    // Longest alias first, so "Tata Consultancy Services" wins over "Tata".
+    CONSTITUENTS.byAlias.sort(function (a, b) { return b.alias.length - a.alias.length; });
+    CONSTITUENTS.ready = CONSTITUENTS.byAlias.length > 0;
+    newsCache.key = null;                       // relevance changed, re-cluster
+    return CONSTITUENTS.byAlias.length;
+  }
+
+  /* Terms that move the whole index regardless of which company is named.
+     These are the macro drivers - policy, rates, the currency, oil, and the
+     foreign flows that set the tone for an Indian session. */
+  var MACRO_RX = new RegExp([
+    '\\brbi\\b', 'repo rate', 'monetary policy', '\\bmpc\\b', '\\bcrr\\b',
+    'inflation', '\\bcpi\\b', '\\bwpi\\b', '\\bgdp\\b', 'fiscal deficit',
+    '\\bbudget\\b', 'rupee', '\\busd/?inr\\b', 'crude', 'brent',
+    '\\bfed\\b', '\\bfomc\\b', 'federal reserve', 'tariff', 'trade deal',
+    '\\bfii\\b', '\\bdii\\b', 'foreign investors', '\\bsebi\\b.*\\bmarket\\b',
+    '\\bnifty\\b', '\\bsensex\\b', '\\bbank nifty\\b', 'indian markets?',
+  ].join('|'), 'i');
+
+  /* Paperwork. The existing procedural filter in core.score catches some of
+     this; these are the shapes it missed in the measured sweep, and they were
+     arriving tagged medium impact. */
+  var PAPERWORK_RX = new RegExp([
+    'recovery certificate', 'know your customer', '\\bkyc\\b',
+    'compliance certificate', 'order for compliance',
+    'index fund', 'direct plan', '\\bnav\\b', 'mutual fund scheme',
+    'board meeting intimation', 'trading window', 'disclosure under regulation',
+    'newspaper publication', 'postal ballot', 'record date',
+  ].join('|'), 'i');
+
+  /* How much a headline bears on where the index goes in the next few hours. */
+  function relevanceOf(n) {
+    var text = String(n.headline || '') + ' ' + String(n.summary || '');
+    var low = ' ' + text.toLowerCase().replace(/[^a-z0-9&]+/g, ' ') + ' ';
+
+    if (PAPERWORK_RX.test(text)) return { w: 0.15, why: 'paperwork' };
+    if (MACRO_RX.test(text)) return { w: 1.0, why: 'macro' };
+
+    if (CONSTITUENTS.ready) {
+      for (var i = 0; i < CONSTITUENTS.byAlias.length; i++) {
+        var c = CONSTITUENTS.byAlias[i];
+        if (low.indexOf(c.alias) !== -1) {
+          return c.tier === 'next50'
+            ? { w: 0.5, why: 'NIFTY Next 50: ' + c.symbol, symbol: c.symbol }
+            : { w: 1.0, why: 'index constituent: ' + c.symbol, symbol: c.symbol };
+        }
+      }
+    }
+    // A listed company that is not in the index. Its own business, not NIFTY's.
+    return { w: 0.25, why: 'single stock, outside the index' };
+  }
+
+  /* --------------------------------------------------------- clustering */
+  var NEWS_STOP = (' the a an of in on at to for and or is are was were with from by as its it ' +
+                   'this that will has have be been says said after over into up down new ').split(' ');
+  var STOPSET = {};
+  NEWS_STOP.forEach(function (w) { if (w) STOPSET[w] = 1; });
+
+  function tokensOf(text) {
+    var out = {}, n = 0;
+    String(text || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).forEach(function (w) {
+      if (w.length > 2 && !STOPSET[w] && !out[w]) { out[w] = 1; n++; }
+    });
+    return { set: out, size: n };
+  }
+  function jaccard(a, b) {
+    if (!a.size || !b.size) return 0;
+    var inter = 0;
+    for (var k in a.set) if (b.set[k]) inter++;
+    return inter / (a.size + b.size - inter);
+  }
+
+  /* Clustering is O(n^2) over a few hundred headlines and newsLane runs twice
+     per build, which runs on every one-second tick. So the result is cached
+     against a cheap signature of the pool - anything that changes the pool
+     changes the signature and forces a rebuild. */
+  var newsCache = { key: null, value: null };
+
+  function clusterStories(items) {
+    /* The signature has to depend on the contents, not just the shape. It was
+       length plus the first and last timestamp, and two different pools of the
+       same size spanning the same instants collided - a split tape was handed
+       a unanimous tape's clusters and scored +1.0 instead of ~0. Caught by
+       selftest, not by the page, which is the whole argument for the suite.
+
+       djb2 over each item's dedupe key and sentiment: O(n) over short strings,
+       and it changes whenever any member or any reading changes. */
+    var h = 5381;
+    for (var q = 0; q < items.length; q++) {
+      var kq = (items[q].key || '') + '|' + (items[q].sentiment || 0);
+      for (var c2 = 0; c2 < kq.length; c2++) h = ((h << 5) + h + kq.charCodeAt(c2)) | 0;
+    }
+    var sig = items.length + ':' + (h >>> 0).toString(36) + ':' + (CONSTITUENTS.ready ? 1 : 0);
+    if (newsCache.key === sig) return newsCache.value;
+
+    var prepped = items.map(function (n) {
+      return { item: n, tok: tokensOf(n.headline), used: false };
+    });
+    var clusters = [];
+    for (var i = 0; i < prepped.length; i++) {
+      if (prepped[i].used) continue;
+      prepped[i].used = true;
+      var group = [prepped[i].item];
+      for (var j = i + 1; j < prepped.length; j++) {
+        if (prepped[j].used) continue;
+        // Only the same story if it broke around the same time.
+        if (Math.abs(prepped[i].item.ts - prepped[j].item.ts) > 21600) continue;
+        /* Token overlap alone merges opposites. "RBI holds repo rate" and "RBI
+           cuts repo rate" share three tokens of five - Jaccard 0.6, over the
+           threshold - and merging them would fold two contradictory readings
+           into one and then keep whichever happened to score harder. Same
+           words is not the same story when the verdicts disagree, so opposed
+           sentiment blocks the merge. */
+        var si = prepped[i].item.sentiment || 0, sj = prepped[j].item.sentiment || 0;
+        if (si * sj < 0) continue;
+        if (jaccard(prepped[i].tok, prepped[j].tok) >= 0.5) {
+          prepped[j].used = true;
+          group.push(prepped[j].item);
+        }
+      }
+      clusters.push(group);
+    }
+
+    /* Everything that does not depend on the clock is resolved here, once.
+       relevanceOf() scans 319 aliases, and doing that for 516 clusters on
+       every one-second tick measured 29ms a call - twice per build, for a
+       result that cannot change until the pool does. Only the time decay is
+       left for newsLane to apply. */
+    var summarised = clusters.map(function (group) {
+      var lead = group[0];
+      for (var g = 1; g < group.length; g++) {
+        if (Math.abs(group[g].sentiment || 0) > Math.abs(lead.sentiment || 0)) lead = group[g];
+      }
+      var sources = {}, distinct = 0;
+      group.forEach(function (x) { if (x.source && !sources[x.source]) { sources[x.source] = 1; distinct++; } });
+      return {
+        lead: lead,
+        size: group.length,
+        rel: relevanceOf(lead),
+        // Corroboration is worth something, but not its multiple. Five outlets
+        // carrying one story is better evidence than one; it is nothing like
+        // five separate events. So it enters as a log, capped.
+        corroboration: 1 + Math.min(0.45, 0.15 * Math.log(Math.max(1, distinct))),
+        distinct: distinct,
+      };
+    });
+
+    newsCache.key = sig;
+    newsCache.value = summarised;
+    return summarised;
+  }
+
   function newsLane(items, opts) {
     opts = opts || {};
     var now = Date.now() / 1000, halfLife = opts.halfLifeSec || 21600;
     var region = opts.region || null;
-    var num = 0, den = 0, counted = 0, high = 0, top = null, topW = 0;
-    (items || []).forEach(function (n) {
-      if (region && n.region !== region) return;
-      var age = Math.max(0, now - n.ts);
-      if (age > 172800) return;
-      var w = IMPACT_W[n.impact] * Math.pow(0.5, age / halfLife);
-      if (w <= 0.01) return;
-      num += n.sentiment * w; den += w; counted++;
-      if (n.impact === 'high') high++;
-      var strength = Math.abs(n.sentiment) * IMPACT_W[n.impact] * Math.pow(0.5, age / halfLife);
-      if (strength > topW) { topW = strength; top = n; }
+
+    var pool = (items || []).filter(function (n) {
+      if (!n || !n.ts) return false;
+      if (region && n.region !== region) return false;
+      return (now - n.ts) <= 172800;
     });
+    if (!pool.length) return { score: 0, n: 0, high: 0, top: null, raw: 0, hasData: false };
+
+    var clusters = clusterStories(pool);
+
+    var num = 0, den = 0, counted = 0, high = 0, top = null, topW = 0;
+    var duplicates = 0, suppressed = 0, macro = 0, named = 0;
+    var votes = [], recent = 0;
+
+    clusters.forEach(function (c) {
+      // One vote per story. The loudest telling of it carries the cluster,
+      // because a wire summary and a full write-up of the same event should
+      // not average each other out.
+      var lead = c.lead, rel = c.rel;
+      duplicates += c.size - 1;
+      if (rel.why === 'paperwork') suppressed++;
+      if (rel.why === 'macro') macro++;
+      if (rel.symbol) named++;
+
+      var age = Math.max(0, now - lead.ts);
+      var decay = Math.pow(0.5, age / halfLife);
+      var w = IMPACT_W[lead.impact] * decay * rel.w * c.corroboration;
+      if (w <= 0.01) return;
+
+      num += (lead.sentiment || 0) * w;
+      den += w;
+      counted++;
+      if (lead.impact === 'high' && rel.w >= 0.5) high++;
+
+      // Kept so the spread and the consensus can be measured after the loop.
+      // Only stories that actually expressed a view count toward agreement -
+      // a neutral wire item is not a vote for "no change", it is silence.
+      if (lead.sentiment) votes.push({ s: lead.sentiment, w: w });
+      if (age <= 3600 && rel.w >= 0.5) recent++;
+
+      var strength = Math.abs(lead.sentiment || 0) * w;
+      if (strength > topW) { topW = strength; top = lead; }
+    });
+
     if (!den) return { score: 0, n: 0, high: 0, top: null, raw: 0, hasData: false };
     var raw = num / den;
-    return { score: core.clamp(raw / 2.5, -1, 1), raw: raw, n: counted, high: high, top: top, hasData: true };
+
+    /* How much the stories agree, and how far apart they are.
+
+       A weighted mean is easy to drag. Measured on one live sweep, 63 relevant
+       stories carried a mean of -0.857 and a spread of 1.62 - the tilt was real
+       (22 positive against 41 negative) but a handful of -4 headlines were
+       doing a lot of the work. Those are different situations and the mean
+       alone cannot tell them apart.
+
+       Consensus is the share of opinionated stories agreeing with the sign of
+       the mean: 0.5 is a coin, 1.0 is unanimous. A mean with no consensus
+       behind it is being set by outliers, so the score is shrunk toward zero
+       rather than trusted at face value. At full disagreement it keeps half its
+       size; at unanimity it keeps all of it. Half rather than none because a
+       split tape genuinely is mildly informative - it is just not worth a full
+       vote. */
+    var consensus = null, dispersion = null, shrink = 1;
+    if (votes.length >= 3) {
+      var sign = raw >= 0 ? 1 : -1;
+      var agree = 0, wsum = 0, mean = 0;
+      votes.forEach(function (v) { wsum += v.w; mean += v.s * v.w; });
+      mean = wsum ? mean / wsum : 0;
+      var varSum = 0;
+      votes.forEach(function (v) {
+        if ((v.s > 0 ? 1 : -1) === sign) agree++;
+        varSum += v.w * (v.s - mean) * (v.s - mean);
+      });
+      consensus = Math.round(agree / votes.length * 1000) / 1000;
+      dispersion = wsum ? Math.round(Math.sqrt(varSum / wsum) * 1000) / 1000 : null;
+      shrink = 0.5 + 0.5 * core.clamp(2 * consensus - 1, 0, 1);
+    }
+
+    /* Stories an hour, against the trailing rate over the window. A burst is
+       not a direction - it is a warning that the tape is being repriced - so it
+       is reported and shown, and deliberately does not vote. Acting on it would
+       need a measured relationship this repo does not have yet. */
+    var hours = Math.max(1, (opts.halfLifeSec || 21600) / 3600);
+    var velocity = counted ? Math.round(recent / (counted / hours) * 100) / 100 : null;
+
+    return {
+      score: core.clamp(raw / 2.5, -1, 1) * shrink, raw: raw,
+      scoreBeforeShrink: core.clamp(raw / 2.5, -1, 1),
+      n: counted, high: high, top: top, hasData: true,
+      stories: clusters.length, items: pool.length, duplicates: duplicates,
+      suppressed: suppressed, macro: macro, named: named,
+      consensus: consensus, dispersion: dispersion, shrink: Math.round(shrink * 1000) / 1000,
+      opinionated: votes.length, recentHighRelevance: recent, velocity: velocity,
+      relevanceReady: CONSTITUENTS.ready,
+    };
   }
 
   function lastThursday(year, monthIdx) {
@@ -1053,6 +1323,18 @@
       analog: analog,
       checkpoints: checkpoints,
       topNews: nAll.top,
+      /* The lane's own working, so the news panel can report what it did with
+         the stream instead of recomputing it and drifting from the model. */
+      newsDetail: {
+        hasData: nAll.hasData, items: nAll.items || 0, stories: nAll.stories || 0,
+        duplicates: nAll.duplicates || 0, suppressed: nAll.suppressed || 0,
+        macro: nAll.macro || 0, named: nAll.named || 0,
+        consensus: nAll.consensus == null ? null : nAll.consensus,
+        dispersion: nAll.dispersion == null ? null : nAll.dispersion,
+        shrink: nAll.shrink == null ? 1 : nAll.shrink,
+        opinionated: nAll.opinionated || 0, velocity: nAll.velocity,
+        relevanceReady: !!nAll.relevanceReady,
+      },
       seasonMonth: seasonal.month,
       rsi: snap ? snap.rsi : null,
       structure: struct.target || null,
@@ -1518,5 +1800,6 @@
     volProfile: volProfile, dayShape: dayShape, ncdf: ncdf,
     bandPath: bandPath, volContext: volContext, advance: advance,
     setHolidays: setHolidays, isClosed: isClosed,
+    setConstituents: setConstituents, relevanceOf: relevanceOf, clusterStories: clusterStories,
   };
 })(window.KT);

@@ -215,7 +215,16 @@ double-counts it, which is the same mistake as fitting a GARCH on unadjusted
 intraday returns. `data/events.json` is therefore shown in the hover card and
 deliberately does **not** vote.
 
-A sixth, in `data.js` and `fetch_options.py`: **the option chain is summarised
+A sixth, in `app.js`: **nothing in boot's `Promise.all` may be a network call
+with a long timeout, and every handler it names must be declared.** Both have
+bitten. Putting the two live proxy fetches in the barrier made the chart queue
+behind 14–20 second hops. Worse, a handler was referenced there and never
+declared — the reference threw *synchronously while the array was being built*,
+so the whole chain rejected, the page sat on "Loading NIFTY candles…" forever,
+and **nothing appeared in the console**. `selftest.js` now checks both
+statically, because no numeric test would ever see it.
+
+A seventh, in `data.js` and `fetch_options.py`: **the option chain is summarised
 twice, once in each language, and `selftest.js` proves they agree.** The browser
 needs the maths in JS to go live; the workflow needs it in Python for the
 fallback and the archive. Two implementations of one piece of arithmetic is
@@ -225,7 +234,14 @@ pain, walls and IV — and that `optionsLane()` scores them identically. Toleran
 is 0.011 on rounded ratios only, because Python's `round()` is banker's rounding
 and JS `Math.round` is half-up.
 
-A seventh, in `vol.js`: **deseasonalise before fitting.** `volProfile()` already
+An eighth, in `forecast.js`: **the news cluster cache key must depend on
+contents, not shape.** It was length plus first and last timestamp, and two
+pools of the same size spanning the same instants collided — a split tape was
+handed a unanimous tape's clusters and scored +1.0 instead of ~0. It is a djb2
+fold over each item's key and sentiment now. Caught by `selftest.js`, not by
+the page.
+
+A ninth, in `vol.js`: **deseasonalise before fitting.** `volProfile()` already
 models the intraday cycle and re-applies it bar by bar, so a GARCH fitted on raw
 5-minute returns spends its ARCH coefficient describing the clock. Measured,
 persistence fell 0.741 → 0.509 and QLIKE improved 13% once the profile was

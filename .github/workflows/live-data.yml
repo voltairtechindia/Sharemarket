@@ -103,6 +103,12 @@ jobs:
         run: python scripts/fetch_events.py
         continue-on-error: true
 
+      # Index membership, so the news lane can tell a NIFTY story from a
+      # microcap filing. Changes a few times a year; cheap enough to re-fetch.
+      - name: Fetch index constituents
+        run: python scripts/fetch_constituents.py
+        continue-on-error: true
+
       - name: Fetch stock quotes
         run: python scripts/fetch_stocks.py
         continue-on-error: true

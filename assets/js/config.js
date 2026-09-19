@@ -191,6 +191,7 @@ KT.CONFIG = {
     flows:       'data/flows.json',
     options:     'data/options.json',
     events:      'data/events.json',
+    constituents:'data/constituents.json',
     stocks:      'data/stocks.json',
     universe:    'data/universe.json',
     lexicon:     'config/lexicon.json',
@@ -206,10 +207,11 @@ KT.CONFIG = {
   /* ------------------------------------------------------------- forecasting
      Weights sum to 1. They decide how much each lane moves the needle.       */
   forecast: {
-    /* Seven lanes. Weights are renormalised at runtime over the lanes that
-       actually reported, so a missing global feed shifts weight to the rest
-       instead of quietly dragging the bias toward zero. */
-    /* Eight lanes. Every weight here is a judgement, not a measurement - none
+    /* Weights are renormalised at runtime over the lanes that actually
+       reported, so a missing feed shifts weight to the rest instead of quietly
+       dragging the bias toward zero.
+
+       Eight lanes. Every weight here is a judgement, not a measurement - none
        of them has been fitted, because until the ledger has settled rows there
        is nothing to fit against. When options joined, the seven existing
        weights were scaled by 0.9 rather than re-argued, so their relative

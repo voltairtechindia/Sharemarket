@@ -42,6 +42,7 @@
     flows: null,            // breadth, FII and DII
     options: null,          // option chain: PCR, max pain, OI walls
     internals: null,        // live breadth, VIX and midcap divergence
+    constituents: null,     // index membership, so news relevance can be scored
     events: null,           // NSE trading holidays + scheduled global releases
     vix: null,
     alertsOpen: false,
@@ -90,9 +91,7 @@
           data.loadBaked(C.baked.flows).then(function (f) { S.flows = f; }).catch(noop),
           data.loadBaked(C.baked.options).then(function (o) { S.options = o; }).catch(noop),
           data.loadBaked(C.baked.events).then(applyEvents).catch(noop),
-          // The workflow copies above are the fallback; these try for live ones.
-          refreshOptionChain(),
-          refreshInternals(),
+          data.loadBaked(C.baked.constituents).then(applyConstituents).catch(noop),
           // The universe is what turns "RELIANCE" into "Reliance Industries"
           // for headline matching, so it has to land before the first scan.
           data.loadBaked(C.baked.universe).then(function (u) { KT.portfolio.setUniverse(u); fillUniverseList(); }).catch(noop),
@@ -368,6 +367,7 @@
       data.loadBaked(C.baked.flows).then(function (f) { S.flows = f; }).catch(noop),
       data.loadBaked(C.baked.options).then(function (o) { S.options = o; }).catch(noop),
       data.loadBaked(C.baked.events).then(applyEvents).catch(noop),
+      data.loadBaked(C.baked.constituents).then(applyConstituents).catch(noop),
       data.loadBaked(C.baked.stocks).then(function (q) { KT.portfolio.setQuotes(q); }).catch(noop),
     ]).then(function () { renderNews(); scanAlerts(); });
   }
@@ -446,6 +446,7 @@
     renderLevels();
     renderIndicators();
     renderLanes();
+    renderNewsIntel();
     renderPortfolio();
     updateLedger(news);
     maybeCalibrate();
@@ -511,6 +512,17 @@
         return true;
       })
       .catch(function () { return false; });
+  }
+
+  /* Index membership, which is what lets the news lane tell a NIFTY story from
+     a microcap filing. Without it every headline is scored alike and the lane
+     reports relevanceReady false rather than pretending otherwise. */
+  function applyConstituents(c) {
+    if (!c || !c.members) return;
+    S.constituents = c;
+    try {
+      if (KT.forecast.setConstituents(c) && S.booted) recompute();
+    } catch (e) { /* a bad list must not take the lane down */ }
   }
 
   /* The exchange calendar. Until this landed, advance() knew about weekends
@@ -603,6 +615,15 @@
     S.timers.others = setInterval(refreshOtherQuotes, 30000);
     S.timers.options = setInterval(refreshOptionChain, C.poll.optionsMs);
     S.timers.internals = setInterval(refreshInternals, C.poll.internalsMs);
+    /* First run off the critical path.
+
+       These were briefly inside boot's Promise.all, which meant the chart
+       waited on two proxy hops with 14 and 20 second timeouts before anything
+       rendered - the page looked broken for as long as the slowest one took,
+       and candles had not even been requested yet. The workflow copies already
+       loaded in boot are what the lanes run on until these land, so there is
+       no reason for anything to wait on them. */
+    setTimeout(function () { refreshOptionChain(); refreshInternals(); }, 1500);
     // Holdings outside the workflow universe are priced on their own slower
     // timer, because each one costs a trip through the shared public proxy.
     S.timers.holdings = setInterval(function () {
@@ -739,6 +760,44 @@
         text(pair[0], v == null ? '—' : fmt.pct(v));
         core.cls(pair[0], v == null ? 'flat' : fmt.cls(v));
       });
+  }
+
+  /* What the news lane made of the stream. The feed count already says how
+     much arrived; these say what survived and whether it points anywhere.
+     Reads off the forecast rather than recomputing, so the panel and the model
+     cannot disagree about the same stream. */
+  function renderNewsIntel() {
+    var f = S.forecast, n = f && f.newsDetail;
+    var stories = el('news-stories'), relevant = el('news-relevant'), cons = el('news-consensus');
+    if (!n || !n.hasData) {
+      [stories, relevant, cons].forEach(function (e) { if (e) { e.textContent = '—'; e.className = 'chip'; } });
+      return;
+    }
+    if (stories) {
+      stories.textContent = n.stories + ' stories';
+      stories.title = n.items + ' items folded into ' + n.stories + ' stories (' +
+        n.duplicates + ' syndicated repeats, ' + n.suppressed + ' procedural filings dropped)';
+    }
+    if (relevant) {
+      var rel = n.macro + n.named;
+      relevant.textContent = rel + ' index-relevant';
+      relevant.className = 'chip' + (rel >= 10 ? ' brand' : '');
+      relevant.title = n.macro + ' macro drivers, ' + n.named + ' naming an index constituent' +
+        (n.relevanceReady ? '' : ' — membership list not loaded, so everything is scored equally');
+    }
+    if (cons) {
+      if (n.consensus == null) {
+        cons.textContent = 'no consensus yet';
+        cons.className = 'chip';
+      } else {
+        var pct = Math.round(n.consensus * 100);
+        cons.textContent = pct + '% agree';
+        // Near a coin, the lane's own evidence is split and its vote is shrunk.
+        cons.className = 'chip ' + (pct >= 70 ? 'brand' : '');
+        cons.title = pct + '% of ' + n.opinionated + ' opinionated stories agree on direction; ' +
+          'spread ' + n.dispersion + '. The lane keeps ' + Math.round(n.shrink * 100) + '% of its vote.';
+      }
+    }
   }
 
   function renderFeedCount(payload) {

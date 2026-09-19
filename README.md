@@ -250,6 +250,50 @@ nothing has been fitted yet.
 news archive does: the lane votes and cannot be replayed, so `calibrate()` will
 stay silent about it forever unless the record starts now.
 
+### What the news lane does with 600 headlines
+
+The lane used to average sentiment over everything it held, weighted only by
+recency and a keyword impact tag. Two things were wrong with that, both measured
+on one live 600-item sweep.
+
+**Syndication counted as corroboration.** The dedupe key is a hash of the exact
+headline, so one story from thirteen outlets was thirteen votes. Measured: 14%
+of the pool were near-duplicates, and *"Trump signs Russia sanctions bill"* —
+high impact, sentiment −3 — appeared **seven times**. Stories are now clustered
+by token overlap and one vote is cast per story, with corroboration entering as
+a capped logarithm rather than a multiple: five outlets carrying one story is
+better evidence than one, and nothing like five separate events.
+
+Clustering on word overlap alone merges opposites — *"RBI holds repo rate"* and
+*"RBI cuts repo rate"* share three tokens of five — so opposed sentiment blocks
+a merge. Same words is not the same story when the verdicts disagree.
+
+**Relevance was not a dimension.** The same sweep was scoring *"SEBI Order for
+Compliance — Completion Order for Recovery Certificate"* and *"SBI Nifty Bank
+Index Fund(G)-Direct Plan"* with exactly the weight it gave a headline naming
+Reliance. Headlines now fall into tiers: macro drivers and named index
+constituents at full weight, Next 50 names at half, an unlisted single stock at
+a quarter, and procedural filings at 0.15.
+
+Tiers rather than weights on purpose. NIFTY 50 is free-float market-cap
+weighted and no free source gives those weights, so a weight here would be
+invented — membership is a fact and that is as far as the data honestly goes.
+`scripts/fetch_constituents.py` pulls it from niftyindices.com.
+
+**Consensus, not just the mean.** A weighted mean is easy to drag: 63 relevant
+stories carried a mean of −0.857 with a spread of 1.62 — the tilt was real (22
+positive against 41 negative) but a handful of −4 headlines did much of the
+work. The lane now reports what share of opinionated stories agree with the sign
+of the mean, and shrinks its own vote toward zero when they do not. At full
+disagreement it keeps half; at unanimity, all of it.
+
+Honest about the size of this: on a quiet sweep the aggregate score moved by
+0.017 on the lane, about 0.004 on the bias against a 0.08 threshold. The
+reweighting is right in principle and small in practice on a day with no
+dominant story. Where it matters is a day with one — and the diagnostics are on
+the news console either way: stories after folding, how many bear on the index,
+and whether they agree.
+
 ### Market internals, one request
 
 `allIndices` returns 139 index rows, and three things in it were arriving late
@@ -550,6 +594,8 @@ scripts/fetch_stocks.py        per-stock quotes for the holdings panel
 scripts/build_universe.py      NSE ticker to company name and aliases
 scripts/fetch_options.py       NIFTY option chain: PCR, max pain, OI walls, IV surface
 scripts/fetch_events.py        NSE trading holidays + scheduled global releases
+scripts/fetch_constituents.py  NIFTY 50 / BANK / NEXT 50 membership, for news relevance
+scripts/selftest.js            99 invariants, no dependencies: node scripts/selftest.js
 scripts/fetch_filings.py       BSE and NSE corporate announcements
 scripts/serve.py               dev server: static files plus the fetch loops
 scripts/publish_live.sh        force-pushes data/ to the live-data branch

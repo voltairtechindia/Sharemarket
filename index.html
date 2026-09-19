@@ -232,6 +232,13 @@
         <span class="label">Live news intelligence</span>
         <span class="chip brand" id="feed-count">&mdash; feeds</span>
         <span class="chip" id="news-updated">&mdash;</span>
+        <!-- What the lane actually did with the stream, rather than how much of
+             it arrived. A feed count says the plumbing works; these say how many
+             distinct stories survived deduplication, how many bear on the index,
+             and whether they agree with each other. -->
+        <span class="chip" id="news-stories" title="Distinct stories after folding syndicated repeats">&mdash;</span>
+        <span class="chip" id="news-relevant" title="Stories that bear on the index: macro drivers or named index constituents">&mdash;</span>
+        <span class="chip" id="news-consensus" title="Share of opinionated stories agreeing on direction. Near 50% means the tape is split and the lane's vote is shrunk.">&mdash;</span>
         <div class="news-filters" role="group" aria-label="News filter">
           <button class="filter-btn" data-filter="all"    aria-pressed="true">All</button>
           <button class="filter-btn" data-filter="high"   aria-pressed="false">High impact</button>
