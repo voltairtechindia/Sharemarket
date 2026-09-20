@@ -216,6 +216,7 @@ KT.CONFIG = {
     constituents:'data/constituents.json',
     stocks:      'data/stocks.json',
     universe:    'data/universe.json',
+    ipo:         'data/ipo.json',
     lexicon:     'config/lexicon.json',
     auth:        'config/auth.json',
     /* The session view asks Yahoo for exactly what the hourly view asks for -

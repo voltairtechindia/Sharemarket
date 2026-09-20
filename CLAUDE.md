@@ -581,6 +581,111 @@ have a 700-stock screener with no workflow in the way.
 
 ---
 
+## The IPO product
+
+20 Sep 2026. `ipo.html`, `assets/js/ipo.js`, `assets/js/ipo-app.js`,
+`assets/ipo.css`, `scripts/fetch_ipo.py`. Separate page, shared engine: it
+loads `config`, `core` and `data` from the terminal and forks nothing.
+
+**Every endpoint here was read before a line was written against it.** Neither
+shell in the session that built this can reach nseindia.com, but `WebFetch`
+can, so the response shapes below are captured rather than assumed. That is
+the difference between this and the usual way an integration gets written.
+
+| Endpoint | What it gives |
+|---|---|
+| `/api/all-upcoming-issues?category=ipo` | the pipeline. `status` is `Active` or `Forthcoming`, `series` is `EQ` or `SME` |
+| `/api/ipo-current-issue` | the live book, one row per issue, `noOfTime` is the multiple |
+| `/api/ipo-detail?symbol=&series=` | everything: category-wise book, lot, registrar, lead managers, **the RHP link**, **the Basis of Issue Price link**, and the demand curve |
+| `/api/public-past-issues` | issue price and listing date. No listing price |
+
+Field names that bite: the same quantity arrives as `"8.8642911E7"`, as
+`"5,35,44,600"` and as a number depending on the endpoint, so every read goes
+through `num()`. Indian digit grouping means a comma is not a thousands
+separator.
+
+**`/api/ipo-detail` carries the two documents that answer "show me the
+report".** The Red Herring Prospectus is the filing itself - three years of
+audited financials, the risk factors, what the money is for. "Ratios / Basis of
+Issue Price" is the issuer's own peer comparison, filed with the exchange. The
+page links both to `nsearchives.nseindia.com` rather than reprinting a figure
+it cannot verify.
+
+**Sub-category rows have no quota and must be dropped.** `bidDetails` mixes
+categories with breakdowns of who bid inside them - FIIs and mutual funds sit
+under QIB with a blank `noOfSharesOffered`. Dividing a bid by a blank quota is
+how a breakdown line ends up looking like a 50x subscription. `bid_rows()`
+keeps only rows with an offered quantity.
+
+**Listing gains are measured, not copied.** NSE gives the issue price and the
+listing date and stops. `listing_gain()` reads the listed symbol's own daily
+series from Yahoo and computes issue price against listing-day close. A symbol
+Yahoo does not carry returns None and is left out of the statistics rather than
+guessed, and the page prints how many it priced.
+
+**No GMP, and all three layers say why.** Every grey market premium in
+circulation is scraped from unregulated sites that publish no method and
+disagree with each other by a third on the same morning. The fetcher does not
+fetch one, `KT.ipo.gmp()` returns null with the reason, and the page has a slot
+explaining the absence. Omitting it silently would read as an oversight.
+`selftest.js` asserts all three still say it.
+
+**The scorecard returns factors, never a verdict.** Five of them - demand, who
+is bidding, issue structure, base rate, flags - each carrying what it measured,
+what it scored and the sentence explaining it. A factor with no input scores
+nothing and drops out of the average rather than voting zero, the same rule the
+terminal's lanes follow.
+
+There is no APPLY chip and there will not be one. The honest output of an IPO
+analysis is a set of factors with their working shown; a letter grade from a
+page that has met nobody and knows nothing about the reader's position is
+advice dressed as arithmetic. The panel says "a summary of what the exchange
+has published, not a recommendation" next to the number, every time.
+
+Three judgements inside the scoring, each of which would be wrong if done the
+obvious way:
+
+- **Subscription is scored on a log.** 0.8x and 1.2x are different outcomes;
+  40x and 60x are the same outcome. Linear scoring would let one huge SME book
+  dominate every other factor on the page.
+- **NII is weighted below QIB.** NII money is largely leveraged and much of it
+  exits on listing day, so a book carried by NII alone is weaker than the
+  headline says. QIB did the valuation work and the anchor portion is locked.
+- **A pure offer for sale is marked down.** Not because an OFS is bad, but
+  because every rupee goes to the selling shareholder and none into the
+  company, and a score that ignored it would be hiding where the money lands.
+
+**Coverage is drawn as prominently as the score.** A +0.63 built on two factors
+and a +0.63 built on five are not the same claim and the number cannot tell
+them apart. Under three factors the dial is drawn muted and the panel says "too
+thin to lean on". The dial also has a deadband: `fmt.cls()` calls anything
+above zero up, which is right for a price change and wrong for a summary -
++0.05 in full green reads as a green light when it means the factors nearly
+cancelled.
+
+**The allotment flag reads whichever number exists.** It checked the retail
+line only, so it stayed silent on every issue whose category book had not been
+published - which is most SME issues and every issue on its first morning,
+exactly when somebody is deciding whether to apply. It falls back to the total
+subscription now and says which one it used.
+
+**`data/ipo.json` in the tree is a capture, not a fixture.** Read live from NSE
+on 20 Sep 2026 and committed so the page could be built and reviewed against
+real rows rather than against zero. `scripts/make_ipo_seed.py` reproduces it so
+it is obviously not hand-typed, it carries `origin: "capture"`, and the page
+says so in the sources panel. The workflow overwrites the whole file on its
+first run.
+
+**Still to do, in order.** Listing gains have not run (Yahoo was unreachable
+from this session), so the base-rate factor is dark and the right-hand panel is
+waiting - the first workflow run fills both. DRHP financial extraction is not
+built: the prospectus is a PDF whose structure varies by issuer, and the link
+is published rather than parsed for now. BSE's `IPOTrackerN` gives a whole year
+per call and would extend the history well past what `public-past-issues`
+holds.
+
+---
+
 ## Style
 
 Match the surrounding code. This codebase is ES5-flavoured browser JS with no

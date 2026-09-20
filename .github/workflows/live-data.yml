@@ -99,6 +99,12 @@ jobs:
         run: python scripts/fetch_global.py
         continue-on-error: true
 
+      # IPOs: the pipeline, the live book, the official filing links and the
+      # listing gains computed from each listed symbol's own series.
+      - name: Fetch IPOs
+        run: python scripts/fetch_ipo.py
+        continue-on-error: true
+
       - name: Fetch breadth and institutional flows
         run: python scripts/fetch_flows.py
         continue-on-error: true

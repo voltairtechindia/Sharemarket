@@ -34,7 +34,7 @@ const ROOT = path.resolve(__dirname, '..');
    one. */
 const MODULES = ['config', 'core', 'indicators', 'levels', 'candles', 'patterns',
                  'structures', 'journal', 'portfolio', 'data', 'analogs',
-                 'vol', 'forecast', 'ledger', 'learn', 'evidence'];
+                 'vol', 'forecast', 'ledger', 'learn', 'evidence', 'ipo'];
 
 let pass = 0, fail = 0;
 function ok(name, cond, detail) {
@@ -1229,6 +1229,160 @@ section('PANELS — sectors, movers, flows');
   const stocksSrc = fs.readFileSync(path.join(ROOT, 'scripts/fetch_stocks.py'), 'utf8');
   ok('the stock fetcher prices index members first',
      /_constituents\(\)/.test(stocksSrc) && /constituents\.json/.test(stocksSrc));
+}
+
+/* ===================================================================== IPO */
+section('IPO — the engine');
+{
+  const raw = readJSON('data/ipo.json', null);
+  ok('data/ipo.json exists and parses', !!raw && raw.ok === true);
+
+  const m = KT.ipo.build(raw || {});
+  ok('build returns a model', m.ok === true, `${m.issues.length} issues`);
+  ok('every issue is placed in exactly one phase',
+     m.issues.every(i => ['open', 'closing-today', 'upcoming', 'closed'].includes(i.phase)));
+  ok('open and upcoming are disjoint',
+     !m.open.some(a => m.upcoming.some(b => b.symbol === a.symbol)));
+
+  /* A bad build is worse than no build here: an issue value is what the
+     "biggest IPO" ranking sorts on and what the money-on-the-table tile adds
+     up, so a wrong one is wrong in three places at once. */
+  const nse = m.issues.find(i => i.symbol === 'NSE');
+  ok('issue value is shares times the cap, in crore',
+     Math.abs(nse.issueValueCr - 1785 * 88642911 / 1e7) < 1,
+     `${nse.issueValueCr} Cr`);
+  ok('one lot is the cap times the lot size', nse.lotValue === 1785 * 8, `₹${nse.lotValue}`);
+  ok('band width is measured off the floor', nse.bandWidthPct === 5, `${nse.bandWidthPct}%`);
+
+  /* The category book. Sub-category rows have no quota of their own, and
+     dividing a bid by a blank quota is how a breakdown line ends up looking
+     like a 50x subscription. */
+  const bk = nse.card.book;
+  ok('the book keeps only real categories',
+     bk.rows.every(r => r.offered > 0) && bk.by.qib && bk.by.retail,
+     bk.rows.map(r => r.label).join(', '));
+  ok('QIB and retail are read separately',
+     bk.by.qib.times > 1.5 && bk.by.retail.times < 1,
+     `QIB ${bk.by.qib.times}x, retail ${bk.by.retail.times}x`);
+
+  /* The demand curve is the one object that answers a shape question. */
+  const d = nse.card.demand;
+  ok('the demand curve spans the band', d && d.floor === 1700 && d.cap === 1785, `${d.floor}–${d.cap}`);
+  ok('prices are strictly increasing along the curve',
+     d.points.every((p, i) => i === 0 || p.price > d.points[i - 1].price));
+  ok('atCap is the share of bids surviving at the top',
+     d.atCapPct > 99 && d.atCapPct <= 100, `${d.atCapPct}%`);
+
+  /* Scoring. The rule that matters is the one the index terminal's lanes
+     follow: a factor with no input drops out rather than voting zero, because
+     a neutral score for absent data is an opinion nobody formed. */
+  const c = nse.card;
+  ok('every factor reports hasData explicitly',
+     c.factors.every(f => typeof f.hasData === 'boolean'), `${c.factors.length} factors`);
+  ok('a factor with no data scores nothing and says why',
+     c.factors.filter(f => !f.hasData).every(f => f.score === 0 && f.note.length > 20));
+  ok('the total is bounded', c.total >= -1 && c.total <= 1, String(c.total));
+  ok('coverage is carried next to the total, not hidden',
+     c.covered > 0 && c.of === 5 && /not a recommendation/i.test(c.basis));
+
+  /* A pure offer for sale must be deducted for. Every rupee goes to the
+     selling shareholder and none into the company - not a reason to avoid an
+     issue, but a fact about where the money lands, and the page would be
+     hiding it if the score ignored it. */
+  const struct = c.factors.find(f => f.id === 'structure');
+  ok('a pure offer for sale is marked down', struct.hasData && struct.score < 0,
+     struct.note.slice(0, 60));
+
+  /* Thin coverage must not read as a confident score. */
+  const spectraa = m.issues.find(i => i.symbol === 'SPECTRAA');
+  ok('an 18x book scores well on demand',
+     spectraa.card.factors.find(f => f.id === 'demand').score > 0.8);
+  ok('but its coverage is reported as thin', spectraa.card.covered < 3,
+     `${spectraa.card.covered} of 5 factors`);
+
+  /* Subscription is strongly non-linear in what it predicts: 0.8x and 1.2x
+     are different outcomes, 40x and 60x are the same one. A linear score
+     would let one huge SME book dominate the whole page. */
+  const fake = (t) => KT.ipo.score({ isSme: false, subscription: t, phase: 'open',
+                                     bandLow: 100, bandHigh: 105, detail: null },
+                                   { buckets: null });
+  ok('subscription saturates rather than running away',
+     fake(60).factors[0].score === fake(200).factors[0].score,
+     'both clamp to 1.00');
+  ok('under-subscription is negative, over is positive',
+     fake(0.5).factors[0].score < 0 && fake(3).factors[0].score > 0);
+
+  /* Risk flags are the part a reader should see before applying. */
+  const risky = KT.ipo.score({ isSme: true, subscription: 25, phase: 'closing-today',
+                               bandLow: null, bandHigh: null, detail: null }, { buckets: null });
+  const flags = risky.factors.find(f => f.id === 'risk').flags;
+  ok('SME, a lottery allotment, a closing book and no band all flag',
+     flags.length >= 4, `${flags.length} flags`);
+
+  /* No GMP, on purpose. */
+  ok('no grey market premium is published', m.gmp === null);
+  /* Omitting it silently would read as an oversight. Each of the three
+     places a reader could look says why it is absent. */
+  ok('and every layer says why rather than omitting it silently',
+     [/grey market/i.test(fs.readFileSync(path.join(ROOT, 'assets/js/ipo.js'), 'utf8')),
+      /grey market/i.test(fs.readFileSync(path.join(ROOT, 'scripts/fetch_ipo.py'), 'utf8')),
+      /grey.market/i.test(fs.readFileSync(path.join(ROOT, 'ipo.html'), 'utf8'))]
+       .every(Boolean),
+     'engine, fetcher and page');
+
+  /* Calendar and ranking. */
+  ok('the calendar groups by the month an issue opens',
+     m.calendar.length >= 1 && m.calendar[0].issues.length === m.issues.length,
+     m.calendar.map(c2 => c2.label + ': ' + c2.issues.length).join(', '));
+  ok('the biggest list is ranked by issue value and excludes closed issues',
+     m.headline[0].symbol === 'NSE' && m.headline.every(i => i.phase !== 'closed'));
+
+  /* History says how many it measured, and refuses to invent a base rate. */
+  ok('with nothing priced, the base rate factor goes dark rather than guessing',
+     m.history.n === 0 &&
+     nse.card.factors.find(f => f.id === 'history').hasData === false);
+}
+
+section('IPO — the page and the fetcher');
+{
+  const html = fs.readFileSync(path.join(ROOT, 'ipo.html'), 'utf8');
+  const appSrc = fs.readFileSync(path.join(ROOT, 'assets/js/ipo-app.js'), 'utf8');
+
+  const declared = new Set();
+  let mm;
+  const idRx = /\bid="([A-Za-z0-9_-]+)"/g;
+  while ((mm = idRx.exec(html))) declared.add(mm[1]);
+  const used = new Set();
+  const useRx = /(?:core\.)?(?:text|el)\('([A-Za-z0-9_-]+)'/g;
+  while ((mm = useRx.exec(appSrc))) used.add(mm[1]);
+  const missing = [...used].filter(id => !declared.has(id)).sort();
+  ok('every id the IPO page writes to exists in its markup',
+     missing.length === 0, missing.length ? 'missing: ' + missing.join(', ') : `${used.size} ids`);
+
+  ok('the page shares the terminal’s stylesheet rather than forking the palette',
+     /assets\/style\.css/.test(html) && /assets\/ipo\.css/.test(html));
+  ok('the two pages link to each other',
+     /href="index\.html"/.test(html) &&
+     /href="ipo\.html"/.test(fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8')));
+
+  /* Company names and lead managers come from an exchange feed, which is
+     somebody else's input arriving in this page, and it is built into HTML. */
+  ok('everything interpolated into markup is escaped',
+     /function esc\(/.test(appSrc) &&
+     !/innerHTML\s*=\s*[^;]*\+\s*(?:r|d)\.(?:company|symbol)\b(?!\s*\))/.test(appSrc),
+     'esc() on every feed-sourced string');
+
+  const py = fs.readFileSync(path.join(ROOT, 'scripts/fetch_ipo.py'), 'utf8');
+  ['all-upcoming-issues', 'ipo-current-issue', 'public-past-issues', 'ipo-detail'].forEach(p2 => {
+    ok(`the fetcher reads /${p2}`, py.includes(p2));
+  });
+  ok('listing gains are computed, not copied',
+     /def listing_gain/.test(py) && /query1\.finance\.yahoo\.com/.test(py),
+     'issue price against the listing-day close from the symbol’s own series');
+  ok('a failed run keeps the last good file', /carry_forward\("ipo\.json"/.test(py) ||
+     /carry_forward\(\s*"ipo\.json"/.test(py));
+  ok('the workflow runs it',
+     /fetch_ipo\.py/.test(fs.readFileSync(path.join(ROOT, '.github/workflows/live-data.yml'), 'utf8')));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

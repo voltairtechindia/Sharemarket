@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>IPO Terminal &middot; Voltairtech</title>
+<meta name="description" content="Indian IPOs: the live book, the demand curve, the official prospectus and the measured listing record. Statistics, not commentary." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="assets/style.css" />
+<link rel="stylesheet" href="assets/ipo.css" />
+</head>
+<body class="ipo-body">
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">I</div>
+    <div>
+      <span class="brand-name">IPO Terminal</span>
+      <span class="brand-sub">Voltairtech &middot; internal</span>
+    </div>
+  </div>
+
+  <div class="ipo-topstats" id="ipo-topstats"></div>
+
+  <div class="topbar-right">
+    <a class="btn btn-sm" href="index.html" title="The NIFTY and SENSEX terminal">&larr; Index terminal</a>
+    <div class="clock">
+      <span class="dot" id="market-dot"></span>
+      <span class="clock-time" id="market-clock">--:--:--</span>
+      <span class="clock-state" id="market-state">&mdash;</span>
+    </div>
+    <button class="icon-btn" id="btn-theme" title="Toggle dark mode" aria-label="Toggle dark mode">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+  </div>
+</header>
+
+<div class="ipo-workspace">
+
+  <!-- ------------------------------------------------------- LEFT: the list -->
+  <aside class="panel ipo-list-panel" aria-label="Issues">
+    <div class="ipo-tabs" role="tablist">
+      <button class="ipo-tab is-on" data-list="open" role="tab" aria-selected="true">Open now</button>
+      <button class="ipo-tab" data-list="upcoming" role="tab" aria-selected="false">Coming</button>
+      <button class="ipo-tab" data-list="big" role="tab" aria-selected="false">Biggest</button>
+    </div>
+    <div class="panel-scroll">
+      <div id="ipo-list"></div>
+
+      <div class="section" id="ipo-calendar-section">
+        <div class="section-head">
+          <span class="label">Calendar</span>
+          <span class="label" id="ipo-cal-note">&mdash;</span>
+        </div>
+        <div id="ipo-calendar"></div>
+      </div>
+
+      <div class="section">
+        <div class="section-head">
+          <span class="label">Where this comes from</span>
+          <span class="label" id="ipo-updated">&mdash;</span>
+        </div>
+        <div id="ipo-lanes"></div>
+        <p class="hint" id="ipo-source">&mdash;</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- --------------------------------------------------- CENTRE: the company -->
+  <main class="panel ipo-main" aria-label="Issue detail">
+    <div class="panel-scroll" id="ipo-detail">
+      <div class="ipo-empty" id="ipo-empty">
+        <strong>Loading Indian IPOs&hellip;</strong>
+        <span class="muted">Pipeline, live book and the measured listing record.</span>
+      </div>
+    </div>
+  </main>
+
+  <!-- ------------------------------------------------- RIGHT: the base rate -->
+  <aside class="panel ipo-side" aria-label="Market record">
+    <div class="panel-scroll">
+      <div class="section">
+        <div class="section-head">
+          <span class="label">Listing record</span>
+          <span class="label" id="ipo-hist-n">&mdash;</span>
+        </div>
+        <div id="ipo-hist-summary"></div>
+        <p class="hint" id="ipo-hist-note">&mdash;</p>
+      </div>
+
+      <div class="section" id="ipo-year-section">
+        <div class="section-head">
+          <span class="label">By listing year</span>
+          <span class="label">gain on listing day</span>
+        </div>
+        <div id="ipo-years"></div>
+      </div>
+
+      <div class="section" id="ipo-recent-section">
+        <div class="section-head">
+          <span class="label">Recent listings</span>
+          <span class="label">issue &rarr; close</span>
+        </div>
+        <div id="ipo-recent"></div>
+      </div>
+
+      <div class="section">
+        <div class="section-head"><span class="label">Grey market premium</span></div>
+        <p class="hint" id="ipo-gmp">
+          Not shown. Every GMP figure in circulation is scraped from unregulated grey-market
+          sites, none of them publish a method, and they disagree with each other by a third
+          on the same morning. This page will show one when there is a source whose record can
+          be scored against actual listing gains the way the numbers above are.
+        </p>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script src="assets/js/config.js"></script>
+<script src="assets/js/core.js"></script>
+<script src="assets/js/data.js"></script>
+<script src="assets/js/ipo.js"></script>
+<script src="assets/js/ipo-app.js"></script>
+</body>
+</html>
