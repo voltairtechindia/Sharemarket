@@ -180,7 +180,8 @@ constantly and the auto-router survives that. With reasoning off it was usable
 
 ## Load order is a dependency order
 
-`config` → `core` → `indicators` → `levels` → `structures` → `vol` →
+`config` → `core` → `indicators` → `levels` → `candles` → `patterns` →
+`structures` → `vol` →
 `forecast` → `ledger` → `learn` → `engine` → `chart` → `app`. The script tags in
 `index.html` are commented with this. Reordering them breaks the page silently.
 
@@ -395,6 +396,97 @@ ranges around 23,250 and notes like "Self-taught from previous predictions". It
 predates the ledger, is read by no screen and no script, and is exactly what the
 rule at the top of this file is about. The real forward record is `fcLedger` and
 `fcLocks` in localStorage. Delete the file or wire it; do not leave it.
+
+---
+
+## The chart, the patterns, the count, and the model's vote
+
+Added 20 Sep 2026, second pass.
+
+**Series creation order is the only z-index there is.** Lightweight Charts
+paints series in the order they were added, so `lockSeries`, `actualSeries` and
+`fcSeries` are created *before* `candleSeries` and the candles land on top of
+them. Moving the candle block back above those three would silently undo it -
+no error, no visual clue beyond the chart looking busier. The three lines run
+through `soften()` at 0.45-0.6 alpha for the same reason: the brief is candles
+first, guides underneath.
+
+The News-only and Pattern-only projections are gone from the chart. They are
+still computed and still on the forecast panel as "News says" / "Pattern says";
+four coloured lines fanning out of one point read as four forecasts rather than
+one forecast and its components.
+
+**The hover card is four lines and stays off the time axis.** It carried the
+per-lane bars, the likely range and a three-clause footnote - all of which are
+on the panel to the right, permanently and with more room - so it was repeating
+the panel on top of the one thing only the chart has. Position now asks
+`chart.timeScale().height()` for the axis height rather than guessing, because
+that height changes with the font and with `secondsVisible`. The `why` overlay
+flag switches the whole card off.
+
+**86 detectors across 64 families, in `candles.js`.** The table moved out of
+`patterns.js`; the scan and the measured record stayed. That split is the point:
+a detector is added by adding a row, and it is then scored whether its author
+wanted it scored or not. A pattern that cannot be added without a record cannot
+be added as decoration.
+
+Two rules the table enforces and `selftest.js` checks. Every threshold is in
+ATR, so multiplying every price by ten flips no verdict - asserted across all 86.
+And trend context is mandatory where the textbook requires it: a hammer and a
+hanging man are the *same candle*, and a detector that ignores what came before
+is detecting a shape and guessing which one it is.
+
+Several of these fire a handful of times a decade - concealing baby swallow,
+ladder bottom, three stars in the south, kicking. They read n=0 and that is the
+right answer, not a reason to loosen the rule until something matches.
+
+**The scan is cached because of what the numbers are.** 86 detectors across
+1,651 bars is 142,000 test calls, measured at 44ms, and `recompute()` runs on
+the one-second tick. A closed bar's shape cannot change, so the full scan runs
+once per closed bar and every tick after that rescans the last 16 bars -
+comfortably past the deepest detector window. Measured 44ms cold, 0.65ms warm.
+The cache key is length plus the last bar's **time**, never its close: keying on
+the close invalidates every tick and caches nothing. `selftest.js` asserts the
+cached result equals the scan it caches, because a cache that returns something
+different is a silent wrong answer rather than a slow one.
+
+**`evidence.js` counts observations, not work.** One value read from a source
+and fed into a calculation is one. The 142,000 pattern tests are not - counting
+a test that returned false would quadruple the headline and add nothing. A feed
+that returned 200 and whose items were all dropped counts once as a feed polled,
+not once per wasted item. Live on the current series it totals about 45,000
+across 17 groups, and the panel itemises every one with its source.
+
+Each field in `evidenceContext()` reads the shape `app.js` actually holds, not
+one that looked plausible - `S.filings` is a summary with a `count`, the symbol
+universe lives in `portfolio.js`, the feed total arrives on the news payload. A
+count reading an absent field reports zero forever and nobody notices, which is
+the failure this panel exists to argue against.
+
+**The model is a lane, and it never sees the answer.** OpenRouter votes on
+direction: one number in [-1, 1], weighted at 0.08, renormalised, recorded in
+the ledger and scorable by `learn.js` like the other eight. It cannot write a
+price, a band, a probability or a weight.
+
+The prompt in `maybeAskModelVote()` contains no `f.direction`, `f.bias`,
+`f.confidence` or `f.range*` - only the evidence. Show a model the answer and it
+agrees with the answer; the lane then reads as independent confirmation and is
+in fact a mirror. That is the `sgx_nifty` failure one level up and much harder
+to spot, because a mirror and a good analyst produce the same number on the days
+it does not matter. `selftest.js` greps the function for those fields.
+
+0.08 is below an equal share (nine lanes at par is 0.111) because the model is
+the only lane whose reasoning cannot be re-derived from its inputs. A vote older
+than twenty minutes goes dark rather than stale, same rule `optionsLane()`
+applies to a four-hour-old chain.
+
+`parseVote()` rejects rather than coerces. A classifier verdict, prose with no
+JSON, a missing score, a one-word reason: none becomes a vote. A score of 5 is
+**dropped, not clamped to 1** - a model answering 5 has misread the question,
+and quietly turning that into a maximum bullish vote would hide that it did.
+Those cases are unit-tested by lifting `parseVote` out of `app.js`, because
+`openrouter.ai` is not reachable from CI and the guard is the only thing between
+a free-tier router and 8% of the forecast.
 
 ---
 

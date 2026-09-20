@@ -166,8 +166,6 @@
       <div class="chart-legend">
         <span class="lg"><span class="lg-swatch hist"></span> Past &amp; current &middot; 4/5</span>
         <span class="lg" title="All lanes blended. This is the headline forecast."><span class="lg-swatch fc"></span> Blended forecast &middot; 1/5</span>
-        <span class="lg" title="News flow and global cues only, with no chart input at all."><span class="lg-swatch fcnews"></span> News only</span>
-        <span class="lg" title="Chart structure, momentum and room to the next level. No headline input."><span class="lg-swatch fcpat"></span> Pattern only</span>
         <span class="lg" title="The call frozen when this session opened. It is never rewritten, so the line you see at close is the line that was drawn at the open."><span class="lg-swatch lock"></span> Predicted &middot; locked</span>
         <span class="lg" title="What price actually did over the locked window. The gap between this and the line above is the error, in points."><span class="lg-swatch act"></span> Actual</span>
         <span class="lg" id="reason-granularity">Reason points: every 1 hour</span>
@@ -179,6 +177,7 @@
         <button class="ov-btn"        data-ov="bands"      title="Bollinger bands, 20 period 2 sigma">Bands</button>
         <button class="ov-btn"        data-ov="supertrend" title="Supertrend 10 period, 3x ATR">Supertrend</button>
         <button class="ov-btn"        data-ov="vwap"       title="Session VWAP (needs volume)">VWAP</button>
+        <button class="ov-btn is-on"  data-ov="why"        title="The hover card explaining why the line is at a given point">Why</button>
       </div>
     </div>
 
@@ -204,6 +203,14 @@
            happened; on the right it is why the model thinks what it thinks at
            that particular minute - which is not the same at 09:20 as at 15:30,
            because each lane's push arrives on its own curve. -->
+      <!-- Four lines, and it stays above the time axis.
+
+           It used to carry the per-lane bars, the likely range and a
+           three-clause footnote. All of that is on the forecast panel to the
+           right, permanently and in more space, so the card was repeating it
+           on top of the chart and covering the one thing only the chart has:
+           the time axis. What is left is what the panel cannot answer, which
+           is why the line is at THIS point rather than overall. -->
       <div class="forecast-card hidden" id="forecast-card" role="status">
         <div class="fcard-head">
           <span class="fcard-when" id="fcd-when">&mdash;</span>
@@ -214,12 +221,6 @@
           <span class="fcard-prob" id="fcd-prob">&mdash;</span>
         </div>
         <p class="fcard-lead" id="fcd-lead">&mdash;</p>
-        <div class="fcard-bars" id="fcd-bars"></div>
-        <div class="fcard-foot">
-          <span id="fcd-range">&mdash;</span>
-          <span id="fcd-width">&mdash;</span>
-        </div>
-        <p class="fcard-fine" id="fcd-fine">&mdash;</p>
       </div>
 
       <div class="chart-empty" id="chart-empty">
@@ -447,6 +448,20 @@
         <!-- What the model has changed about itself. Empty of drama on
              purpose: see renderLearn() in app.js. -->
         <p class="learn-note" id="learn-note">&mdash;</p>
+      </div>
+
+      <!-- ========================================================= EVIDENCE
+           "Analyses thousands of datapoints" is the emptiest sentence in this
+           industry. The only thing that makes it not empty is itemising it,
+           so the number is a button and the button opens the list. -->
+      <div class="section" id="evidence-section">
+        <div class="section-head">
+          <span class="label">Evidence behind this forecast</span>
+          <button class="btn btn-sm" id="btn-evidence" aria-expanded="false">Break it down</button>
+        </div>
+        <div class="ev-total"><span class="ev-total-n num" id="ev-total">&mdash;</span><span class="ev-total-k">observations read and scored</span></div>
+        <div class="ev-list" id="ev-list" hidden></div>
+        <p class="ev-note" id="ev-note">&mdash;</p>
       </div>
 
       <!-- Pattern recognition, with each pattern's own measured record -->
@@ -734,6 +749,9 @@
 <script src="assets/js/core.js"></script>
 <script src="assets/js/indicators.js"></script>
 <script src="assets/js/levels.js"></script>
+<!-- candles.js is the detector table; patterns.js is the scan and the
+     measured record that scores it. Table first. -->
+<script src="assets/js/candles.js"></script>
 <script src="assets/js/patterns.js"></script>
 <script src="assets/js/structures.js"></script>
 <script src="assets/js/journal.js"></script>
@@ -746,6 +764,8 @@
 <!-- learn reads the ledger and is read by forecast at build time, so it
      sits between them in the load order. -->
 <script src="assets/js/learn.js"></script>
+<!-- evidence reads every other module's output, so it loads after them. -->
+<script src="assets/js/evidence.js"></script>
 <script src="assets/js/engine.js"></script>
 <script src="assets/js/chart.js"></script>
 <script src="assets/js/app.js"></script>

@@ -32,9 +32,9 @@ const ROOT = path.resolve(__dirname, '..');
 /* Load order matters and mirrors index.html. data.js is here because the JS
    option-chain summariser lives in it and has to be checked against the Python
    one. */
-const MODULES = ['config', 'core', 'indicators', 'levels', 'patterns',
+const MODULES = ['config', 'core', 'indicators', 'levels', 'candles', 'patterns',
                  'structures', 'journal', 'portfolio', 'data', 'analogs',
-                 'vol', 'forecast', 'ledger', 'learn'];
+                 'vol', 'forecast', 'ledger', 'learn', 'evidence'];
 
 let pass = 0, fail = 0;
 function ok(name, cond, detail) {
@@ -901,6 +901,211 @@ section('CHART — the band lines are gone');
   ok('checkpoints still carry both bands',
      f.checkpoints.every(c => c.low != null && c.high != null &&
                               c.low95 != null && c.high95 != null));
+}
+
+/* ================================================= THE CANDLESTICK LIBRARY */
+section('CANDLES — the pattern table');
+{
+  const SET = KT.candles.SET;
+  ok('the table is the full canon, not a handful',
+     KT.candles.families >= 60 && SET.length >= 80,
+     `${SET.length} detectors across ${KT.candles.families} families`);
+
+  const keys = SET.map(d => d.key);
+  ok('no duplicate keys', new Set(keys).size === keys.length);
+  ok('every row is complete',
+     SET.every(d => d.key && d.name && d.why && d.need >= 2 && [1, 0, -1].includes(d.dir)));
+  ok('every row declares how far back it reads',
+     SET.every(d => typeof d.test === 'function' && d.need >= 2));
+
+  /* A hammer and a hanging man are the SAME candle. The only thing separating
+     them is what came before, so a detector that ignores trend context is not
+     detecting either one - it is detecting a shape and guessing. */
+  // Long lower wick, small upper, a real body: the classic hammer shape.
+  const shape = { open: 99.5, high: 100.4, low: 96, close: 100.2 };
+  const upTrend = [], downTrend = [];
+  for (let i = 0; i < 12; i++) {
+    upTrend.push({ time: i * 300, open: 90 + i, high: 91 + i, low: 89 + i, close: 90.8 + i });
+    downTrend.push({ time: i * 300, open: 115 - i, high: 116 - i, low: 114 - i, close: 114.2 - i });
+  }
+  upTrend.push({ ...shape, time: 12 * 300 });
+  downTrend.push({ ...shape, time: 12 * 300 });
+  const hammer = SET.find(d => d.key === 'hammer');
+  const hanging = SET.find(d => d.key === 'hanging_man');
+  const A = 2.0, last = 12;
+  ok('the same candle is a hammer after a fall',
+     hammer.test(downTrend, last, A) && !hanging.test(downTrend, last, A));
+  ok('and a hanging man after a rise',
+     hanging.test(upTrend, last, A) && !hammer.test(upTrend, last, A),
+     'trend context is what separates them');
+
+  /* Thresholds must be in ATR, not points, or every rule breaks the moment the
+     instrument or the timeframe changes. Scaling every price by 10 must not
+     change a single verdict once the ATR is scaled with it. */
+  const base = downTrend.map(b => ({ ...b }));
+  const scaled = base.map(b => ({ time: b.time, open: b.open * 10, high: b.high * 10,
+                                  low: b.low * 10, close: b.close * 10 }));
+  const differ = SET.filter(d => {
+    let a = false, b = false;
+    try { a = !!d.test(base, last, A); } catch (e) { a = null; }
+    try { b = !!d.test(scaled, last, A * 10); } catch (e) { b = null; }
+    return a !== b;
+  }).map(d => d.key);
+  ok('every threshold is in ATR, so a 10x price change flips no verdict',
+     differ.length === 0, differ.length ? 'scale-dependent: ' + differ.join(', ') : `${SET.length} detectors`);
+
+  // No detector may read past the end of the series or throw on a short one.
+  let threw = null;
+  try {
+    for (let n = 2; n < 14; n++) KT.patterns.detect(base.slice(0, n));
+    KT.patterns.detect([]);
+  } catch (e) { threw = e.message; }
+  ok('a series too short for a detector is skipped, not crashed', threw === null, threw || '');
+}
+
+section('PATTERNS — the scan, and its cache');
+{
+  const found = KT.patterns.detect(candles.slice());
+  const keysHit = {};
+  found.forEach(p => { keysHit[p.key] = (keysHit[p.key] || 0) + 1; });
+  ok('the real series fires a broad share of the table',
+     Object.keys(keysHit).length >= 45,
+     `${Object.keys(keysHit).length} distinct patterns, ${found.length} hits on ${candles.length} bars`);
+
+  /* The cache is the only reason 86 detectors are affordable on a one-second
+     tick, and a cache that returns something different from a full scan is a
+     silent wrong answer rather than a slow one. Force a cold scan by handing
+     it a series whose first bar differs, then compare. */
+  const warm = KT.patterns.detect(candles.slice());
+  ok('the cached scan equals the scan it caches',
+     warm.length === found.length &&
+     warm.every((p, i) => p.key === found[i].key && p.index === found[i].index),
+     `${warm.length} hits both ways`);
+
+  /* A new bar must invalidate it. Keying on the close instead of the time
+     would invalidate on every tick and cache nothing; keying on length alone
+     would never notice a series replaced with a different one. */
+  const grown = candles.slice();
+  const lastBar = grown[grown.length - 1];
+  grown.push({ time: lastBar.time + 300, open: lastBar.close, high: lastBar.close + 20,
+               low: lastBar.close - 60, close: lastBar.close + 2 });
+  const after = KT.patterns.detect(grown);
+  ok('a new bar is picked up rather than served from cache',
+     after.length >= found.length, `${found.length} -> ${after.length}`);
+
+  const t0 = Date.now();
+  for (let i = 0; i < 10; i++) {
+    candles[candles.length - 1].close += 0.01;
+    KT.patterns.detect(candles);
+  }
+  const perTick = (Date.now() - t0) / 10;
+  ok('a warm scan fits inside the one-second tick', perTick < 15, `${perTick.toFixed(1)}ms per tick`);
+
+  const stats = KT.patterns.hitRates(candles, found);
+  const rows = Array.isArray(stats) ? stats : Object.keys(stats).map(k => stats[k]);
+  ok('every pattern found carries its own measured record',
+     rows.length > 0 && rows.every(r => r.n != null || r.hits != null),
+     `${rows.length} scored`);
+
+  ok('the chart is not flooded with markers',
+     KT.patterns.markers(found, stats, 8).length <= 8,
+     'the full table belongs in the panel, not on the candles');
+}
+
+/* ================================================== THE MODEL AS A LANE */
+section('FORECAST — the model lane');
+{
+  const now = Date.now();
+  ok('no vote means the lane drops out, not votes zero',
+     KT.forecast.modelLane(null, now).hasData === false);
+  ok('a malformed vote drops out too',
+     KT.forecast.modelLane({ score: NaN, at: now }, now).hasData === false);
+
+  const fresh = KT.forecast.modelLane({ score: 0.6, at: now, why: 'x' }, now);
+  ok('a fresh vote is live and carries its score', fresh.hasData && fresh.score === 0.6);
+
+  /* Stale is dark, not quiet. Twenty-minute-old headlines are not a current
+     read of anything, and a lane that keeps voting on them is the same lie as
+     restamping a carried-forward option chain. */
+  const stale = KT.forecast.modelLane(
+    { score: 0.6, at: now - KT.forecast.MODEL_MAX_AGE_MS - 1000, why: 'x' }, now);
+  ok('a stale vote goes dark rather than stale', stale.hasData === false, stale.note);
+
+  ok('a vote outside the scale is clamped, never trusted as given',
+     KT.forecast.modelLane({ score: 9, at: now }, now).score === 1 &&
+     KT.forecast.modelLane({ score: -9, at: now }, now).score === -1);
+
+  const w = KT.CONFIG.forecast.weights;
+  /* Less than an equal share. Nine lanes at par is 0.111; the one lane whose
+     reasoning cannot be re-derived from its inputs gets less than par until
+     the record says otherwise. */
+  const par = 1 / Object.keys(w).length;
+  ok('the model gets less than an equal share of the vote',
+     w.model > 0 && w.model < par,
+     `model ${w.model} against a par share of ${par.toFixed(3)}`);
+  ok('and less than every lane whose working is checkable arithmetic',
+     ['news', 'momentum', 'global', 'structure', 'seasonal', 'options'].every(k => w[k] > w.model));
+  ok('nine lanes still sum to 1',
+     Math.abs(Object.keys(w).reduce((a, k) => a + w[k], 0) - 1) < 1e-9);
+
+  /* The lane must renormalise away when dark, not drag the bias toward zero.
+     Two builds, identical but for the vote: the other lanes' contributions
+     must be LARGER when the model is absent, because its weight went to them. */
+  const base = { candles: candles.slice(), timeframe: '1D', news, seasonality, options, vix: 11.9 };
+  const without = KT.forecast.build(base);
+  const with_ = KT.forecast.build(Object.assign({}, base, {
+    modelVote: { score: 0, at: Date.now(), why: 'no view either way, evidence is mixed here' },
+  }));
+  const newsWithout = without.lanes.find(l => l.id === 'news').contribution;
+  const newsWith = with_.lanes.find(l => l.id === 'news').contribution;
+  ok('a dark model lane hands its weight to the lanes that did report',
+     Math.abs(newsWithout) > Math.abs(newsWith),
+     `news contributes ${newsWithout} with the model dark, ${newsWith} with it live`);
+
+  /* The prompt must not contain the engine's own verdict. Show a model the
+     answer and it agrees with the answer; the lane is then a mirror wearing a
+     lane's clothes, which is the sgx_nifty failure one level up. */
+  const appSrc = fs.readFileSync(path.join(ROOT, 'assets/js/app.js'), 'utf8');
+  const voteFn = appSrc.slice(appSrc.indexOf('function maybeAskModelVote()'),
+                              appSrc.indexOf('function parseVote('));
+  ok('the vote prompt never shows the model the engine’s answer',
+     !/f\.direction|f\.bias|f\.confidence|f\.rangeLow|f\.rangeHigh|f\.target/.test(voteFn),
+     'it gets the evidence, not the verdict');
+  ok('and it does hand over the real evidence',
+     /headlines|cues|positioning|readings/i.test(voteFn));
+
+  /* parseVote lives in app.js, which this suite does not load as a module -
+     app.js boots a page. It is lifted out and exercised directly, because it
+     is the only thing standing between a free-tier router's output and 8% of
+     the forecast, and the OpenRouter call itself cannot be reached from CI. */
+  const pvSrc = appSrc.slice(appSrc.indexOf('function parseVote('),
+                             appSrc.indexOf('function maybeEnrichNarrative('));
+  // eslint-disable-next-line no-new-func
+  const parseVote = new Function(pvSrc + '; return parseVote;')();
+
+  const good = parseVote('{"score": 0.4, "why": "Overnight futures are firm and the option chain leans long."}');
+  ok('a well-formed vote parses', good && good.score === 0.4);
+  ok('a fenced reply still parses',
+     !!parseVote('```json\n{"score": -0.3, "why": "Crude is up sharply and the rupee is weakening into the open."}\n```'));
+
+  /* Each of these arrived, or its shape arrived, from the free pool during
+     work on this repo. None may become a vote. */
+  ok('a classifier verdict is not a vote', parseVote('User Safety: safe') === null);
+  ok('prose with no JSON is not a vote',
+     parseVote('I think the market goes up today because of strong global cues.') === null);
+  ok('an empty completion is not a vote', parseVote('') === null && parseVote(null) === null);
+  ok('a missing score is not a vote',
+     parseVote('{"why": "The evidence here is mixed and points nowhere in particular."}') === null);
+  ok('a one-word reason is not an explanation',
+     parseVote('{"score": 0.5, "why": "bullish"}') === null);
+
+  /* Out of scale is DROPPED, not clamped. A model answering 5 has misread the
+     question, and quietly turning that into 1 would hide that it did. */
+  ok('a vote on the wrong scale is dropped rather than clamped',
+     parseVote('{"score": 5, "why": "Very strongly bullish given the overnight move in US futures."}') === null &&
+     parseVote('{"score": -12, "why": "Very strongly bearish given the overnight move in US futures."}') === null);
+  ok('but the edges of the real scale are accepted',
+     parseVote('{"score": 1, "why": "Everything in the evidence points the same way this morning."}').score === 1);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

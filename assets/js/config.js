@@ -236,18 +236,37 @@ KT.CONFIG = {
        order is unchanged and the new lane paid for itself out of all of them
        equally. That is the least opinionated way to make room. */
     weights: {
-      news: 0.216,      // the loudest short-horizon input, and the fastest to decay
-      momentum: 0.180,  // trend, RSI, MACD, supertrend, scaled by ADX
-      global: 0.144,    // overnight futures, crude, dollar, rupee, US 10y
-      structure: 0.117, // measured moves from triangles, flags, double tops
-      seasonal: 0.108,  // month, weekday and expiry-week effects
-      levels: 0.072,    // how much room there is before the next wall
-      flow: 0.063,      // breadth, FII and DII when the workflow has them
+      news: 0.1987,     // the loudest short-horizon input, and the fastest to decay
+      momentum: 0.1656, // trend, RSI, MACD, supertrend, scaled by ADX
+      global: 0.1325,   // overnight futures, Asia, crude, dollar, rupee, US 10y
+      structure: 0.1076,// measured moves from triangles, flags, double tops
+      seasonal: 0.0994, // month, weekday and expiry-week effects
+      levels: 0.0662,   // how much room there is before the next wall
+      flow: 0.0580,     // breadth, FII and DII when the workflow has them
       /* The only forward-looking lane: PCR on today's open interest, the OI
          walls and max pain. Deliberately modest - the direction convention it
          uses is standard practice rather than something measured here, and it
          arrives through the workflow so it is hours old by construction. */
-      options: 0.100,
+      options: 0.0920,
+      /* The language model's own read, added 20 Sep 2026. It is a lane and
+         nothing more: a number between -1 and +1, weighted, renormalised and
+         scored in the ledger exactly like the other eight. It cannot write a
+         price, a band or a probability.
+
+         0.08 is below an equal share. Nine lanes at par would be 0.111 each,
+         and the model gets less than that on purpose: it is the only lane
+         whose reasoning cannot be re-derived from its inputs - every other one
+         is arithmetic somebody can check line by line - so it has to earn more
+         before it is listened to more. Only two lanes sit below it, flows at
+         0.058 and room-to-run at 0.066, and both are there because their data
+         is thin rather than because their working is unverifiable. The learner
+         can raise the model's weight, and will only do so off settled calls.
+
+         The eight existing weights were scaled by 0.92 to make room rather
+         than re-argued, so their relative order is unchanged and the new lane
+         paid for itself out of all of them equally. Same move as when options
+         joined at 0.9; it is the least opinionated way to make room. */
+      model: 0.0800,
     },
     maxDriftPctPerBar: 0.06,   // cap so the projection never runs away
     coneVolMultiplier: 1.15,   // widen the likely-range band a touch

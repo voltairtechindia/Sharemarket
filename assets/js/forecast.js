@@ -661,6 +661,55 @@
     };
   }
 
+  /* ==================================================== the model's read
+
+     The only lane on this page whose working cannot be re-derived from its
+     inputs. Every other lane is arithmetic a reader can check line by line;
+     this one is a language model's opinion, and it is admitted on exactly the
+     same terms as the rest - a number between -1 and +1, a weight, and a row
+     in the ledger that scores it against what actually happened.
+
+     What it is not allowed to do is anywhere near as important as what it is.
+     It cannot write a price, a band, a probability or a weight. It votes, the
+     vote is clamped, the vote is renormalised against the lanes that reported,
+     and if it is wrong often enough the learner will quietly turn it down.
+
+     Two things make the difference between a real lane and a flattering one:
+
+       It never sees the engine's verdict. The prompt in app.js hands it the
+       raw evidence - price, headlines, cues, positioning, momentum readings -
+       and not the blended bias. Show a model the answer and it will agree with
+       it, and the lane then reads as independent confirmation while adding
+       nothing. That is the same failure as `sgx_nifty` feeding NIFTY back into
+       the global lane, one level up and much harder to spot.
+
+       It goes dark rather than stale. A vote older than MODEL_MAX_AGE_MS is
+       not a current read of anything - the headlines have turned over - so the
+       lane drops out and its weight goes to the lanes that did report. That is
+       the same rule optionsLane() applies to a four-hour-old chain, and for
+       the same reason. */
+  var MODEL_MAX_AGE_MS = 20 * 60 * 1000;
+
+  function modelLane(vote, nowMs) {
+    if (!vote || vote.score == null || !isFinite(vote.score)) {
+      return { score: 0, note: 'no model read yet', hasData: false };
+    }
+    var age = (nowMs || Date.now()) - (vote.at || 0);
+    if (age > MODEL_MAX_AGE_MS) {
+      return { score: 0, hasData: false,
+               note: 'last read ' + Math.round(age / 60000) + ' min old, dropped' };
+    }
+    var score = core.clamp(vote.score, -1, 1);
+    var mins = Math.round(age / 60000);
+    return {
+      score: score, hasData: true,
+      model: vote.model || null,
+      why: vote.why || '',
+      note: (vote.why ? String(vote.why).slice(0, 110) : 'no reason given') +
+            ' (' + (mins < 1 ? 'just now' : mins + ' min ago') + ')',
+    };
+  }
+
   /* ==================================================== the opening gap
 
      Every other lane in this file answers "which way from here". This one
@@ -1159,6 +1208,7 @@
     var lvl = levelsLane(lv, lastClose, atr);
     var flow = flowLane(ctx.flows);
     var opts = optionsLane(ctx.options, lastClose, Date.now());
+    var mdl = modelLane(ctx.modelVote, Date.now());
 
     /* ------------------------------------------------------ opening gap
        Only meaningful while India is shut. Intraday there is no gap left to
@@ -1193,6 +1243,7 @@
       { id: 'levels', label: 'Room to run', score: lvl.score, weight: W.levels, note: lvl.note, hasData: lvl.hasData },
       { id: 'flow', label: 'Flows and breadth', score: flow.score, weight: W.flow, note: flow.note, hasData: flow.hasData },
       { id: 'options', label: 'Options positioning', score: opts.score, weight: W.options, note: opts.note, hasData: opts.hasData },
+      { id: 'model', label: 'Model read', score: mdl.score, weight: W.model, note: mdl.note, hasData: mdl.hasData },
     ];
 
     /* Lanes with no data must not drag the bias toward zero. Renormalise over
@@ -1248,9 +1299,14 @@
        happen. Splitting them means the path bends the way the inputs actually
        behave instead of following one arbitrary curve. */
     var newsPart = (nAll.score * W.news + glob.score * W.global) / wsum;
+    /* The model is in the even group, not the news group. It is handed the
+       headlines but it is also handed positioning, momentum and the cues, so
+       what it produces is a read of the whole picture rather than a reaction
+       to a headline - and a read of the whole picture applies across the
+       session rather than decaying out of it in the first hour. */
     var evenPart = (seasonal.score * W.seasonal + mom.score * W.momentum +
                     lvl.score * W.levels + flow.score * W.flow +
-                    opts.score * W.options) / wsum;
+                    opts.score * W.options + mdl.score * W.model) / wsum;
     var structPart = (struct.score * W.structure) / wsum;
 
     var horizonSigma = sigmaBlend * Math.sqrt(bars);
@@ -1327,7 +1383,7 @@
        its own version of this is how build() and calibrate() drifted apart. */
     var GROUP_OF = { news: 'news', global: 'news', structure: 'struct',
                      seasonal: 'even', momentum: 'even', levels: 'even', flow: 'even',
-                     options: 'even' };
+                     options: 'even', model: 'even' };
     var attribution = drawn.detail.map(function (d) {
       var curve = { news: d.parts.newsDecay, even: d.parts.evenRamp,
                     struct: d.parts.structRamp, shape: 1 };
@@ -1581,6 +1637,7 @@
          a number: intraday the gap is behind us and this object is a stale
          description of a reprice that already happened, so showing it then
          would be an answer to a question the clock has closed. */
+      modelRead: mdl.hasData ? { score: r3(mdl.score), why: mdl.why, model: mdl.model } : null,
       open: {
         applies: gapApplies,
         hasData: open.hasData,
@@ -2053,6 +2110,7 @@
     newsLane: newsLane, seasonalLane: seasonalLane, momentumLane: momentumLane,
     globalLane: globalLane, levelsLane: levelsLane, flowLane: flowLane,
     optionsLane: optionsLane, openLane: openLane, openBetaDefaults: OPEN_BETA,
+    modelLane: modelLane, MODEL_MAX_AGE_MS: MODEL_MAX_AGE_MS,
     barsToSessionClose: barsToSessionClose,
     volProfile: volProfile, dayShape: dayShape, ncdf: ncdf,
     bandPath: bandPath, volContext: volContext, advance: advance,

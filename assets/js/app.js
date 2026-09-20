@@ -213,6 +213,15 @@
       recompute();
     });
 
+    el('btn-evidence').addEventListener('click', function () {
+      evidenceOpen = !evidenceOpen;
+      var box = el('ev-list');
+      if (box) box.hidden = !evidenceOpen;
+      this.textContent = evidenceOpen ? 'Hide the breakdown' : 'Break it down';
+      this.setAttribute('aria-expanded', evidenceOpen ? 'true' : 'false');
+      renderEvidence();
+    });
+
     el('btn-theme').addEventListener('click', function () {
       var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
       applyTheme(next);
@@ -455,6 +464,9 @@
          the panel then says the width is uncalibrated rather than implying a
          measurement that has not happened. */
       conformal: (S.calibration && S.calibration.conformal) || null,
+      /* The model's own vote, if it has one that is still fresh. modelLane()
+         drops it past twenty minutes rather than voting on stale headlines. */
+      modelVote: S.modelVote || null,
     });
     S.reasons = engine.buildReasons(S.candles, news, S.timeframe);
 
@@ -484,6 +496,7 @@
     renderForecast(S.forecast);
     renderOpenCall(S.forecast);
     renderLockScore(S.lockScore, S.forecast.locked);
+    renderEvidence();
     renderCheckpoints(S.forecast);
     renderStructures();
     renderLevels();
@@ -493,6 +506,7 @@
     renderPortfolio();
     updateLedger(news);
     maybeCalibrate();
+    maybeAskModelVote();
     maybeEnrichNarrative();
   }
 
@@ -1474,6 +1488,97 @@
     text('fc-weights-note', 'weights ' + Object.keys(C.forecast.weights).map(function (k) {
       return Math.round(wUsed[k] * 100) + '%';
     }).join(' / ') + (wUsed.fitted ? ' (fitted)' : ''));
+  }
+
+  /* ============================================================ EVIDENCE
+
+     The headline number and the itemised list behind it.
+
+     Recomputed on every tick with everything else, because it is a few dozen
+     additions over counts the page is already holding - measured under a
+     millisecond. The list is only built when it is open, because that is DOM
+     work rather than arithmetic and nobody is reading a collapsed panel. */
+  var evidenceOpen = false;
+
+  function evidenceContext() {
+    return {
+      symbol: S.symbol,
+      candles: S.candles,
+      news: S.news || KT.data.getNews(),
+      forecast: S.forecast,
+      patterns: S.patterns,
+      structures: S.structures,
+      levels: S.levels,
+      options: S.options,
+      global: S.global,
+      flows: S.flows,
+      calibration: S.calibration,
+      /* Each of these reads the shape the app actually holds, not a shape
+         that looked plausible. S.filings is a summary with a count, not a
+         list; the universe lives in portfolio.js because that is what needs
+         it for name lookup; the feed total arrives on the news payload. A
+         count reading an absent field would report zero forever and nobody
+         would notice, which is the failure this whole panel is against. */
+      filings: (S.filings && S.filings.count) || 0,
+      events: (S.events && S.events.events && S.events.events.length) || 0,
+      seasonality: seasonalObservations(S.seasonality),
+      universe: (KT.portfolio && KT.portfolio.universeList && KT.portfolio.universeList().length) || 0,
+      constituents: (S.constituents && S.constituents.members && S.constituents.members.length) || 0,
+      feeds: S.feedsTotal || C.directFeeds.length,
+    };
+  }
+
+  /* The seasonality file is a set of keyed records rather than a list, so the
+     count is the number of records that actually carry a sample - a month with
+     no observations behind it is not an observation. */
+  function seasonalObservations(sz) {
+    if (!sz) return 0;
+    var total = 0;
+    ['months', 'weekdays', 'expiry', 'monthly', 'dow'].forEach(function (k) {
+      var g = sz[k];
+      if (!g) return;
+      if (Object.prototype.toString.call(g) === '[object Array]') {
+        g.forEach(function (r) { total += (r && (r.n || r.count)) || 0; });
+      } else {
+        Object.keys(g).forEach(function (kk) {
+          var r = g[kk];
+          total += (r && (r.n || r.count)) || 0;
+        });
+      }
+    });
+    return total;
+  }
+
+  function renderEvidence() {
+    if (!KT.evidence) return;
+    var res;
+    try { res = KT.evidence.count(evidenceContext()); } catch (e) { return; }
+    S.evidence = res;
+
+    text('ev-total', res.total.toLocaleString('en-IN'));
+    text('ev-note', res.live + ' of ' + (res.live + res.dark) + ' sources reporting. ' +
+      'Counted once each: a value that was read from a source and fed into a calculation. ' +
+      'Not counted: work. The ' + ((KT.candles && KT.candles.SET.length) || 0) +
+      ' candlestick detectors run against every bar, which is far more test calls than this number, ' +
+      'and counting a test that found nothing would inflate it without adding anything.');
+
+    var box = el('ev-list');
+    if (!box || !evidenceOpen) return;
+    box.innerHTML = '';
+    res.groups.forEach(function (g) {
+      var row = document.createElement('div');
+      row.className = 'ev-row' + (g.n ? '' : ' dark');
+      var k = document.createElement('span'); k.className = 'ev-k'; k.textContent = g.label;
+      var v = document.createElement('span'); v.className = 'ev-n';
+      v.textContent = g.n ? g.n.toLocaleString('en-IN') : '—';
+      var w = document.createElement('span'); w.className = 'ev-why';
+      w.textContent = g.note;
+      var src = document.createElement('span'); src.className = 'ev-src';
+      src.textContent = '  ·  ' + g.source;
+      w.appendChild(src);
+      row.appendChild(k); row.appendChild(v); row.appendChild(w);
+      box.appendChild(row);
+    });
   }
 
   /* ========================================================= OPENING CALL
@@ -2613,6 +2718,116 @@
 
   /* Optional: let a free model phrase the reasoning. It only ever rewrites the
      wording - direction, range and confidence stay as the engine computed. */
+  /* ====================================================== THE MODEL'S VOTE
+
+     Asks OpenRouter which way it thinks the index goes, and files the answer
+     as one lane among nine.
+
+     The prompt deliberately does NOT contain the engine's verdict, its bias,
+     its direction or its range. Show a model the answer and it agrees with the
+     answer; the lane then looks like independent confirmation and is in fact a
+     mirror. That is the same failure as the global lane being fed NIFTY's own
+     change, and it is much harder to see, because a mirror and a good analyst
+     produce the same number on the days it does not matter.
+
+     So it gets the evidence and nothing else: the price, the headlines with
+     their scores, the overnight cues, the option positioning, the momentum
+     readings. Whatever it says, it says on that.
+
+     Ten minutes between calls. The free tier is rate limited, the headlines do
+     not turn over faster than that in a way a 6.5 hour forecast can use, and
+     the lane drops itself at twenty minutes - so ten is comfortably inside its
+     own staleness rule with room for one failure. */
+  var lastVoteAt = 0;
+  var VOTE_EVERY_MS = 600000;
+
+  function maybeAskModelVote() {
+    if (!S.settings.key || !S.forecast || !KT.data.askModel) return;
+    if (Date.now() - lastVoteAt < VOTE_EVERY_MS) return;
+    lastVoteAt = Date.now();
+
+    var f = S.forecast;
+    var heads = data.getNews().slice(0, 15).map(function (n, i) {
+      return (i + 1) + '. [' + n.impact + ' impact, sentiment ' +
+             (n.sentiment >= 0 ? '+' : '') + n.sentiment + '] ' + n.headline;
+    }).join('\n') || '(no headlines in the sweep yet)';
+
+    var cues = S.global && S.global.items
+      ? Object.keys(S.global.items).map(function (k) {
+          var r = S.global.items[k];
+          return r.label + ' ' + fmt.pct(r.changePct);
+        }).join(', ')
+      : 'not available';
+
+    var o = f.options;
+    var positioning = o
+      ? 'PCR ' + o.pcrOi + ', max pain ' + o.maxPain + ', OI wall above ' +
+        (o.resistance && o.resistance[0] ? o.resistance[0] : '?') + ', below ' +
+        (o.support && o.support[0] ? o.support[0] : '?')
+      : 'option chain not available';
+
+    var ind = S.indicators || {};
+    var readings = ['RSI ' + (ind.rsi != null ? Math.round(ind.rsi) : '?'),
+                    'ADX ' + (ind.adx != null ? Math.round(ind.adx) : '?'),
+                    'ATR ' + (ind.atr != null ? Math.round(ind.atr) : '?')].join(', ');
+
+    var user =
+      'Index: ' + C.symbols[S.symbol].label + ', last ' + fmt.price(f.lastClose) + '.\n' +
+      'Horizon: ' + f.horizonLabel + '.\n' +
+      'Overnight and cross-asset: ' + cues + '.\n' +
+      'Options positioning: ' + positioning + '.\n' +
+      'Technical readings: ' + readings + '.\n' +
+      'Headlines from the last sweep:\n' + heads + '\n\n' +
+      'Reply with JSON only, no prose around it, in exactly this shape:\n' +
+      '{"score": <number between -1 and 1>, "why": "<one sentence, at least 40 characters>"}\n' +
+      'score is your own directional read over the horizon: -1 strongly down, 0 no view, +1 strongly up. ' +
+      'Use the middle of the range when the evidence is mixed; 0 is a valid answer.';
+
+    data.askModel(S.settings.key, S.settings.model,
+      'You are an Indian equity market analyst. You are given raw evidence and asked for your own ' +
+      'directional read. You reply with JSON only and nothing else.',
+      user)
+      .then(function (txt) {
+        var vote = parseVote(txt);
+        if (!vote) return;
+        vote.model = S.settings.model;
+        vote.at = Date.now();
+        S.modelVote = vote;
+        recompute();
+      })
+      .catch(noop)
+      .then(renderLanes);
+  }
+
+  /* The reply is text from a free-tier router, so it is parsed defensively and
+     rejected rather than coerced.
+
+     Three ways this has to fail safely. The router sometimes wraps JSON in a
+     markdown fence, which is recoverable, so the first brace to the last is
+     what gets parsed. It sometimes returns a classifier's verdict instead of a
+     completion - "User Safety: safe" arrived with a valid 200 during earlier
+     work on this repo - which has no JSON in it and is rejected. And a model
+     that answers 5 or -12 has misunderstood the scale; that is not clamped
+     quietly to 1, it is thrown away, because a model that misread the question
+     has not given an opinion worth 8% of the forecast. */
+  function parseVote(txt) {
+    var raw = String(txt || '');
+    var a = raw.indexOf('{'), b = raw.lastIndexOf('}');
+    if (a < 0 || b <= a) return null;
+    var obj;
+    try { obj = JSON.parse(raw.slice(a, b + 1)); } catch (e) { return null; }
+    if (!obj || typeof obj !== 'object') return null;
+
+    var score = Number(obj.score);
+    if (!isFinite(score)) return null;
+    if (score < -1.001 || score > 1.001) return null;      // wrong scale, not a vote
+
+    var why = String(obj.why || '').trim();
+    if (why.length < 40) return null;                      // not an explanation
+
+    return { score: Math.max(-1, Math.min(1, score)), why: why.slice(0, 300) };
+  }
+
   function maybeEnrichNarrative() {
     if (!S.settings.key || !S.forecast) return;
     if (Date.now() - S.narrativeAt < 240000) return;

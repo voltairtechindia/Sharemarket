@@ -4,6 +4,14 @@
    levels price has respected, and a reason point wherever something moved
    the index.
 
+   Candles carry the picture. Everything else on it is deliberately quiet:
+   two translucent lines under the bars - the forecast ahead of now, and the
+   realised close line over the locked window - and nothing else competing
+   with them. The News-only and Pattern-only projections were drawn here until
+   20 Sep 2026; they are numbers on the forecast panel now ("News says" /
+   "Pattern says"), because four coloured lines fanning out of one point read
+   as four forecasts rather than one forecast and its components.
+
    The band lines were removed on 20 Sep 2026. Four dotted lines - 68% and 95%
    either side - occupied most of the picture and answered a question nobody
    was asking it; the band is still computed, still in the hover card and still
@@ -27,13 +35,12 @@
 
   var chart = null, candleSeries = null;
   var fcSeries = null, lockSeries = null, actualSeries = null;
-  var newsFcSeries = null, patFcSeries = null;   // the two component projections
   var pool = { structure: [], overlay: [] };     // reusable line series
   var priceLines = [];                            // horizontal lines on the candle series
   var state = {
     candles: [], forecast: null, reasons: [], patternMarkers: [],
     structures: [], levels: null, indicators: null,
-    overlays: { ema: true, bands: false, supertrend: false, vwap: false, levels: true, patterns: true },
+    overlays: { ema: true, bands: false, supertrend: false, vwap: false, levels: true, patterns: true, why: true },
     tf: C.defaultTimeframe, symbol: C.defaultSymbol,
     lastCandleTime: null, pinned: null, total: 0, locked: null,
   };
@@ -76,8 +83,10 @@
       up: css('--up', '#16a34a'),
       down: css('--down', '#ef4444'),
       forecast: css('--forecast', '#7c3aed'),
-      fcNews: css('--fc-news', '#0284c7'),
-      fcPattern: css('--fc-pattern', '#ea580c'),
+      /* --fc-news and --fc-pattern are still read by style.css for the
+         "News says" / "Pattern says" dots on the forecast panel. The chart
+         stopped drawing those two projections on 20 Sep 2026, so it stopped
+         reading the colours too. */
       locked: css('--fc-locked', '#db2777'),
       actual: css('--actual-line', '#111827'),
       now: css('--now-line', '#94a3b8'),
@@ -86,6 +95,25 @@
       neutral: css('--pattern-neutral', '#94a3b8'),
       level: css('--level-line', '#64748b'),
     };
+  }
+
+  /* A CSS colour at reduced opacity, for the lines that sit under the candles.
+
+     Written by hand rather than reached for from a library because the only
+     inputs are the six-digit hex values in style.css and the three rgb()
+     strings a browser hands back from getComputedStyle. Anything else is
+     returned untouched, so a future `oklch()` token degrades to a solid line
+     rather than to `NaN` and an invisible series. */
+  function soften(colour, a) {
+    var c = String(colour || '').trim();
+    var m = /^#([0-9a-f]{6})$/i.exec(c);
+    if (m) {
+      var n = parseInt(m[1], 16);
+      return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+    }
+    m = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i.exec(c);
+    if (m) return 'rgba(' + m[1] + ',' + m[2] + ',' + m[3] + ',' + a + ')';
+    return c;
   }
 
   function chartOptions() {
@@ -122,46 +150,47 @@
     chart = LightweightCharts.createChart(container, chartOptions());
     var p = palette();
 
+    /* ------------------------------------------------- draw order matters
+
+       Lightweight Charts paints series in the order they were added, so these
+       three go in FIRST and the candles go on top of them. That is the whole
+       instruction: candles carry the chart, and the projection and the
+       realised line sit underneath as translucent guides rather than as three
+       more things fighting the bars for attention.
+
+       Creation order is the only control over this - there is no z-index on a
+       series - so moving the candle block back above these would silently undo
+       it, with no error and no visual clue beyond the chart looking busier. */
+
+    /* The frozen call. Set once per session and never rewritten, so what is
+       drawn at 15:30 is the same line that was drawn at 09:15. Widening it or
+       nudging it later would turn the whole record into decoration. */
+    lockSeries = chart.addLineSeries({
+      color: soften(p.locked, 0.55), lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed,
+      priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
+      title: 'Predicted',
+    });
+    /* What price actually did over the frozen call's window. The candles are
+       the evidence and this line runs through them; it exists only to be read
+       against the dashed one above, so it is the faintest thing here. */
+    actualSeries = chart.addLineSeries({
+      color: soften(p.actual, 0.45), lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid,
+      priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
+      title: 'Actual',
+    });
+
+    fcSeries = chart.addLineSeries({
+      color: soften(p.forecast, 0.6), lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid,
+      priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
+      title: 'Forecast',
+    });
+
     candleSeries = chart.addCandlestickSeries({
       upColor: p.up, downColor: p.down,
       borderUpColor: p.up, borderDownColor: p.down,
       wickUpColor: p.up, wickDownColor: p.down,
       priceLineVisible: true, priceLineWidth: 1, priceLineStyle: LightweightCharts.LineStyle.Dotted,
       lastValueVisible: true,
-    });
-
-    /* The frozen call. Set once per session and never rewritten, so what is
-       drawn at 15:30 is the same line that was drawn at 09:15. Widening it or
-       nudging it later would turn the whole record into decoration. */
-    lockSeries = chart.addLineSeries({
-      color: p.locked, lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed,
-      priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
-      title: 'Predicted',
-    });
-    /* What price actually did over the frozen call's window. Drawn on top of
-       the candles rather than instead of them: the candles are the evidence,
-       this line is only there to be compared against the one above it. */
-    actualSeries = chart.addLineSeries({
-      color: p.actual, lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid,
-      priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
-      title: 'Actual',
-    });
-    // Component paths sit under the blended line so the blend reads on top.
-    newsFcSeries = chart.addLineSeries({
-      color: p.fcNews, lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed,
-      priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
-      title: 'News',
-    });
-    patFcSeries = chart.addLineSeries({
-      color: p.fcPattern, lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed,
-      priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
-      title: 'Pattern',
-    });
-
-    fcSeries = chart.addLineSeries({
-      color: p.forecast, lineWidth: 3, lineStyle: LightweightCharts.LineStyle.Solid,
-      priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
-      title: 'Forecast',
     });
 
     chart.subscribeCrosshairMove(onCrosshair);
@@ -184,11 +213,9 @@
     var p = palette();
     chart.applyOptions(chartOptions());
     candleSeries.applyOptions({ upColor: p.up, downColor: p.down, borderUpColor: p.up, borderDownColor: p.down, wickUpColor: p.up, wickDownColor: p.down });
-    fcSeries.applyOptions({ color: p.forecast });
-    if (lockSeries) lockSeries.applyOptions({ color: p.locked });
-    if (actualSeries) actualSeries.applyOptions({ color: p.actual });
-    if (newsFcSeries) newsFcSeries.applyOptions({ color: p.fcNews });
-    if (patFcSeries) patFcSeries.applyOptions({ color: p.fcPattern });
+    fcSeries.applyOptions({ color: soften(p.forecast, 0.6) });
+    if (lockSeries) lockSeries.applyOptions({ color: soften(p.locked, 0.55) });
+    if (actualSeries) actualSeries.applyOptions({ color: soften(p.actual, 0.45) });
     drawStructures(); drawOverlays(); drawLevels();
     applyMarkers();
   }
@@ -213,13 +240,9 @@
       // grows out of the candles instead of floating beside them.
       var anchor = { time: state.lastCandleTime, value: state.candles[state.candles.length - 1].close };
       fcSeries.setData([anchor].concat(forecast.path));
-      // Both start from the same real close, so any divergence between them is
-      // the models disagreeing rather than a plotting offset.
-      newsFcSeries.setData(forecast.pathNews ? [anchor].concat(forecast.pathNews) : []);
-      patFcSeries.setData(forecast.pathPattern ? [anchor].concat(forecast.pathPattern) : []);
       state.total = state.candles.length + forecast.path.length;
     } else {
-      [fcSeries, newsFcSeries, patFcSeries]
+      [fcSeries, lockSeries, actualSeries]
         .forEach(function (x) { if (x) x.setData([]); });
       state.total = state.candles.length;
     }
@@ -581,7 +604,7 @@
     if (state.lastCandleTime && param.time > state.lastCandleTime) {
       hideCard();
       var a = nearestAttribution(param.time);
-      if (a) showForecastCard(a, param.point); else hideForecastCard();
+      if (a && state.overlays.why) showForecastCard(a, param.point); else hideForecastCard();
       return;
     }
     hideForecastCard();
@@ -621,7 +644,10 @@
     var f = state.forecast, last = f.lastClose;
     var centre = last * (1 + a.driftPct / 100);
 
-    core.text('fcd-when', a.label + '  ·  bar ' + a.bar + ' of ' + f.forecastBars);
+    // "bar 264/375" rather than "bar 264 of 375": at 260px the longer form
+    // wraps the header onto two lines on the session view, where the bar
+    // numbers run to three digits.
+    core.text('fcd-when', a.label + '  ·  bar ' + a.bar + '/' + f.forecastBars);
     var mv = core.el('fcd-move');
     if (mv) { mv.textContent = core.fmt.pct(a.driftPct); mv.className = 'fcard-move num ' + core.fmt.cls(a.driftPct); }
     core.text('fcd-price', core.fmt.price(centre));
@@ -629,99 +655,66 @@
        price the projection starts from" when the opening gap arrived, and a
        card that kept naming the old one would be labelling the number with a
        price it is no longer measured against. */
-    var fc = state.forecast;
-    var ref = fc && fc.checkpoints && fc.checkpoints.length && fc.checkpoints[0].pUpFrom != null
-      ? fc.checkpoints[0].pUpFrom : last;
-    core.text('fcd-prob', a.pUp + '% chance above ' + core.fmt.price(ref));
+    var ref = f.checkpoints && f.checkpoints.length && f.checkpoints[0].pUpFrom != null
+      ? f.checkpoints[0].pUpFrom : last;
+    core.text('fcd-prob', a.pUp + '% above ' + core.fmt.price(ref));
 
-    /* The lead sentence names the lane doing the most work at THIS bar, which
-       is often not the lane doing the most work overall - that is the whole
-       reason this card exists. */
+    /* One sentence, naming the lane doing the most work at THIS bar - which is
+       often not the lane doing the most work overall, and is the whole reason
+       this card exists rather than the panel answering it.
+
+       The lane's own note used to be quoted here in parentheses. On the global
+       lane that note is "US futures +1.62%, Crude -8.70%", which is already
+       printed twice on the right: once in the driver list and once in the
+       narrative. Three copies of one fact, and the widest of them sitting on
+       top of the chart. The note is gone; the lane's name and direction are
+       what this card is for. */
     var top = a.lanes[0], second = a.lanes[1];
     var lead;
     if (!top) {
-      lead = 'No lane is pushing measurably at this point. The line is flat here because the inputs cancel, not because they are absent.';
+      lead = 'Nothing is pushing measurably here — the line is flat because the inputs cancel, not because they are absent.';
     } else {
-      var dir = top.pct > 0 ? 'up' : 'down';
-      lead = top.label + ' is the strongest pull ' + dir + ' here (' + top.note + ')';
+      lead = top.label + ' is pulling ' + (top.pct > 0 ? 'up' : 'down') + ' hardest here';
       if (second) {
         lead += (second.pct > 0) === (top.pct > 0)
-          ? ', with ' + second.label.toLowerCase() + ' adding to it'
-          : ', against ' + second.label.toLowerCase() + ' pulling the other way';
+          ? ', with ' + second.label.toLowerCase() + ' behind it'
+          : ', against ' + second.label.toLowerCase();
       }
       lead += '.';
+      /* One exception to the one-sentence rule, because it is the only thing
+         on this card that is NOT on the panel: a scheduled release landing in
+         this bar. The band deliberately does not widen for it - India VIX
+         already prices scheduled risk in aggregate - so naming it is the only
+         way a reader learns it is coming. */
+      var ev = eventNear(a.time);
+      if (ev) lead += ' ' + ev.country + ' ' + ev.title + ' lands in this bar.';
     }
     core.text('fcd-lead', lead);
-
-    /* Bars, scaled to the largest contribution at this bar so the comparison is
-       between lanes rather than against the whole horizon - a 0.01% push that
-       is the only thing moving the line should look like the thing moving the
-       line. */
-    var host = core.el('fcd-bars');
-    if (host) {
-      host.innerHTML = '';
-      var rows = a.lanes.slice(0, 5);
-      if (a.shapePct) rows.push({ label: 'Time of day', pct: a.shapePct, arrived: null, id: 'shape' });
-      // The analogue bends the line without changing any lane's view, so it
-      // gets its own row rather than being smeared across theirs.
-      if (a.analogPct) rows.push({ label: 'Past analogue', pct: a.analogPct, arrived: null, id: 'analog' });
-      var max = 0;
-      rows.forEach(function (r) { max = Math.max(max, Math.abs(r.pct)); });
-      if (!max) max = 1;
-      rows.forEach(function (r) {
-        var row = document.createElement('div'); row.className = 'fcard-row';
-        var nm = document.createElement('span'); nm.className = 'fcard-name'; nm.textContent = r.label;
-        var track = document.createElement('span'); track.className = 'fcard-track';
-        var fill = document.createElement('span');
-        fill.className = 'fcard-fill ' + (r.pct >= 0 ? 'pos' : 'neg');
-        fill.style.width = (Math.abs(r.pct) / max * 50) + '%';
-        var zero = document.createElement('span'); zero.className = 'fcard-zero';
-        track.appendChild(fill); track.appendChild(zero);
-        var val = document.createElement('span');
-        val.className = 'fcard-val ' + core.fmt.cls(r.pct);
-        val.textContent = core.fmt.pct(r.pct, 3);
-        row.appendChild(nm); row.appendChild(track); row.appendChild(val);
-        host.appendChild(row);
-      });
-    }
-
-    var lo = last * (1 + (a.driftPct - a.sdPct * (f.z68 || 1)) / 100);
-    var hi = last * (1 + (a.driftPct + a.sdPct * (f.z68 || 1)) / 100);
-    core.text('fcd-range', 'Likely range ' + core.fmt.price(lo) + ' – ' + core.fmt.price(hi));
-    core.text('fcd-width', '±' + core.fmt.pct(a.sdPct * (f.z68 || 1), 2).replace('+', ''));
-
-    /* The small print carries the two things that make the number checkable:
-       how far each timing curve has travelled, and what set the width. */
-    var fine = [];
-    if (top && top.arrived != null) fine.push(top.arrived + '% of the ' + top.label.toLowerCase() + ' push has landed by this bar');
-    if (a.profileMult && Math.abs(a.profileMult - 1) > 0.15) {
-      fine.push('this slot runs at ' + a.profileMult + '× the average bar variance, so the band is ' +
-                (a.profileMult > 1 ? 'wider' : 'tighter') + ' here');
-    }
-    if (a.temperPct) fine.push('a level with a record trimmed ' + core.fmt.pct(a.temperPct, 3) + ' off the push');
-    if (a.cappedPct) fine.push('the per-bar drift cap removed ' + core.fmt.pct(a.cappedPct, 3));
-    /* A scheduled release inside this bar is worth naming, because it is the
-       one thing on the card the model does NOT price: India VIX already
-       carries event risk in aggregate, so widening the band here as well would
-       double-count it the way the GARCH double-counted the intraday profile.
-       Saying it is coming is honest; pretending to have calibrated it is not. */
-    var ev = eventNear(a.time);
-    if (ev) {
-      fine.push(ev.country + ' ' + ev.title + ' lands in this bar (' + ev.impact +
-                ' impact) - the band does not widen for it, VIX already prices scheduled risk in aggregate');
-    }
-    if (f.zBasis) fine.push('band width: ' + f.zBasis);
-    core.text('fcd-fine', fine.join(' · ') + '.');
 
     els.fcard.classList.remove('hidden');
     if (point && els.stage) {
       var w = els.stage.clientWidth, h = els.stage.clientHeight;
-      var cw = els.fcard.offsetWidth || 300, ch = els.fcard.offsetHeight || 200;
+      var cw = els.fcard.offsetWidth || 260, ch = els.fcard.offsetHeight || 96;
+
+      /* The time axis is off limits. Clamping to the stage height let the card
+         sit over the axis labels, which is exactly the complaint: the one
+         piece of information only the chart carries, hidden by a box repeating
+         what the panel already said. Ask the chart how tall its axis is rather
+         than guessing, because that height changes with the font and with
+         whether seconds are shown. */
+      var axisH = 28;
+      try { axisH = (chart.timeScale().height() || 28) + 6; } catch (e) { axisH = 34; }
+      var floor = Math.max(8, h - axisH - ch - 4);
+
       // Flip to the left of the pointer near the right edge, which on the
       // forecast half is where the pointer usually is.
       var x = point.x + 16 + cw > w - 8 ? point.x - cw - 16 : point.x + 16;
+      // Sit above the pointer, not centred on it, so the card never straddles
+      // the line it is describing.
+      var y = point.y - ch - 14;
+      if (y < 8) y = point.y + 18;
       els.fcard.style.left = core.clamp(x, 8, Math.max(8, w - cw - 8)) + 'px';
-      els.fcard.style.top = core.clamp(point.y - ch / 2, 8, Math.max(8, h - ch - 8)) + 'px';
+      els.fcard.style.top = core.clamp(y, 8, floor) + 'px';
     }
   }
 

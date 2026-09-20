@@ -85,6 +85,75 @@ global feed shifts its weight onto the rest instead of quietly voting neutral.
 | Room to run | 8% | how far the nearest wall is on each side, in ATR |
 | Flows and breadth | 7% | advances vs declines, FII and DII net |
 
+### Every candlestick pattern, each with its own record
+
+Eighty-six detectors across sixty-four named families — the full canon every
+charting site and textbook uses, not the handful that were easiest to write.
+Harami and harami cross, piercing and dark cloud, tweezers, marubozu in four
+forms, three inside and three outside, abandoned baby, kicking, hikkake and its
+modified form, rising and falling three methods, mat hold, Tasuki gaps, ladder
+bottom, three stars in the south.
+
+Every one of them reports how it has actually resolved **on this instrument's
+own history**, with the sample size next to it. That is the entire point. A
+textbook says an engulfing candle signals a reversal; what matters is whether it
+reversed 79% of the time on NIFTY across 14 occurrences or 37% across 35, and
+both of those are real numbers currently on the panel. A pattern with a name and
+no record is decoration, and decoration that looks like evidence is worse than
+nothing.
+
+Two rules the whole table obeys. Thresholds are in ATR rather than points, so
+the same rule works on a 1-minute bar worth 4 points and a monthly one worth 900
+— the test suite multiplies every price by ten and checks that not one of the 86
+verdicts changes. And trend context is required where the textbook requires it:
+a hammer and a hanging man are the *same candle*, and the only thing separating
+them is what came before.
+
+Some of these fire a handful of times a decade. They sit in the list reading
+n=0, which is the honest answer rather than a reason to loosen the rule until
+something matches.
+
+### What it actually read
+
+One number on the page, and the itemised list behind it: currently around
+45,000 observations across seventeen sources — every price value, every
+indicator reading, every scored headline and its impact grade, every option
+strike's open interest and implied volatility, every level touch, every pattern
+hit, every replay, every frozen forecast minute.
+
+"Analyses thousands of datapoints" is the emptiest sentence in this industry.
+The only thing that makes it not empty is being willing to itemise it, so the
+number is a button and the button opens the list with each group's source
+beside it.
+
+What is deliberately **not** counted is work. The eighty-six detectors run
+against every bar, which is about 142,000 test calls — counting those would
+quadruple the headline overnight while adding no information, because most of
+them are a function returning false. Only hits count. A feed that answered and
+whose items were all dropped as irrelevant counts once as a feed polled, not
+once per item it wasted.
+
+### The model gets a vote, not the pen
+
+OpenRouter reads the evidence and casts one vote on direction — a number
+between -1 and +1 — which joins the other eight lanes, carries a weight,
+is renormalised with them and is scored in the forward record like everything
+else. It cannot write a price, a range, a probability or a weight.
+
+The prompt it receives contains the headlines, the overnight cues, the option
+positioning and the technical readings. It does **not** contain the forecast's
+own direction, bias, confidence or range. Show a model the answer and it agrees
+with the answer; the lane then looks like independent confirmation and is in
+fact a mirror — and a mirror and a good analyst produce the same number on every
+day it does not matter.
+
+Its weight is 0.08, less than an equal share of nine, because it is the only
+lane whose reasoning cannot be re-derived from its inputs. If it turns out to be
+right more often than that, the learner will raise it off settled calls rather
+than off enthusiasm. A vote older than twenty minutes drops out rather than
+going stale, and a reply that is not parseable JSON with a real score and a real
+sentence is thrown away rather than salvaged.
+
 ### What price does it open at
 
 Every lane above answers "which way from here". None of them answered the

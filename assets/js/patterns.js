@@ -60,104 +60,18 @@
   }
 
   /* ------------------------------------------------------- candlestick set
-     Each detector returns a direction: 1 bullish, -1 bearish, 0 indecision.
-     `need` is how many prior bars it reads, so the scanner can skip safely. */
-  var CANDLE = [
-    {
-      key: 'engulf_bull', name: 'Bullish engulfing', dir: 1, need: 2,
-      why: 'A down bar fully swallowed by the next up bar.',
-      test: function (c, i, a) {
-        var p = c[i - 1], b = c[i];
-        return !isUp(p) && isUp(b) && body(p) > 0.1 * a &&
-               b.close >= p.open && b.open <= p.close && body(b) > body(p) * 1.1;
-      },
-    },
-    {
-      key: 'engulf_bear', name: 'Bearish engulfing', dir: -1, need: 2,
-      why: 'An up bar fully swallowed by the next down bar.',
-      test: function (c, i, a) {
-        var p = c[i - 1], b = c[i];
-        return isUp(p) && !isUp(b) && body(p) > 0.1 * a &&
-               b.close <= p.open && b.open >= p.close && body(b) > body(p) * 1.1;
-      },
-    },
-    {
-      key: 'hammer', name: 'Hammer', dir: 1, need: 6,
-      why: 'Long lower wick after a decline: sellers pushed down and lost it.',
-      test: function (c, i, a) {
-        var b = c[i];
-        return lower(b) > body(b) * 2 && upper(b) < body(b) * 0.8 &&
-               range(b) > 0.5 * a && c[i - 5].close > c[i - 1].close;
-      },
-    },
-    {
-      key: 'shooting_star', name: 'Shooting star', dir: -1, need: 6,
-      why: 'Long upper wick after a rise: buyers pushed up and lost it.',
-      test: function (c, i, a) {
-        var b = c[i];
-        return upper(b) > body(b) * 2 && lower(b) < body(b) * 0.8 &&
-               range(b) > 0.5 * a && c[i - 5].close < c[i - 1].close;
-      },
-    },
-    {
-      key: 'doji', name: 'Doji', dir: 0, need: 2,
-      why: 'Open and close almost equal: neither side finished in control.',
-      test: function (c, i, a) {
-        var b = c[i];
-        return body(b) < range(b) * 0.08 && range(b) > 0.4 * a;
-      },
-    },
-    {
-      key: 'morning_star', name: 'Morning star', dir: 1, need: 3,
-      why: 'Heavy down bar, a small pause, then a strong recovery.',
-      test: function (c, i, a) {
-        var x = c[i - 2], m = c[i - 1], z = c[i];
-        return !isUp(x) && body(x) > 0.6 * a && body(m) < body(x) * 0.4 &&
-               isUp(z) && z.close > (x.open + x.close) / 2;
-      },
-    },
-    {
-      key: 'evening_star', name: 'Evening star', dir: -1, need: 3,
-      why: 'Strong up bar, a small pause, then a heavy reversal.',
-      test: function (c, i, a) {
-        var x = c[i - 2], m = c[i - 1], z = c[i];
-        return isUp(x) && body(x) > 0.6 * a && body(m) < body(x) * 0.4 &&
-               !isUp(z) && z.close < (x.open + x.close) / 2;
-      },
-    },
-    {
-      key: 'three_soldiers', name: 'Three white soldiers', dir: 1, need: 3,
-      why: 'Three strong up bars in a row, each closing higher.',
-      test: function (c, i, a) {
-        for (var k = i - 2; k <= i; k++) {
-          if (!isUp(c[k]) || body(c[k]) < 0.4 * a) return false;
-          if (k > i - 2 && c[k].close <= c[k - 1].close) return false;
-        }
-        return true;
-      },
-    },
-    {
-      key: 'three_crows', name: 'Three black crows', dir: -1, need: 3,
-      why: 'Three strong down bars in a row, each closing lower.',
-      test: function (c, i, a) {
-        for (var k = i - 2; k <= i; k++) {
-          if (isUp(c[k]) || body(c[k]) < 0.4 * a) return false;
-          if (k > i - 2 && c[k].close >= c[k - 1].close) return false;
-        }
-        return true;
-      },
-    },
-    {
-      key: 'gap_up', name: 'Gap up', dir: 1, need: 2,
-      why: 'Opened clear of the previous bar’s high.',
-      test: function (c, i, a) { return c[i].low > c[i - 1].high + 0.15 * a; },
-    },
-    {
-      key: 'gap_down', name: 'Gap down', dir: -1, need: 2,
-      why: 'Opened clear below the previous bar’s low.',
-      test: function (c, i, a) { return c[i].high < c[i - 1].low - 0.15 * a; },
-    },
-  ];
+
+     The table moved to candles.js on 20 Sep 2026. Eleven detectors lived here;
+     there are eighty-six now across sixty-four named families, which is the
+     full canon rather than the handful that were easiest to write, and a
+     table that size wanted its own file.
+
+     What did NOT move is everything below this line: the scan, the measured
+     record, the clustering. That is deliberate - a detector is added by adding
+     a row over there, and it then gets scored here whether its author wanted
+     it scored or not. A pattern that cannot be added without a record is a
+     pattern that cannot be added as decoration. */
+  var CANDLE = (KT.candles && KT.candles.SET) || [];
 
   /* ------------------------------------------------------- chart structures
      These read the pivot series rather than individual bars. Each returns the
@@ -249,12 +163,29 @@
     return { key: key, name: name, dir: dir, index: i, time: c[i].time, close: c[i].close, why: why };
   }
 
-  /* ------------------------------------------------------------- detection */
-  function detect(candles) {
-    var c = candles || [];
-    if (c.length < 20) return [];
-    var out = [];
-    for (var i = 3; i < c.length; i++) {
+  /* ------------------------------------------------------------- detection
+
+     Split into a full scan and a tail rescan, because of what the numbers are.
+
+     Eighty-six detectors across 1,651 bars is 142,000 test calls, measured at
+     41ms. recompute() runs on the one-second tick, so scanning the whole
+     series every tick spends 4% of the main thread re-deciding that a doji in
+     March is still a doji - and it is, because a closed bar's shape cannot
+     change. Only the forming bar can, and only the last few bars are inside
+     any detector's window (the deepest reads back four bars, plus five for
+     trend context).
+
+     So the full scan runs once per closed bar and is cached; every tick after
+     that rescans the tail. Measured at 41ms cold and under 1ms warm.
+
+     The cache key is the series length plus the last bar's TIME, not its
+     close. Keying on the close would invalidate on every tick and cache
+     nothing. */
+  var scanCache = { key: null, head: null, headEnd: 0 };
+  var TAIL = 16;                 // comfortably past the deepest detector window
+
+  function scanRange(c, from, to, out) {
+    for (var i = Math.max(3, from); i < to; i++) {
       var a = atr(c, i, 14);
       if (!a) continue;
       for (var d = 0; d < CANDLE.length; d++) {
@@ -265,6 +196,25 @@
         if (ok) out.push(mk(spec.key, spec.name, spec.dir, i, c, spec.why));
       }
     }
+  }
+
+  function detect(candles) {
+    var c = candles || [];
+    if (c.length < 20) return [];
+
+    var last = c[c.length - 1];
+    var key = c.length + ':' + last.time + ':' + (c[0] ? c[0].time : 0);
+    var headEnd = Math.max(3, c.length - TAIL);
+
+    if (scanCache.key !== key || scanCache.headEnd !== headEnd) {
+      var head = [];
+      scanRange(c, 3, headEnd, head);
+      scanCache = { key: key, head: head, headEnd: headEnd };
+    }
+
+    var out = scanCache.head.slice();
+    scanRange(c, headEnd, c.length, out);
+
     chartPatterns(c, out);
     out.sort(function (x, y) { return x.index - y.index; });
     return out;
