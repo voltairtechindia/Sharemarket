@@ -150,15 +150,50 @@ def from_yahoo_one(symbols):
     return out
 
 
-def universe_symbols():
-    path = DATA / "universe.json"
+def _constituents():
+    """Index members, in index order, from constituents.json.
+
+    These go to the front of the queue. Until 20 Sep 2026 the wanted list was
+    universe.json in file order, which is alphabetical, and the Yahoo batch
+    lane takes the first 400 - so a run covered 20MICRONS through roughly the
+    letter C and reached almost none of the NIFTY 50. The page could therefore
+    never show which index members moved, which is the first thing anybody
+    looks at in the morning.
+    """
+    path = DATA / "constituents.json"
     if not path.exists():
         return []
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return [r["symbol"] for r in json.load(f).get("symbols", []) if r.get("symbol")]
+            members = json.load(f).get("members") or []
+        # nifty50 first, then the rest of whatever tiers the file carries.
+        first = [m["symbol"] for m in members
+                 if m.get("symbol") and "nifty50" in (m.get("tiers") or [])]
+        rest = [m["symbol"] for m in members
+                if m.get("symbol") and "nifty50" not in (m.get("tiers") or [])]
+        return first + rest
     except Exception:  # noqa: BLE001
         return []
+
+
+def universe_symbols():
+    path = DATA / "universe.json"
+    wide = []
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                wide = [r["symbol"] for r in json.load(f).get("symbols", []) if r.get("symbol")]
+        except Exception:  # noqa: BLE001
+            wide = []
+
+    # Index members first, then everything else, de-duplicated with order kept.
+    seen, out = set(), []
+    for sym in _constituents() + wide:
+        if sym in seen:
+            continue
+        seen.add(sym)
+        out.append(sym)
+    return out
 
 
 def previous():

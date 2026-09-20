@@ -481,6 +481,13 @@
      Going through the proxy costs a shared, rate-limited hop, so it is one call
      serving all three rather than three calls. Resolves null on any failure -
      the workflow copies stay in place, which is what the page ran on before. */
+  /* One place for what counts as a sector row and what counts as a broad
+     market row, because two copies of this list is two lists to get out of
+     step - and the heatmap and the forecast would then disagree about what
+     a sector is. */
+  var SECTOR_RX = /^NIFTY (IT|BANK|PSU BANK|PRIVATE BANK|FINANCIAL SERVICES|AUTO|PHARMA|HEALTHCARE|FMCG|METAL|REALTY|ENERGY|OIL & GAS|MEDIA|INFRA|CONSUMER DURABLES|COMMODITIES|MIDCAP 100|SMALLCAP 100|NEXT 50)$/;
+  var BROAD_RX = /^NIFTY (MIDCAP 100|SMALLCAP 100|NEXT 50)$/;
+
   function getMarketInternals() {
     return fetchJSONVia(C.endpoints.nseAllIndices, { proxyOnly: true, skipRss2json: true, timeout: 16000 })
       .then(function (res) {
@@ -521,11 +528,29 @@
           last: n50 && n50.last ? +n50.last : null,
           previousClose: n50 && n50.previousClose ? +n50.previousClose : null,
           pe: n50 && n50.pe ? +n50.pe : null,
+          /* The sector board. `allIndices` returns every index NSE
+             publishes in one response, so widening this costs nothing and
+             it was missing half the board a trader actually watches -
+             Financial Services is the heaviest sector in the index and was
+             not in the list, nor was PSU Bank, Oil & Gas, Infra, Media or
+             Consumer Durables.
+
+             Eight became eighteen, and the broad-market rows (Midcap,
+             Smallcap, Next 50) are tagged separately because "midcaps are
+             leading" is a different statement from "banks are leading" and
+             the panel draws them apart. */
           sectors: rows.filter(function (r) {
-            return r && /^NIFTY (IT|BANK|AUTO|PHARMA|FMCG|METAL|REALTY|ENERGY)$/.test(r.index) &&
-                   r.percentChange != null;
+            return r && r.index && SECTOR_RX.test(r.index) && r.percentChange != null;
           }).map(function (r) {
-            return { index: r.index, changePct: +r.percentChange };
+            return {
+              index: r.index,
+              label: String(r.index).replace(/^NIFTY\s+/, ''),
+              changePct: +r.percentChange,
+              last: r.last == null ? null : +r.last,
+              advances: r.advances == null ? null : +r.advances,
+              declines: r.declines == null ? null : +r.declines,
+              broad: BROAD_RX.test(r.index),
+            };
           }).sort(function (a, b) { return b.changePct - a.changePct; }),
         };
         return (out.breadth || out.vix) ? out : null;

@@ -21,6 +21,15 @@ KT.CONFIG = {
       key: 'SENSEX', label: 'SENSEX', exchange: 'BSE index',
       yahoo: '^BSESN', mcId: 'in;SEN', primary: false,
     },
+    /* BANK NIFTY carries about a third of the index's weight and is the
+       second thing anybody looks at after NIFTY itself. Quote-only, like
+       INDIA VIX: no mcId, so it takes the Yahoo fallback path, and no
+       candle series is fetched for it - it is a number on the board, not a
+       chart the forecast runs on. */
+    BANKNIFTY: {
+      key: 'BANKNIFTY', label: 'BANK NIFTY', exchange: 'NSE index',
+      yahoo: '^NSEBANK', mcId: null, primary: false,
+    },
     INDIAVIX: {
       key: 'INDIAVIX', label: 'INDIA VIX', exchange: 'NSE volatility',
       yahoo: '^INDIAVIX', mcId: null, primary: false, inverse: true,

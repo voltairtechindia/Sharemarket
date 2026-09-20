@@ -267,7 +267,12 @@
 
     el('ticker-strip').addEventListener('click', function (e) {
       var t = e.target.closest('.tick');
-      if (t) setSymbol(t.getAttribute('data-symbol'));
+      /* Bank Nifty and India VIX are on the board so the header reads like a
+         market screen, but no candle series is fetched for them and the
+         forecast does not run on them. Clicking one used to switch the chart
+         to a symbol with nothing behind it and leave the page on "Loading"
+         forever. They are marked is-quote and ignored here. */
+      if (t && !t.classList.contains('is-quote')) setSymbol(t.getAttribute('data-symbol'));
     });
 
     document.querySelector('.news-filters').addEventListener('click', function (e) {
@@ -317,7 +322,7 @@
     var meta = C.symbols[sym];
     text('asset-name', meta.label);
     text('asset-exch', meta.exchange);
-    document.querySelectorAll('.tick').forEach(function (t) {
+    document.querySelectorAll('.tick:not(.is-quote)').forEach(function (t) {
       t.setAttribute('aria-selected', String(t.getAttribute('data-symbol') === sym));
     });
     document.querySelectorAll('#mw-list .mw-item').forEach(function (li) {
@@ -497,6 +502,10 @@
     renderOpenCall(S.forecast);
     renderLockScore(S.lockScore, S.forecast.locked);
     renderEvidence();
+    renderChartRead();
+    renderSectorBoard();
+    renderMovers();
+    renderFlows();
     renderCheckpoints(S.forecast);
     renderStructures();
     renderLevels();
@@ -791,9 +800,312 @@
     var ltp = t.querySelector('[data-field="ltp"]'), chg = t.querySelector('[data-field="chg"]');
     if (ltp) ltp.textContent = fmt.price(q.price);
     if (chg) {
-      chg.textContent = fmt.signed(q.change) + ' (' + fmt.pct(q.changePct) + ')';
+      /* Percent only on the board, points in the tooltip. Four tiles across
+         a header that also carries the brand, a clock and six buttons cannot
+         each afford "+75.80 (+0.33%)", and between the two numbers the
+         percent is the one that compares across instruments - which is the
+         whole job of having them side by side. */
+      chg.textContent = fmt.pct(q.changePct);
       chg.className = 'tick-chg num ' + fmt.cls(q.changePct);
     }
+    t.title = (C.symbols[sym] ? C.symbols[sym].label : sym) + '  ' +
+              fmt.price(q.price) + '   ' + fmt.signed(q.change) +
+              ' (' + fmt.pct(q.changePct) + ')' +
+              (q.dayHigh != null ? '\nDay ' + fmt.price(q.dayLow) + ' \u2013 ' + fmt.price(q.dayHigh) : '');
+  }
+
+  /* ========================================================== CHART READING
+
+     The chart said in words. Four clauses, in the order a person would say
+     them out loud, and every one of them is a number already on the page
+     rather than a new claim:
+
+       what you are looking at   symbol, bar size, how much history
+       what it has done          the move across the visible window
+       what moved it             the loudest reason point inside that window
+       what happens next         the projection and its strongest lane
+
+     Written as HTML rather than text because the numbers have to be
+     monospaced to be scannable, and a wall of proportional digits inside a
+     sentence is exactly what makes a caption unreadable.
+
+     Everything is escaped on the way in. The headline text comes from an RSS
+     feed, which is somebody else's input arriving in this page, and building
+     a sentence out of it with innerHTML is how a feed title containing a tag
+     becomes markup. */
+  function esc(x) {
+    return String(x == null ? '' : x)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+  function numSpan(x) { return '<span class="num">' + esc(x) + '</span>'; }
+
+  function renderChartRead() {
+    var box = el('cr-text');
+    if (!box) return;
+    var f = S.forecast, c = S.candles;
+    if (!f || !c || c.length < 3) {
+      box.textContent = 'Waiting for candles before it can read the chart.';
+      return;
+    }
+
+    var tf = C.timeframes[S.timeframe];
+    var bits = [];
+
+    /* 1. What you are looking at. The bar size in words, because "5m" means
+          nothing to somebody who has not used a terminal before and the
+          whole point of this line is that it reads without training. */
+    var barWord = tf.barSec < 60 ? tf.barSec + ' second'
+      : tf.barSec < 3600 ? (tf.barSec / 60) + ' minute'
+      : tf.barSec < 86400 ? (tf.barSec / 3600) + ' hour'
+      : tf.barSec < 604800 ? 'daily' : tf.barSec < 2592000 ? 'weekly' : 'monthly';
+    var shown = Math.min(c.length, f.forecastBars ? f.forecastBars * (tf.histPerForecast || 4) : tf.visibleBars);
+    bits.push('<b>' + esc(C.symbols[S.symbol].label) + '</b> on ' + esc(barWord) +
+              ' bars, ' + numSpan(fmt.count(shown)) + ' of them on screen');
+
+    /* 2. What it has done across what is visible. */
+    var from = c[Math.max(0, c.length - shown)], to = c[c.length - 1];
+    var movePct = from && from.close ? (to.close - from.close) / from.close * 100 : 0;
+    var dirWord = movePct > 0.05 ? 'up' : movePct < -0.05 ? 'down' : 'flat';
+    /* The direction is already in the word, so the number goes in unsigned.
+       fmt.pct() always prefixes the sign, which read as "down -0.54%". */
+    bits.push(dirWord === 'flat'
+      ? 'flat across that window'
+      : dirWord + ' ' + numSpan(Math.abs(movePct).toFixed(2) + '%') + ' across that window, ' +
+        numSpan(fmt.price(from.close)) + ' to ' + numSpan(fmt.price(to.close)));
+
+    var dot = el('cr-dot');
+    if (dot) dot.className = 'cr-dot ' + fmt.cls(movePct);
+
+    /* 3. What moved it. The loudest reason point inside the visible window -
+          which is the thing the dots on the chart are for, said without
+          making anybody click one. */
+    var loudest = null;
+    (S.reasons || []).forEach(function (r) {
+      if (!r || r.time < from.time) return;
+      var w = Math.abs(r.score || r.impactScore || 0);
+      if (!loudest || w > loudest.w) loudest = { w: w, r: r };
+    });
+    if (loudest && loudest.r.headline) {
+      bits.push('the loudest thing inside it was &ldquo;' +
+                esc(String(loudest.r.headline).slice(0, 90)) + '&rdquo;');
+    } else {
+      /* No headline earned a marker, so say what the chart shape says instead
+         - a pattern the scanner found is still a reason, and silence here
+         would read as "nothing happened" when something did. */
+      var pat = S.patterns && S.patterns.current && S.patterns.current[0];
+      if (pat) bits.push('no single headline carried it; the shape on the bars is ' + esc(pat.name.toLowerCase()));
+      else bits.push('no single headline or pattern carried it');
+    }
+
+    /* 4. What happens next, and on whose say-so. */
+    var live = (f.lanes || []).filter(function (l) { return l.hasData; })
+      .sort(function (a, b) { return Math.abs(b.contribution) - Math.abs(a.contribution); });
+    var lead = live[0];
+    var openBit = '';
+    if (f.open && f.open.applies && f.open.hasData) {
+      openBit = ', opening near ' + numSpan(fmt.price(f.open.price)) +
+                ' (' + numSpan(fmt.pct(f.open.gapPct)) + ')';
+    }
+    bits.push('the projection leans <b>' + esc(String(f.direction).toLowerCase()) + '</b> to ' +
+              numSpan(fmt.price(f.target)) + ' over ' + esc(f.horizonLabel) + openBit +
+              (lead ? ', mostly on ' + esc(lead.label.toLowerCase()) : ''));
+
+    var line = bits.join('. ').replace(/\.\s*$/, '') + '.';
+    /* Sentence case for the clauses that start one. The first clause opens
+       with the instrument name, which is capitalised already. */
+    line = line.replace(/\.\s+([a-z])/g, function (m0, ch) { return '. ' + ch.toUpperCase(); });
+    box.innerHTML = line;
+  }
+
+  /* ========================================================= SECTOR BOARD
+
+     Eighteen tiles, coloured by how far the sector moved, sorted by it.
+
+     The colour steps are fixed percentage bands rather than a scale fitted to
+     the day's range. A scale fitted to the range makes every day look dramatic
+     - on a flat Tuesday the best sector at +0.3% would be the same deep green
+     as a +3% day - and the whole value of a board is that today reads
+     differently from yesterday at a glance. */
+  var HEAT_STEPS = [0.25, 0.75, 1.5, 3.0];
+
+  function heatClass(pct) {
+    if (pct == null || isNaN(pct)) return 'heat-z';
+    var a = Math.abs(pct), side = pct > 0 ? 'u' : 'd', step = 0;
+    for (var i = 0; i < HEAT_STEPS.length; i++) if (a >= HEAT_STEPS[i]) step = i + 1;
+    return step === 0 ? 'heat-z' : 'heat-' + side + step;
+  }
+
+  function renderSectorBoard() {
+    var box = el('sector-heat');
+    if (!box) return;
+    var rows = (S.internals && S.internals.sectors) || [];
+
+    if (!rows.length) {
+      box.innerHTML = '';
+      text('sector-board-note', 'unavailable');
+      text('sector-board-read', 'The sector board comes from NSE’s allIndices call through the shared proxy. ' +
+        'That call has not returned this session, so there is nothing to show — rather than a board of zeroes.');
+      return;
+    }
+
+    box.innerHTML = '';
+    rows.forEach(function (r) {
+      var tile = document.createElement('div');
+      tile.className = 'heat-tile ' + heatClass(r.changePct) + (r.broad ? ' broad' : '');
+      tile.title = r.index + '  ' + fmt.pct(r.changePct) +
+        (r.last != null ? '  ·  ' + fmt.price(r.last) : '') +
+        (r.advances != null ? '  ·  ' + r.advances + ' up / ' + r.declines + ' down' : '') +
+        (r.broad ? '  ·  broad market, not a sector' : '');
+      var n = document.createElement('span'); n.className = 'heat-name'; n.textContent = r.label;
+      var v = document.createElement('span'); v.className = 'heat-v'; v.textContent = fmt.pct(r.changePct, 1);
+      tile.appendChild(n); tile.appendChild(v);
+      box.appendChild(tile);
+    });
+
+    var up = rows.filter(function (r) { return !r.broad && r.changePct > 0; }).length;
+    var sectors = rows.filter(function (r) { return !r.broad; });
+    text('sector-board-note', up + ' of ' + sectors.length + ' up');
+
+    /* The one sentence a board cannot say for itself: is this a broad move or
+       a narrow one. Everything green is a different market from two sectors
+       carrying the whole tape, and the tiles alone do not distinguish them. */
+    var best = sectors[0], worst = sectors[sectors.length - 1];
+    var breadthOfBoard = sectors.length ? up / sectors.length : 0;
+    var shape = breadthOfBoard >= 0.75 ? 'Broad-based buying — most of the board is green'
+      : breadthOfBoard <= 0.25 ? 'Broad-based selling — most of the board is red'
+      : 'A split board — money is rotating rather than arriving or leaving';
+    var bits = [shape];
+    if (best) bits.push(best.label + ' leads at ' + fmt.pct(best.changePct, 1));
+    if (worst && worst !== best) bits.push(worst.label + ' lags at ' + fmt.pct(worst.changePct, 1));
+
+    var mid = rows.filter(function (r) { return /MIDCAP/.test(r.index); })[0];
+    var n50 = S.quote && S.quote.changePct;
+    if (mid && n50 != null && Math.abs(mid.changePct - n50) > 0.3) {
+      bits.push(mid.changePct > n50
+        ? 'midcaps are outrunning the index'
+        : 'midcaps are lagging the index, which usually means a few heavyweights are holding it up');
+    }
+    text('sector-board-read', bits.join('. ') + '.');
+  }
+
+  /* ============================================================== MOVERS
+
+     Index members only, priced from the workflow's stocks.json.
+
+     Until 20 Sep 2026 that file was filled by walking universe.json in
+     alphabetical order and taking the first 400, so it held 20MICRONS through
+     roughly the letter C and almost none of the NIFTY 50 - which is why this
+     panel did not exist. fetch_stocks.py now puts index members at the front
+     of the queue. Until the next workflow run lands, this says so rather than
+     showing whichever handful it happens to have. */
+  function renderMovers() {
+    var upBox = el('movers-up'), dnBox = el('movers-dn');
+    if (!upBox || !dnBox) return;
+
+    /* portfolio.js already holds the whole stocks.json quote map, keyed and
+       normalised - it loads it for holdings valuation. Reading it here rather
+       than loading the file a second time keeps one copy of those prices in
+       the page, which is the difference between two panels that agree and two
+       that drift apart on a slow fetch. */
+    var quotes = (KT.portfolio && KT.portfolio.quotes && KT.portfolio.quotes()) || {};
+    var members = (S.constituents && S.constituents.members) || [];
+    var rows = [];
+    members.forEach(function (m) {
+      if (!m.symbol) return;
+      if ((m.tiers || []).indexOf('nifty50') === -1) return;
+      var q = quotes[m.symbol];
+      if (!q || q.changePct == null || !isFinite(q.changePct)) return;
+      rows.push({ symbol: m.symbol, name: m.name, pct: +q.changePct, price: q.price });
+    });
+
+    upBox.innerHTML = ''; dnBox.innerHTML = '';
+    var wrap = upBox.closest ? upBox.closest('.movers') : null;
+
+    if (rows.length < 5) {
+      if (wrap) wrap.classList.add('is-empty');
+      text('movers-note', rows.length + ' of 50 priced');
+      /* One explanation spanning the panel, not the same paragraph printed
+         twice in two columns side by side, which is what writing it into both
+         boxes produced. */
+      var note = document.createElement('p');
+      note.className = 'mv-empty';
+      note.textContent = 'The workflow prices index members first as of this version, but the run ' +
+        'that does it has not landed yet \u2014 ' + rows.length + ' of the 50 are priced so far. ' +
+        'A top five drawn from ' + rows.length + ' names would not be a top five.';
+      upBox.appendChild(note);
+      return;
+    }
+    if (wrap) wrap.classList.remove('is-empty');
+
+    rows.sort(function (a, b) { return b.pct - a.pct; });
+    text('movers-note', rows.length + ' of 50 priced');
+
+    function fill(box, list) {
+      list.forEach(function (r) {
+        var row = document.createElement('div'); row.className = 'mv-row';
+        row.title = r.name + '  ·  ' + fmt.price(r.price);
+        var sEl = document.createElement('span'); sEl.className = 'mv-s'; sEl.textContent = r.symbol;
+        var vEl = document.createElement('span'); vEl.className = 'mv-v ' + fmt.cls(r.pct);
+        vEl.textContent = fmt.pct(r.pct, 1);
+        row.appendChild(sEl); row.appendChild(vEl);
+        box.appendChild(row);
+      });
+    }
+    fill(upBox, rows.slice(0, 5));
+    fill(dnBox, rows.slice(-5).reverse());
+  }
+
+  /* =============================================================== FLOWS
+
+     FII and DII net, in crore, which is the unit every Indian source
+     publishes them in and the unit they are said out loud in.
+
+     The dates matter and are shown: this is a T+1 report, so during Monday's
+     session the newest figure available is Friday's. A panel that printed it
+     without the date would read as today's flows and be a day wrong every
+     single day. */
+  function renderFlows() {
+    var f = S.flows;
+    var fii = f && f.fii, dii = f && f.dii;
+    if (!fii && !dii) {
+      text('flows-date', 'unavailable');
+      text('flows-read', 'The FII/DII report comes through the workflow and has not landed this session.');
+      return;
+    }
+    text('flows-date', (fii && fii.date) || (dii && dii.date) || '—');
+
+    function put(id, row) {
+      var e = el(id);
+      if (!e) return;
+      if (!row || row.netCr == null) { e.textContent = '—'; e.className = 'flow-v num'; return; }
+      e.textContent = fmt.croreSigned(row.netCr);
+      e.className = 'flow-v num ' + fmt.cls(row.netCr);
+    }
+    put('flow-fii', fii);
+    put('flow-dii', dii);
+
+    /* The reading, not the numbers. FII selling into DII buying is the most
+       common shape on the Indian tape and it means something specific -
+       domestic money absorbing foreign exit - which neither number says alone. */
+    var fn = fii && fii.netCr, dn = dii && dii.netCr;
+    var read;
+    if (fn == null || dn == null) {
+      read = 'Only one side of the flow reported.';
+    } else if (fn < 0 && dn > 0) {
+      read = 'Foreign money selling, domestic money absorbing it. The index can hold up through this, ' +
+             'and often does — it is the most common shape on this tape.';
+    } else if (fn > 0 && dn < 0) {
+      read = 'Foreign money buying against domestic selling. Usually the stronger of the two for the index.';
+    } else if (fn > 0 && dn > 0) {
+      read = 'Both sides buying. Rare, and the most supportive combination there is.';
+    } else if (fn < 0 && dn < 0) {
+      read = 'Both sides selling. Nobody is absorbing, which is when falls extend.';
+    } else {
+      read = 'Flows are close to flat.';
+    }
+    text('flows-read', read + ' Reported for ' + ((fii && fii.date) || (dii && dii.date)) +
+         ', a session behind by design — the exchange publishes it after the close.');
   }
 
   function renderQuote(q) {

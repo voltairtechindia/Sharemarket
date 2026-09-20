@@ -44,6 +44,20 @@
       <span class="tick-ltp num" data-field="ltp">&mdash;</span>
       <span class="tick-chg num" data-field="chg">&mdash;</span>
     </div>
+    <!-- Bank Nifty and India VIX are quote-only: they are on the board
+         because no Indian trader reads the index without them, but the
+         forecast does not run on them, so clicking them does not switch
+         the chart. -->
+    <div class="tick is-quote" data-symbol="BANKNIFTY">
+      <span class="tick-name">BANK NIFTY</span>
+      <span class="tick-ltp num" data-field="ltp">&mdash;</span>
+      <span class="tick-chg num" data-field="chg">&mdash;</span>
+    </div>
+    <div class="tick is-quote" data-symbol="INDIAVIX">
+      <span class="tick-name">INDIA VIX</span>
+      <span class="tick-ltp num" data-field="ltp">&mdash;</span>
+      <span class="tick-chg num" data-field="chg">&mdash;</span>
+    </div>
   </div>
 
   <div class="topbar-right">
@@ -98,6 +112,59 @@
         <div class="kv" style="margin-top:8px"><span class="kv-k">52 week range</span><span class="kv-v" id="st-52w">&mdash;</span></div>
         <div class="kv"><span class="kv-k">Distance from 52w high</span><span class="kv-v" id="st-from-high">&mdash;</span></div>
         <div class="kv"><span class="kv-k">Above 50 / 200 DMA</span><span class="kv-v" id="st-dma">&mdash;</span></div>
+      </div>
+
+      <!-- ======================================================= SECTORS
+           NSE's allIndices call already returned every sector index in the
+           same response the breadth numbers come from. The page computed
+           this list and drew none of it until 20 Sep 2026 - a lane written
+           and never read, which is the bug CLAUDE.md opens with. Sector
+           performance is the first thing an Indian trader reads after the
+           index level itself. -->
+      <div class="section" id="sector-board-section">
+        <div class="section-head">
+          <span class="label">Sectors today</span>
+          <span class="label" id="sector-board-note">&mdash;</span>
+        </div>
+        <div class="heat" id="sector-heat"></div>
+        <p class="hint" id="sector-board-read">&mdash;</p>
+      </div>
+
+      <!-- ======================================================== MOVERS
+           Index members only. Showing the biggest movers of a 2,551 name
+           universe would put an illiquid microcap at the top every day and
+           tell a NIFTY reader nothing. -->
+      <div class="section" id="movers-section">
+        <div class="section-head">
+          <span class="label">Index movers</span>
+          <span class="label" id="movers-note">&mdash;</span>
+        </div>
+        <div class="movers">
+          <div class="movers-col">
+            <div class="movers-h up">Gainers</div>
+            <div id="movers-up"></div>
+          </div>
+          <div class="movers-col">
+            <div class="movers-h down">Losers</div>
+            <div id="movers-dn"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- =========================================================== FLOWS
+           FII and DII net, in crore. The workflow has been fetching this
+           since the repo existed and nothing on the page displayed it. It is
+           the number every business channel closes the day on. -->
+      <div class="section" id="flows-section">
+        <div class="section-head">
+          <span class="label">FII / DII net</span>
+          <span class="label" id="flows-date">&mdash;</span>
+        </div>
+        <div class="flow-grid">
+          <div class="flow"><span class="flow-k">FII</span><span class="flow-v num" id="flow-fii">&mdash;</span></div>
+          <div class="flow"><span class="flow-k">DII</span><span class="flow-v num" id="flow-dii">&mdash;</span></div>
+        </div>
+        <p class="hint" id="flows-read">&mdash;</p>
       </div>
 
       <!-- Market breadth -->
@@ -227,6 +294,20 @@
         <strong>Loading NIFTY candles&hellip;</strong>
         <span class="muted">Pulling live OHLC, then overlaying the news-driven forecast.</span>
       </div>
+    </div>
+
+    <!-- ===================================================== CHART READING
+         The chart, in words.
+
+         Everything on it already has a reason attached somewhere - a reason
+         point you can click, a pattern in the panel, a lane in the forecast -
+         but a reader has to go hunting for each one, and a chart that has to
+         be interrogated is not self-explanatory. This says what the picture
+         currently shows and what moved it, in the two or three sentences
+         somebody would use out loud. -->
+    <div class="chart-read" id="chart-read">
+      <span class="cr-dot" id="cr-dot"></span>
+      <p class="cr-text" id="cr-text">Reading the chart&hellip;</p>
     </div>
 
     <!-- ---------------------------------------------------- NEWS CONSOLE -->

@@ -1108,5 +1108,128 @@ section('FORECAST — the model lane');
      parseVote('{"score": 1, "why": "Everything in the evidence points the same way this morning."}').score === 1);
 }
 
+/* ================================================ MARKUP AND CODE AGREE
+
+   app.js writes to elements by id. index.html declares them. Nothing has ever
+   checked that the two lists match, and the failure is silent by design:
+   core.text() on a missing id does nothing at all, so a panel that was renamed
+   or never added simply never appears and no error is raised anywhere.
+
+   This session added four panels and the ids for them; a typo in any one would
+   have shipped a blank box. */
+section('MARKUP — every id the code writes to exists');
+{
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const appSrc = fs.readFileSync(path.join(ROOT, 'assets/js/app.js'), 'utf8');
+  const chartSrc = fs.readFileSync(path.join(ROOT, 'assets/js/chart.js'), 'utf8');
+
+  const declared = new Set();
+  let m;
+  const idRx = /\bid="([A-Za-z0-9_-]+)"/g;
+  while ((m = idRx.exec(html))) declared.add(m[1]);
+
+  /* Ids the code reaches for, from the three call shapes that exist here.
+     Template literals and variables are skipped - those are built at runtime
+     and cannot be checked statically, which is a limit worth naming rather
+     than papering over. */
+  const used = new Set();
+  const useRx = /(?:core\.)?(?:text|el)\('([A-Za-z0-9_-]+)'|getElementById\('([A-Za-z0-9_-]+)'\)/g;
+  for (const src of [appSrc, chartSrc]) {
+    while ((m = useRx.exec(src))) used.add(m[1] || m[2]);
+  }
+
+  const missing = [...used].filter(id => !declared.has(id)).sort();
+  ok('no id is written to that the markup does not declare',
+     missing.length === 0,
+     missing.length ? 'missing from index.html: ' + missing.join(', ')
+                    : `${used.size} ids used, ${declared.size} declared`);
+
+  /* The reverse is not an error - plenty of ids exist for CSS or for the
+     browser's own use - but an id declared and never touched by anything is
+     usually a panel somebody forgot to wire, which is this repo's recurring
+     bug wearing markup. Reported, not failed. */
+  const orphans = [...declared].filter(id =>
+    !used.has(id) && !new RegExp('[\'"#]' + id + '\\b').test(appSrc + chartSrc));
+  ok('orphan ids are few enough to be deliberate',
+     orphans.length < 40, `${orphans.length} declared ids nothing reads`);
+}
+
+/* ============================================= THE PANELS THIS SESSION ADDED */
+section('PANELS — sectors, movers, flows');
+{
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  ['sector-heat', 'sector-board-read', 'movers-up', 'movers-dn',
+   'flow-fii', 'flow-dii', 'flows-read', 'cr-text', 'cr-dot'].forEach(id => {
+    ok(`#${id} is in the markup`, new RegExp('id="' + id + '"').test(html));
+  });
+
+  /* The sector list widened from eight indices to eighteen. The forecast and
+     the heatmap must agree about what a sector is, which is why one regex
+     serves both - two lists is two lists to get out of step. */
+  const dataSrc = fs.readFileSync(path.join(ROOT, 'assets/js/data.js'), 'utf8');
+  ok('one sector list, not two',
+     (dataSrc.match(/var SECTOR_RX/g) || []).length === 1 &&
+     !/NIFTY \(IT\|BANK\|AUTO\|PHARMA\|FMCG\|METAL\|REALTY\|ENERGY\)/.test(dataSrc),
+     'the old eight-sector regex is gone');
+  ok('financial services is on the board',
+     /FINANCIAL SERVICES/.test(dataSrc), 'the heaviest sector in the index');
+
+  /* Indian money scale. "FII bought 599.54" is not a sentence anybody says. */
+  const f = KT.core.fmt;
+  ok('flows read in crore', f.crore(599.54) === '600 Cr', f.crore(599.54));
+  ok('big numbers step up to lakh crore', /L Cr$/.test(f.crore(456789)), f.crore(456789));
+  ok('small ones step down to lakh', /\bL$/.test(f.crore(0.42)), f.crore(0.42));
+  ok('flows keep their sign', f.croreSigned(-1234).indexOf('−') === 0, f.croreSigned(-1234));
+  ok('counts use Indian grouping', f.count(1234567) === '12,34,567', f.count(1234567));
+
+  /* Bank Nifty and India VIX are on the board and are not chartable. Clicking
+     one used to switch the chart to a symbol with no candle series behind it
+     and leave the page on "Loading" forever. */
+  ok('quote-only tickers are marked in the markup',
+     (html.match(/class="tick is-quote"/g) || []).length === 2);
+  const appSrc2 = fs.readFileSync(path.join(ROOT, 'assets/js/app.js'), 'utf8');
+  ok('and the click handler refuses to switch to them',
+     /is-quote/.test(appSrc2.slice(appSrc2.indexOf("el('ticker-strip')"),
+                                   appSrc2.indexOf("el('ticker-strip')") + 700)));
+
+  /* Dead files. CLAUDE.md opens with the rule; these were the violations. */
+  ['data/predictions.json', 'data/live_impact.json', 'data/social.json',
+   'data/rss_config.json', 'data/market.json',
+   'config/keywords.yml', 'config/watchlist.yml'].forEach(f2 => {
+    ok(`${f2} is gone`, !fs.existsSync(path.join(ROOT, f2)));
+  });
+  ok('and nothing writes market.json any more',
+     !/write_json\("market\.json"/.test(
+       fs.readFileSync(path.join(ROOT, 'scripts/fetch_market.py'), 'utf8')));
+
+  /* Every panel's render function has to be called from recompute(), which is
+     the one place the page redraws from.
+
+     This is not hypothetical. All four of this session's render calls were
+     inserted next to the FIRST `renderEvidence();` in the file, which is
+     inside the evidence button's click handler rather than inside
+     recompute() - so the four new panels rendered only if you clicked "Break
+     it down", and shipped blank otherwise. Nothing failed: no console error,
+     no exception, four empty boxes. The browser check caught it; this makes
+     it a test rather than a thing somebody has to remember to look at. */
+  const appSrc3 = fs.readFileSync(path.join(ROOT, 'assets/js/app.js'), 'utf8');
+  const recomputeStart = appSrc3.indexOf('function recompute()');
+  const recomputeEnd = appSrc3.indexOf('\n  }', appSrc3.indexOf('updateLedger(news)'));
+  const recomputeBody = appSrc3.slice(recomputeStart, recomputeEnd);
+  ['renderChartRead', 'renderSectorBoard', 'renderMovers', 'renderFlows',
+   'renderEvidence', 'renderForecast', 'renderOpenCall', 'renderLockScore'].forEach(fn => {
+    ok(`${fn}() is called from recompute()`,
+       recomputeStart > 0 && recomputeEnd > recomputeStart &&
+       new RegExp('\\b' + fn + '\\(').test(recomputeBody),
+       'a panel wired anywhere else renders only when that other thing happens');
+  });
+
+  /* The movers panel is only possible if the workflow prices index members.
+     It used to walk the universe alphabetically and take the first 400. */
+  const stocksSrc = fs.readFileSync(path.join(ROOT, 'scripts/fetch_stocks.py'), 'utf8');
+  ok('the stock fetcher prices index members first',
+     /_constituents\(\)/.test(stocksSrc) && /constituents\.json/.test(stocksSrc));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

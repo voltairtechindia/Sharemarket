@@ -4,7 +4,6 @@ Writes:
   data/candles_<SYM>_<TF>.json   OHLC per timeframe, compact arrays
   data/quote.json                latest snapshot for both indices
   data/seasonality.json          month-of-year, day-of-week and expiry-week stats
-  data/market.json               kept for backward compatibility with the old page
 
 Yahoo is fetched directly (this runs server side, no CORS). If Yahoo rate limits
 the runner, the same URL is retried through r.jina.ai and allorigins.
@@ -24,6 +23,12 @@ from common import DATA, IST, UA, now_iso, write_json  # noqa: E402
 SYMBOLS = {
     "NIFTY": {"yahoo": "^NSEI", "label": "NIFTY 50", "exchange": "NSE"},
     "SENSEX": {"yahoo": "^BSESN", "label": "SENSEX", "exchange": "BSE"},
+    # Quote only, for the market board. The page does not chart it, so no
+    # candle series is fetched - see quote_only below.
+    "BANKNIFTY": {"yahoo": "^NSEBANK", "label": "BANK NIFTY", "exchange": "NSE",
+                  "quote_only": True},
+    "INDIAVIX": {"yahoo": "^INDIAVIX", "label": "INDIA VIX", "exchange": "NSE",
+                 "quote_only": True},
 }
 
 # (timeframe id, yahoo interval, yahoo range) - matches the UI's timeframe buttons.
@@ -194,7 +199,16 @@ def main():
         ysym = meta_cfg["yahoo"]
         meta_latest = None
         daily_rows = []
-        for tf, interval, rng in TIMEFRAMES:
+        # A quote-only symbol appears on the market board and is never charted,
+        # so fetching five timeframes of candles for it would be five requests
+        # a run producing files nothing opens.
+        timeframes = [] if meta_cfg.get("quote_only") else TIMEFRAMES
+        if not timeframes:
+            try:
+                meta_latest, daily_rows = fetch_chart(ysym, "1d", "1mo")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [FAIL] {key} quote: {exc}")
+        for tf, interval, rng in timeframes:
             try:
                 meta, rows = fetch_chart(ysym, interval, rng)
                 meta_latest = meta_latest or meta
@@ -242,21 +256,11 @@ def main():
     except Exception as exc:  # noqa: BLE001
         print(f"  [FAIL] seasonality: {exc}")
 
-    # -------------------------------------- keep the old market.json contract
-    try:
-        old = json.loads((DATA / "market.json").read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        old = {}
-    old.update({
-        "generated_at": generated,
-        "generated_at_ist": datetime.now(IST).isoformat(timespec="seconds"),
-        "headline": [
-            {"symbol": k, "label": v["label"], "price": v.get("price"),
-             "change": v.get("change"), "change_pct": v.get("change_pct")}
-            for k, v in out_quote.items()
-        ],
-    })
-    write_json("market.json", old)
+    # market.json was written here until 20 Sep 2026 "for backward
+    # compatibility with the old page". There is no old page. Nothing in
+    # assets/, index.html or any other script read it, so every run was
+    # publishing a file for nobody - the exact shape of bug CLAUDE.md opens
+    # with. Everything it carried is in quote.json, which the page does read.
     return 0
 
 

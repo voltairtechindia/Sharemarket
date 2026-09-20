@@ -490,6 +490,97 @@ a free-tier router and 8% of the forecast.
 
 ---
 
+## The audit, and what it found
+
+20 Sep 2026, third pass. The brief was "quality check everything and make sure
+all the information which is required is shown". Everything below is what that
+found, not what was planned.
+
+**Seven files were written for nobody.** `data/predictions.json`,
+`data/live_impact.json`, `data/social.json`, `data/rss_config.json`,
+`data/market.json`, `config/keywords.yml`, `config/watchlist.yml`. Nothing in
+`assets/`, `index.html` or any script read any of them. `predictions.json` was
+worse than dead - fabricated rows with NIFTY ranges around 23,250 and notes
+reading "Self-taught from previous predictions", sitting in a public repo
+looking like a track record. All seven are `git rm`-ed, so they are recoverable
+from history and gone from the tree, and `fetch_market.py` no longer writes
+`market.json` "for backward compatibility with the old page" - there is no old
+page. `selftest.js` asserts each one stays gone.
+
+**`internals.sectors` was computed on every poll and drawn nowhere.** The same
+`allIndices` response the breadth numbers come from carries every sector index
+NSE publishes. The page filtered it, sorted it, and threw it away. Sector
+performance is the first thing an Indian trader reads after the index level,
+and it was one render function away the whole time.
+
+The filter was also too narrow - eight indices, and `NIFTY FINANCIAL SERVICES`,
+the heaviest sector in the index, was not among them. Eighteen now, with the
+broad-market rows (Midcap 100, Smallcap 100, Next 50) tagged `broad` so the
+board can draw them apart: "midcaps are leading" is a different statement from
+"banks are leading". `SECTOR_RX` is declared once, because two copies of that
+list is two lists to get out of step.
+
+**FII/DII was fetched since the repo existed and never displayed.** It is the
+number every business channel closes the day on. It is now on the board in
+crore, with the report date, because it is a T+1 report - during Monday's
+session the newest figure available is Friday's, and a panel that printed it
+without the date would read as today's flows and be a day wrong every day.
+
+**The movers panel was impossible, for a reason worth writing down.**
+`fetch_stocks.py` built its wanted list from `universe.json` in file order,
+which is alphabetical, and the Yahoo batch lane takes the first 400. So a run
+covered 20MICRONS through roughly the letter C and priced almost none of the
+NIFTY 50. Index members go to the front of the queue now. Until a workflow run
+lands, the panel says how many of the 50 it has rather than ranking five names
+out of two.
+
+**Indian money scale, in `core.fmt`.** `crore`, `croreSigned`, `rupees`,
+`count`. Rupee amounts here are read in crore and lakh - "FII bought 599.54" is
+not a sentence anybody says, "FII bought Rs 600 Cr" is. Input is in crore
+because that is the unit every Indian source publishes flows in, NSE's own
+FII/DII report included, and it steps up to lakh crore past a hundred thousand.
+
+**The chart says what it is showing.** `renderChartRead()` writes four clauses
+under the chart in the order a person would say them out loud: what you are
+looking at, what it has done, what moved it, what happens next and on whose
+say-so. Every number in it is already on the page - it makes no new claim. The
+bar size is in words ("5 minute bars") because "5m" means nothing to somebody
+who has not used a terminal, and the whole point is that it reads without
+training. Everything is escaped: the loudest headline comes from an RSS feed,
+which is somebody else's input arriving in this page, and building a sentence
+out of it with `innerHTML` is how a feed title containing a tag becomes markup.
+
+**Bank Nifty and India VIX are on the board and are not chartable.** No candle
+series is fetched for them - `quote_only` in `fetch_market.py` skips five
+timeframes per run that nothing would open. They are marked `is-quote` in the
+markup and the ticker click handler refuses to switch to them, because doing so
+left the page on "Loading" forever with no error anywhere.
+
+**Two test classes were added because of bugs this session made.**
+
+`MARKUP — every id the code writes to exists`. `core.text()` on a missing id
+does nothing at all, so a renamed or mistyped panel simply never appears and
+nothing is raised. 231 ids used, 270 declared, checked statically.
+
+`renderX() is called from recompute()`. All four new render calls were inserted
+next to the *first* `renderEvidence();` in the file - which is inside the
+evidence button's click handler, not inside `recompute()`. The four panels
+rendered only if you clicked "Break it down", and shipped blank otherwise. No
+console error, no exception, four empty boxes. The browser check caught it;
+this makes it a test rather than something somebody has to remember to look at.
+
+**One source found and deliberately not used.** TradingView's public scanner
+(`POST scanner.tradingview.com/india/scan`) returns technical ratings,
+performance and fundamentals for roughly 700 NSE stocks in one request with no
+login - it is what `Suraj2553/india-stock-dashboard` runs on. It is blocked
+from both this session's networks, so it could not be verified, and this repo's
+rule is to measure rather than assume. The test to run from a machine that can
+reach it: POST with `{"filter":[{"left":"type","operation":"equal","right":"stock"}],"markets":["india"],"columns":["name","close","change","sector","Recommend.All"],"range":[0,5]}`
+and check for `Access-Control-Allow-Origin` - if it is there, the browser can
+have a 700-stock screener with no workflow in the way.
+
+---
+
 ## Style
 
 Match the surrounding code. This codebase is ES5-flavoured browser JS with no

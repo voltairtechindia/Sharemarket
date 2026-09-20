@@ -24,6 +24,42 @@
       return (n >= 0 ? '+' : '') + IN.format(Number(n.toFixed(d)));
     },
     cls: function (n) { return (n > 0) ? 'up' : (n < 0 ? 'down' : 'flat'); },
+
+    /* ------------------------------------------------- Indian money scale
+
+       Rupee amounts in India are read in crore and lakh, not in millions.
+       "FII bought 599.54" means nothing on its own; "FII bought Rs 600 Cr"
+       is the sentence every business channel says out loud at 4pm, and a
+       page that prints the first one is asking its reader to do a conversion
+       nobody should have to do.
+
+       Input is in crore, because that is the unit every Indian source
+       publishes flows and market cap in - NSE's own FII/DII report included.
+       Above a hundred thousand crore it steps up to lakh crore, which is how
+       index market cap and budget numbers are quoted. */
+    crore: function (cr, digits) {
+      if (cr === null || cr === undefined || isNaN(cr)) return '—';
+      var a = Math.abs(cr);
+      if (a >= 100000) return (cr / 100000).toFixed(digits === undefined ? 2 : digits) + ' L Cr';
+      if (a >= 1) return IN0.format(Math.round(cr)) + ' Cr';
+      return IN0.format(Math.round(cr * 100)) + ' L';
+    },
+    /* The same, with the sign kept - flows are only readable as a direction. */
+    croreSigned: function (cr) {
+      if (cr === null || cr === undefined || isNaN(cr)) return '—';
+      return (cr >= 0 ? '+' : '−') + '₹' + fmt.crore(Math.abs(cr));
+    },
+    /* A raw rupee figure scaled to crore first. Turnover and market cap
+       arrive in rupees from some feeds and in crore from others, and mixing
+       the two silently is how a page ends up claiming a 4 lakh crore day. */
+    rupees: function (rs) {
+      if (rs === null || rs === undefined || isNaN(rs)) return '—';
+      return '₹' + fmt.crore(rs / 10000000);
+    },
+    /* Plain counts, Indian grouping: 1,23,456 rather than 123,456. */
+    count: function (n) {
+      return (n === null || n === undefined || isNaN(n)) ? '—' : IN0.format(Math.round(n));
+    },
     clock: function (d) {
       return String(d.getHours()).padStart(2, '0') + ':' +
              String(d.getMinutes()).padStart(2, '0') + ':' +

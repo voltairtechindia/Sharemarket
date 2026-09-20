@@ -64,7 +64,9 @@
   --shadow:   0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
   --shadow-lg:0 8px 24px rgba(16,24,40,.12);
 
-  --header-h: 54px;
+  /* 62px, not 54: the ticker tiles went to two lines on 20 Sep 2026 and
+     54 clipped the label off the top of every one of them. */
+  --header-h: 62px;
   --mw-w:     272px;
   --insight-w:320px;
 
@@ -158,17 +160,35 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .ticker-strip { display: flex; gap: 6px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .ticker-strip::-webkit-scrollbar { display: none; }
 
+/* Two lines, not one. A ticker tile is read as "name, then number", and a
+   single baseline row of name / price / change makes all three compete - the
+   price is the thing the eye should land on and it was the same weight as the
+   label above it. This is the shape every Indian broker and exchange site
+   uses, for that reason.
+
+   Grid areas rather than a wrapper element, because the three children are
+   flat in the markup and adding a wrapper would mean touching renderTicker(),
+   which finds them by data-field. */
 .tick {
-  display: flex; align-items: baseline; gap: 7px;
-  padding: 5px 10px; border-radius: var(--radius);
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-areas: "name name" "ltp chg";
+  align-items: baseline;
+  column-gap: 7px; row-gap: 1px;
+  padding: 5px 11px; border-radius: var(--radius);
   border: 1px solid transparent; cursor: pointer; white-space: nowrap;
   transition: background .12s, border-color .12s;
+  min-width: 104px;
 }
 .tick:hover { background: var(--bg-hover); }
 .tick[aria-selected="true"] { background: var(--bg-active); border-color: var(--brand); }
-.tick-name { font-size: 11px; font-weight: 600; color: var(--ink-muted); }
-.tick-ltp  { font-size: 13px; font-weight: 600; color: var(--ink-strong); }
-.tick-chg  { font-size: 11px; font-weight: 500; }
+.tick-name {
+  grid-area: name;
+  font-size: 9.5px; font-weight: 600; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.tick-ltp { grid-area: ltp; font-size: 15px; font-weight: 700; color: var(--ink-strong); letter-spacing: -.3px; }
+.tick-chg { grid-area: chg; font-size: 10.5px; font-weight: 600; }
 
 .topbar-right { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 
@@ -1071,3 +1091,105 @@ html, body { max-width: 100%; overflow-x: clip; }
   font: 400 10px/1.5 var(--sans); color: var(--ink-muted);
   margin: 10px 0 0; padding-top: 8px; border-top: 1px solid var(--grid);
 }
+
+
+/* ============================================================== SECTOR HEAT
+
+   A tile grid, not a bar chart. Eighteen sectors read as a board at a glance
+   the way a bar list never does, and the board is the format every Indian
+   market site uses for exactly that reason.
+
+   Colour carries the magnitude, not just the sign: four steps each way,
+   stepped rather than continuous, because a reader is comparing tiles to each
+   other and a smooth gradient makes two adjacent tiles look identical when
+   they are 0.4% apart. */
+.heat { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; margin-top: 8px; }
+.heat-tile {
+  padding: 7px 6px 6px; border-radius: 4px; min-width: 0;
+  display: flex; flex-direction: column; gap: 1px;
+  border: 1px solid transparent;
+}
+.heat-name {
+  font: 600 9px/1.15 var(--sans); letter-spacing: .02em;
+  text-transform: uppercase; color: var(--ink-strong);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.heat-v { font: 700 12px/1.2 var(--mono); }
+.heat-tile.broad { border-color: var(--border-strong); border-style: dashed; }
+
+.heat-u4 { background: color-mix(in srgb, var(--up) 30%, transparent); }
+.heat-u3 { background: color-mix(in srgb, var(--up) 20%, transparent); }
+.heat-u2 { background: color-mix(in srgb, var(--up) 12%, transparent); }
+.heat-u1 { background: color-mix(in srgb, var(--up) 6%,  transparent); }
+.heat-d1 { background: color-mix(in srgb, var(--down) 6%,  transparent); }
+.heat-d2 { background: color-mix(in srgb, var(--down) 12%, transparent); }
+.heat-d3 { background: color-mix(in srgb, var(--down) 20%, transparent); }
+.heat-d4 { background: color-mix(in srgb, var(--down) 30%, transparent); }
+.heat-z  { background: var(--bg-sunken); }
+.heat-u4 .heat-v, .heat-u3 .heat-v, .heat-u2 .heat-v, .heat-u1 .heat-v { color: var(--up); }
+.heat-d4 .heat-v, .heat-d3 .heat-v, .heat-d2 .heat-v, .heat-d1 .heat-v { color: var(--down); }
+.heat-z .heat-v { color: var(--ink-muted); }
+
+/* ==================================================================== MOVERS */
+.movers { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+/* When there is nothing to rank, the explanation spans both columns rather
+   than printing the same paragraph twice side by side. */
+.movers.is-empty { grid-template-columns: 1fr; }
+.movers.is-empty .movers-col:last-child { display: none; }
+.movers.is-empty .movers-h { display: none; }
+.movers-col { min-width: 0; }
+.movers-h {
+  font: 600 9px/1 var(--sans); letter-spacing: .09em; text-transform: uppercase;
+  padding-bottom: 5px; margin-bottom: 4px; border-bottom: 1px solid var(--border);
+}
+.movers-h.up { color: var(--up); }
+.movers-h.down { color: var(--down); }
+.mv-row {
+  display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 6px;
+  align-items: baseline; padding: 3px 0; font-size: 11px;
+}
+.mv-s { font-weight: 600; color: var(--ink-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mv-v { font: 600 11px/1 var(--mono); }
+.mv-empty { font-size: 10.5px; color: var(--ink-muted); line-height: 1.5; }
+
+/* ===================================================================== FLOWS */
+.flow-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1px; margin-top: 8px;
+  background: var(--border); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden;
+}
+.flow { background: var(--bg); padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
+.flow-k {
+  font: 600 9px/1 var(--sans); letter-spacing: .09em;
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.flow-v { font: 700 14px/1.1 var(--mono); }
+.flow-v.up { color: var(--up); }
+.flow-v.down { color: var(--down); }
+
+.hint { font: 400 10.5px/1.5 var(--sans); color: var(--ink-muted); margin: 8px 0 0; }
+
+/* A quote-only ticker is on the board but does not switch the chart, so it
+   must not look clickable. */
+.tick.is-quote { cursor: default; opacity: .92; }
+.tick.is-quote:hover { background: transparent; }
+
+
+/* ============================================================== CHART READ
+   Sits directly under the chart, above the news console, because it is about
+   the chart and a reader's eye should not have to leave it. */
+.chart-read {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 9px 14px; border-top: 1px solid var(--border);
+  background: var(--bg-sunken); flex: 0 0 auto;
+}
+.cr-dot {
+  width: 7px; height: 7px; border-radius: 50%; margin-top: 5px;
+  background: var(--flat); flex: 0 0 auto;
+}
+.cr-dot.up { background: var(--up); }
+.cr-dot.down { background: var(--down); }
+.cr-text { margin: 0; font: 400 11.5px/1.55 var(--sans); color: var(--ink); }
+.cr-text b { color: var(--ink-strong); font-weight: 600; }
+.cr-text .num { font-family: var(--mono); font-weight: 600; }
+@media (max-width: 900px) { .chart-read { padding: 8px 10px; } .cr-text { font-size: 11px; } }
