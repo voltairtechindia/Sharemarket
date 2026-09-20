@@ -181,7 +181,7 @@ constantly and the auto-router survives that. With reasoning off it was usable
 ## Load order is a dependency order
 
 `config` → `core` → `indicators` → `levels` → `structures` → `vol` →
-`forecast` → `ledger` → `engine` → `chart` → `app`. The script tags in
+`forecast` → `ledger` → `learn` → `engine` → `chart` → `app`. The script tags in
 `index.html` are commented with this. Reordering them breaks the page silently.
 
 `forecast.js` owns the model (eight lanes, clock-aware path, bands,
@@ -277,6 +277,124 @@ models the intraday cycle and re-applies it bar by bar, so a GARCH fitted on raw
 5-minute returns spends its ARCH coefficient describing the clock. Measured,
 persistence fell 0.741 → 0.509 and QLIKE improved 13% once the profile was
 divided out first.
+
+---
+
+## The opening call, the session view, and the locked record
+
+Added 20 Sep 2026. Three features, one question: what price does the next
+session start at, what does it do minute by minute, and was the line we drew
+this morning right.
+
+**`openLane()` in `forecast.js` is not a ninth lane.** Every other lane answers
+"which way from here" and votes into one blended bias. This one answers "what
+price does it open at", which is a different question with a different shape: a
+gap is a level shift that has already happened by the first projected bar, not
+a drift spread over the first few. It is added outside `maxDriftPctPerBar` for
+that reason - that cap exists to stop a drift running away over many bars and
+capping a gap with it is capping the wrong quantity with the wrong number - and
+bounded separately by `MAX_GAP_PCT` (1.5%). It applies only while the market is
+shut; intraday `gapApplies` is false, because the reprice is in the candles and
+adding it again would double-count the morning for the rest of the day.
+
+**`sgx_nifty` was NIFTY.** The heaviest row in `GLOBAL_MAP`, at 0.24, labelled
+"GIFT / SGX Nifty", was fetched from Yahoo symbol `^NSEI` - NIFTY spot. A
+quarter of the global lane was the index voting on itself, and an opening-gap
+model built on it would have read its own answer back as evidence and called
+the gap zero every morning. Removed, not reweighted: there is no keyless GIFT
+Nifty quote, and a row that is not what its label says is worse than a missing
+row. `selftest.js` greps for the symbol so it cannot come back quietly. Nikkei,
+Hang Seng and the CBOE VIX were already being fetched and read by nothing; they
+trade while India is shut, which is the window a gap is made in, so they took
+the weight.
+
+**The betas are judgements and the equity ones are correlated.** S&P futures,
+Nasdaq futures, the Nikkei and the Hang Seng mostly move together, so betas
+chosen as if each were the only cue sum to far more than the actual response.
+The first draft totalled 1.05 across the equity block and produced exactly
+1.5% on the live cue file - it hit the clamp and stopped being a model. The
+block totals 0.52 now. When the clamp is the answer, the betas are wrong, not
+the clamp.
+
+**`'1S'` projects to the bell, not to a bar count.** Every other timeframe
+projects `visibleBars * forecastRatio`. At 09:20 the rest of today is 370
+minutes and at 15:00 it is 30, so a fixed count either stops short of the close
+every morning or walks through it every afternoon. `sessionForecast` makes
+`build()` ask `barsToSessionClose()` instead, applied *after* `maxForecastBars`
+because that cap guards against projecting years, not against a horizon that
+ends at 15:30 today. `histPerForecast: 1.5` overrides the 4:1 framing: at 4:1,
+375 projected minutes would demand 1500 bars of history and squeeze the session
+being forecast into a sliver.
+
+It reads `candles_NIFTY_1H.json` via `bakedAs`, because it asks Yahoo for
+exactly what the hourly view asks for. A second identical file would be two
+files to keep in step for no extra information.
+
+**375 bars costs 46ms warm and 833ms cold.** Conflating those hid the real
+number: almost all of the cold figure is the variance fit, which `volContext`
+caches on the last bar. Boot pays cold once; the tick pays warm 25,000 times a
+session. `selftest.js` asserts both, separately.
+
+**Probabilities are measured against the predicted open, not the last close.**
+With a 0.92% gap in the path, "will it be above yesterday's close at 15:30" is
+99% by lunchtime - arithmetically right and useless, because the gap already
+answered it. Every checkpoint printed 99-100% the first time this ran. The live
+uncertainty is whether the session holds its open, so `refPrice` is what `pUp`
+is measured from and `pUpFrom` is carried on the row so the chart, the table
+and the narrative cannot each assume a different one. Clamped to 1-99
+regardless: a page that prints a certainty has stopped describing a forecast.
+
+**The band lines are gone from the chart and still in the model.** Four dotted
+lines occupied most of the picture. `upper`, `lower`, `upper2`, `lower2` are
+still computed, still in the hover card, still what `calibrate()` scores and
+what the ledger settles against - drawn is not the same question as computed,
+and deleting them to tidy the chart would have silently gutted the accuracy
+panel. `selftest.js` asserts both halves.
+
+**A lock that can be rewritten is not a lock.** `ledger.lock()` freezes at most
+two calls per session - `advance` (the day-before call) and `open` (recomputed
+in the 09:00-09:15 pre-open window) - and `write()` refuses rather than
+overwrites. It refuses silently, because it happens on most of the 25,000 ticks
+in a session and is not news. Locks are scoped by timeframe as well as session:
+a 5-minute path and a 1-minute path are different claims about the same day.
+
+`stageNow()` read the wall clock only, and was wrong in the exact case the
+feature was built for: on a Sunday afternoon the minute count is past 09:15, so
+it returned null and refused to freeze Monday's call - on the one evening a
+person is most likely to be asking. The same hole swallowed every weekday
+evening after 15:30. If the session in the forecast is not today's, nothing
+about it has traded yet whatever the time is.
+
+`scoreLock()` joins predicted to actual **by time, never by index** - the same
+rule `closeAtTime()` exists for. A missing bar shifts every later comparison by
+one otherwise, silently, for the rest of the day.
+
+**`learn.js` moves two numbers and no others.** The eight lane weights and one
+scalar gain on the opening betas. Three guardrails, each a way this goes wrong:
+`MIN_SAMPLE` (20) because a lane right 4 of 5 times has said nothing - Wilson
+runs 38% to 99%; `MAX_STEP` (8% of its own weight) because a single bad Tuesday
+must not rewrite the model; `FLOOR` (0.02) because a lane driven to zero stops
+being scored and can never earn its way back. Steps are sized by how far a
+lane's interval clears a coin, not by its point estimate - the point estimate
+steps hardest exactly where the sample is thinnest.
+
+The opening betas are scaled by **one** learned gain, not fitted individually.
+Nine betas on the handful of mornings this will have by Christmas would produce
+nine confident numbers and no information.
+
+**The LLM cannot write a weight.** It reads the record and writes the English
+post-mortem, and may `propose()` a change that sits until a human `accept()`s
+it. A proposal outside `MAX_STEP` is *dropped, not clamped* - honouring 8% of a
+request to quadruple a lane would hide that the model misunderstood the task.
+The free pool contains classifiers (see OpenRouter above); a router that once
+answered "User Safety: safe" to a forecast prompt must not be one keystroke
+from the model's parameters.
+
+**`data/predictions.json` is a lane nothing reads.** Fabricated rows with NIFTY
+ranges around 23,250 and notes like "Self-taught from previous predictions". It
+predates the ledger, is read by no screen and no script, and is exactly what the
+rule at the top of this file is about. The real forward record is `fcLedger` and
+`fcLocks` in localStorage. Delete the file or wire it; do not leave it.
 
 ---
 

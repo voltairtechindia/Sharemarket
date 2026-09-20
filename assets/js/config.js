@@ -40,6 +40,19 @@ KT.CONFIG = {
      chart still shows four parts history to one part forecast; there is just
      less of both on the long views. */
   timeframes: {
+    /* The session view, added 20 Sep 2026. One bar a minute, and the
+       projection runs to 15:30 rather than to a fixed bar count - which is
+       what `sessionForecast` means and why it is not just another row with a
+       smaller barSec. Every other view answers "the next N bars"; this one
+       answers "the rest of today", and those stop being the same question the
+       moment the clock is past 14:00.
+
+       histPerForecast is 1.5 rather than the usual 4. The 4:1 framing is right
+       when the forecast is a fifth of the picture; with 375 projected minutes
+       it would demand 1500 bars of history and squeeze the session being
+       forecast into a sliver of the chart - the opposite of what this view is
+       for. */
+    '1S':  { label: 'Session',   interval: '1m',  range: '5d',  reasonBucket: 900,    reasonLabel: 'every 15 minutes', visibleBars: 375, forecastRatio: 0.25, barSec: 60, sessionForecast: true, histPerForecast: 1.5, bakedAs: '1H' },
     '1H':  { label: 'Hourly',    interval: '1m',  range: '5d',  reasonBucket: 600,    reasonLabel: 'every 10 minutes', visibleBars: 240, forecastRatio: 0.25, barSec: 60 },
     '1D':  { label: 'Daily',     interval: '5m',  range: '1mo', reasonBucket: 3600,   reasonLabel: 'every 1 hour',     visibleBars: 300, forecastRatio: 0.25, barSec: 300 },
     '1M':  { label: 'Monthly',   interval: '1d',  range: '6mo', reasonBucket: 86400,  reasonLabel: 'every 1 day',      visibleBars: 130, forecastRatio: 0.25, barSec: 86400, maxForecastBars: 30 },
@@ -196,7 +209,12 @@ KT.CONFIG = {
     universe:    'data/universe.json',
     lexicon:     'config/lexicon.json',
     auth:        'config/auth.json',
-    candles:     (sym, tf) => `data/candles_${sym}_${tf}.json`,
+    /* The session view asks Yahoo for exactly what the hourly view asks for -
+       1m bars over 5d - so it reads the hourly view's workflow file rather
+       than making the workflow write a second identical one. Writing the
+       duplicate would be two files to keep in step for no extra information,
+       which is this repo's recurring bug in its cheapest form. */
+    candles:     (sym, tf) => `data/candles_${sym}_${(KT.CONFIG.timeframes[tf] && KT.CONFIG.timeframes[tf].bakedAs) || tf}.json`,
   },
 
   /* Files that must never be read from the stale same-origin copy when the

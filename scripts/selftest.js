@@ -34,7 +34,7 @@ const ROOT = path.resolve(__dirname, '..');
    one. */
 const MODULES = ['config', 'core', 'indicators', 'levels', 'patterns',
                  'structures', 'journal', 'portfolio', 'data', 'analogs',
-                 'vol', 'forecast', 'ledger'];
+                 'vol', 'forecast', 'ledger', 'learn'];
 
 let pass = 0, fail = 0;
 function ok(name, cond, detail) {
@@ -105,6 +105,12 @@ const seasonality = readJSON('data/seasonality.json', null);
 const options = readJSON('data/options.json', null);
 const events = readJSON('data/events.json', null);
 const news = (readJSON('data/news.json', {}).news_items || []).slice(0, 300);
+// The session view runs on 1-minute bars, which is the hourly view's file.
+const minuteRaw = readJSON('data/candles_NIFTY_1H.json', null);
+const minuteCandles = (minuteRaw && minuteRaw.candles ? minuteRaw.candles : []).map(r => ({
+  time: r[0], open: r[1], high: r[2], low: r[3], close: r[4], volume: r[5],
+}));
+const globalCues = readJSON('data/global.json', null);
 
 console.log(`loaded ${MODULES.length} modules, ${candles.length} candles, ` +
             `${news.length} headlines, options=${!!options}, events=${!!events}`);
@@ -200,7 +206,12 @@ const f = KT.forecast.build({
        const min = d.getUTCHours() * 60 + d.getUTCMinutes();
        return min >= 555 && min <= 930 && d.getUTCDay() >= 1 && d.getUTCDay() <= 5;
      }));
-  ok('checkpoint probabilities are percentages', f.checkpoints.every(c => c.pUp >= 0 && c.pUp <= 100));
+  /* 1-99, not 0-100. An opening gap drives the raw figure to 100 inside the
+     first hour, and a page that prints a certainty has stopped describing a
+     forecast. */
+  ok('checkpoint probabilities never print certainty',
+     f.checkpoints.every(c => c.pUp >= 1 && c.pUp <= 99),
+     f.checkpoints.map(c => c.pUp).join('/'));
   ok('every lane reports hasData explicitly',
      f.lanes.every(l => typeof l.hasData === 'boolean'), `${f.lanes.length} lanes`);
   ok('a dark news feed drops the lane instead of voting zero',
@@ -607,6 +618,289 @@ section('WIRING — every handler app.js names is defined');
   ok('boot does not wait on the live proxy fetches',
      boot.length > 0 && !/refreshOptionChain\(\)|refreshInternals\(\)/.test(boot),
      'those are 14-20s proxy hops; the chart must not queue behind them');
+}
+
+/* ====================================================== THE OPENING CALL
+
+   Added 20 Sep 2026 along with the lane. Every assertion here is a way the
+   gap model could look right and be worthless. */
+section('FORECAST — the opening gap');
+{
+  // Comments explaining why the row was removed obviously mention it, so
+  // strip them before grepping - otherwise the test fails on its own epitaph.
+  const strip = x => x.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const src = strip(fs.readFileSync(path.join(ROOT, 'assets/js/forecast.js'), 'utf8'));
+
+  /* The bug that started this: `sgx_nifty` was fetched from Yahoo `^NSEI`,
+     which is NIFTY spot, and carried 0.24 of the global lane. An opening-gap
+     model reading it would have been handed the answer. It must be gone from
+     both tables, and there is no honest way to reintroduce it without a real
+     GIFT Nifty feed - so the test names the symbol too. */
+  ok('the index does not vote on itself in the global lane',
+     !/sgx_nifty/.test(src), 'a lane fed from ^NSEI would make the gap call circular');
+  ok('the fetcher no longer labels ^NSEI as GIFT Nifty',
+     !/\("sgx_nifty", "GIFT Nifty", "\^NSEI"/.test(
+       fs.readFileSync(path.join(ROOT, 'scripts/fetch_global.py'), 'utf8')
+         .replace(/^\s*#.*$/gm, '')));
+
+  const betas = KT.forecast.openBetaDefaults;
+  ok('no opening beta reads a NIFTY-derived series',
+     !Object.keys(betas).some(k => /nifty|nsei/i.test(k)), Object.keys(betas).join(', '));
+
+  const price = 23300;
+  ok('no cues means no call, not a zero call',
+     KT.forecast.openLane(null, null, price).hasData === false);
+  ok('an empty items map is still no call',
+     KT.forecast.openLane({ items: {} }, null, price).hasData === false);
+
+  const up = KT.forecast.openLane(
+    { items: { us_futures: { changePct: 1.2 }, nikkei: { changePct: 0.8 } } }, null, price);
+  const down = KT.forecast.openLane(
+    { items: { us_futures: { changePct: -1.2 }, nikkei: { changePct: -0.8 } } }, null, price);
+  ok('risk-on overnight opens the index higher', up.hasData && up.gapPct > 0 && up.price > price,
+     `${up.gapPct}% -> ${up.price}`);
+  ok('the call is symmetric', Math.abs(up.gapPct + down.gapPct) < 1e-9);
+
+  // A weaker rupee is a headwind even when US futures are up. Sign, not size.
+  const rupee = KT.forecast.openLane({ items: { usdinr: { changePct: 1.0 } } }, null, price);
+  ok('a weaker rupee opens the index lower', rupee.gapPct < 0, `${rupee.gapPct}%`);
+
+  /* One feed printing nonsense must not draw the projection off the chart.
+     Brent has come through this repo's own feed at -8.7% in a day. */
+  const wild = KT.forecast.openLane({
+    items: { us_futures: { changePct: 40 }, nasdaq_fut: { changePct: 40 },
+             nikkei: { changePct: 40 }, hangseng: { changePct: 40 } } }, null, price);
+  ok('a mad print cannot open the index more than 1.5% away',
+     Math.abs(wild.gapPct) <= 1.5 + 1e-9, `${wild.gapPct}%`);
+
+  ok('an unfitted call says it is unfitted', up.fitted === false);
+
+  if (globalCues && globalCues.items) {
+    const real = KT.forecast.openLane(globalCues, null, price);
+    ok('the real cue file produces a finite call',
+       !real.hasData || (isFinite(real.price) && Math.abs(real.gapPct) <= 1.5),
+       real.hasData ? `${real.gapPct}% on ${real.cues} cues` : 'no cues in file');
+  }
+}
+
+/* ======================================================= THE SESSION VIEW */
+section('FORECAST — the session view');
+{
+  const tf = KT.CONFIG.timeframes['1S'];
+  ok('the session timeframe exists and is one bar a minute', !!tf && tf.barSec === 60);
+  ok('it projects to the bell rather than to a bar count', tf.sessionForecast === true);
+  ok('it reads the hourly view’s candle file rather than a duplicate',
+     tf.bakedAs === '1H' &&
+     KT.CONFIG.baked.candles('NIFTY', '1S') === 'data/candles_NIFTY_1H.json');
+
+  /* The whole reason sessionForecast exists: at 09:20 "the rest of today" is
+     370 minutes and at 15:00 it is 30. A fixed count is wrong at both ends. */
+  const istAt = (h, m, day) => {
+    const d = Date.UTC(2026, 8, day, h - 5, m - 30, 0);   // 21 Sep 2026 is a Monday
+    return Math.floor(d / 1000);
+  };
+  const at0920 = KT.forecast.barsToSessionClose(istAt(9, 20, 21), 60);
+  const at1500 = KT.forecast.barsToSessionClose(istAt(15, 0, 21), 60);
+  const shut = KT.forecast.barsToSessionClose(istAt(19, 0, 20), 60);   // Sunday evening
+  ok('mid-session it counts the minutes actually left', at0920 === 370, `09:20 -> ${at0920}`);
+  ok('late in the session it counts fewer', at1500 === 30, `15:00 -> ${at1500}`);
+  ok('while shut it projects a whole session', shut === 375, `shut -> ${shut}`);
+  ok('a fixed bar count would have been wrong at both ends', at0920 !== at1500);
+
+  if (minuteCandles.length > 400) {
+    const sctx = () => ({
+      candles: minuteCandles.slice(), timeframe: '1S', news, seasonality,
+      options, global: globalCues, vix: 11.9,
+    });
+    /* Cold and warm are different budgets and conflating them hid the real
+       number here: the first 375-bar build measured 772ms and the next three
+       averaged 48ms. Almost all of the first one is the variance fit, which
+       volContext caches on the last bar, plus JIT warm-up. Boot pays cold
+       once; the one-second tick pays warm 25,000 times a session, and it is
+       the second number that decides whether the live price stutters. */
+    const cold0 = Date.now();
+    const sf = KT.forecast.build(sctx());
+    const cold = Date.now() - cold0;
+    const warm0 = Date.now();
+    for (let i = 0; i < 3; i++) KT.forecast.build(sctx());
+    const ms = Math.round((Date.now() - warm0) / 3);
+    ok('a session forecast builds', !!sf && sf.path.length > 0, sf ? `${sf.path.length} minutes` : '');
+    if (sf) {
+      ok('one point per minute, strictly increasing',
+         sf.path.every((p, i) => i === 0 || p.time > sf.path[i - 1].time));
+      ok('every projected minute is inside market hours on a weekday',
+         sf.path.every(p => {
+           const d = new Date((p.time + 19800) * 1000);
+           const min = d.getUTCHours() * 60 + d.getUTCMinutes();
+           return min >= 555 && min <= 930 && d.getUTCDay() >= 1 && d.getUTCDay() <= 5;
+         }));
+      ok('the path ends at the close, not part way through',
+         (() => {
+           const d = new Date((sf.path[sf.path.length - 1].time + 19800) * 1000);
+           return d.getUTCHours() * 60 + d.getUTCMinutes() === 930;
+         })());
+      /* 375 bars is five times the daily view's horizon and this runs on the
+         one-second tick. The eighth bug in CLAUDE.md was a 116ms build; this
+         has to stay well inside the budget or the live price stutters. */
+      ok('a warm 375-minute build fits inside the one-second tick', ms < 150, `${ms}ms warm`);
+      ok('the cold build does not stall boot', cold < 1500, `${cold}ms cold`);
+      /* The gap is a level shift, so all three lines must start from the same
+         opening price. They used to start from last close, which put the news
+         and pattern lines at a price the market would not open at and read as
+         disagreement that was really a missing gap. */
+      if (sf.open && sf.open.applies && sf.open.hasData) {
+        ok('the projection starts at the predicted open',
+           Math.abs(sf.path[0].value - sf.open.price) / sf.open.price < 0.002,
+           `path ${sf.path[0].value} vs open ${sf.open.price}`);
+        ok('the component lines open at the same price',
+           Math.abs(sf.pathNews[0].value - sf.pathPattern[0].value) / sf.open.price < 0.004);
+        /* The checkpoint probability must be measured against the predicted
+           open once a gap is called, not against yesterday's close. Against
+           the close every checkpoint printed 99-100% the moment a gap of
+           0.9% was in the path - true, and an answer to a question the open
+           had already settled. */
+        ok('probabilities are measured against the predicted open, not the last close',
+           sf.checkpoints.every(c => c.pUpFrom != null &&
+             Math.abs(c.pUpFrom - sf.open.price) / sf.open.price < 0.0001),
+           `ref ${sf.checkpoints[0].pUpFrom} vs open ${sf.open.price}`);
+        ok('and they are no longer pinned at certainty',
+           sf.checkpoints.some(c => c.pUp < 95),
+           sf.checkpoints.map(c => c.pUp).join('/'));
+      } else {
+        ok('with the gap behind us the open block says so', sf.open.applies === false ||
+           sf.open.hasData === false);
+        ok('and probabilities fall back to the last close',
+           sf.checkpoints.every(c => Math.abs(c.pUpFrom - sf.lastClose) < 0.01));
+      }
+    }
+  }
+}
+
+/* ==================================================== PREDICTED VS ACTUAL */
+section('LEDGER — the session lock');
+{
+  const base = minuteCandles.length > 400 ? minuteCandles : candles;
+  const f2 = KT.forecast.build({
+    candles: base.slice(), timeframe: minuteCandles.length > 400 ? '1S' : '1D',
+    news, seasonality, options, global: globalCues, vix: 11.9,
+  });
+  /* The bug this test exists for: stageNow() read the wall clock only, so on
+     a Sunday afternoon - minute count past 09:15 - it returned null and
+     refused to freeze Monday's call. That is the one evening the feature is
+     for. The session being forecast decides the stage, not the time of day. */
+  ok('a forecast for a later session is always the day-before call',
+     KT.ledger.stageNow({ path: [{ time: Math.floor(Date.now() / 1000) + 86400 * 3, value: 1 }] }) === 'advance',
+     'a Sunday afternoon must still be able to call Monday');
+
+  const first = KT.ledger.lock(f2, { symbol: 'TESTSYM' });
+  const second = KT.ledger.lock(f2, { symbol: 'TESTSYM' });
+
+  if (!first) {
+    /* stageNow() returns null during the session, which is correct: there is
+       nothing left to freeze once the market has opened. */
+    ok('no lock is written once the session is under way', second === null);
+  } else {
+    ok('a lock is written', !!first.path && first.path.length > 0, `${first.path.length} points`);
+    ok('a second call returns the same lock rather than a new one', second.id === first.id);
+    ok('the locked path is never rewritten',
+       second.path.length === first.path.length &&
+       second.path.every((p, i) => p.value === first.path[i].value &&
+                                   p.time === first.path[i].time));
+    ok('the lock carries the opening call it was made with',
+       first.openPrice != null && isFinite(first.openPrice));
+
+    /* Scoring must join on time. Handed a candle series with a bar missing in
+       the middle, index arithmetic would compare every later minute with the
+       wrong one; joining by time simply skips it. */
+    const fake = first.path.map((p, i) => ({
+      time: p.time, open: p.value, high: p.value, low: p.value, close: p.value + i,
+    }));
+    const holed = fake.filter((_, i) => i !== 5);
+    const full = KT.ledger.scoreLock(first, fake);
+    const gap = KT.ledger.scoreLock(first, holed);
+    ok('a perfect-but-drifting tape scores the drift, not zero', full && full.n === fake.length);
+    ok('a missing bar drops one comparison and shifts none',
+       gap && gap.n === full.n - 1 &&
+       gap.pairs.every(pr => {
+         const match = full.pairs.find(q => q.time === pr.time);
+         return match && match.predicted === pr.predicted && match.actual === pr.actual;
+       }),
+       'joined by time, not by index');
+    ok('the open is scored separately from the day',
+       full && full.openPredicted != null && full.openActual != null);
+    ok('skill is measured against price not moving',
+       full && (full.skill === null || full.skill >= 0));
+  }
+}
+
+/* ============================================================ THE LEARNER */
+section('LEARN — guardrails');
+{
+  KT.learn.reset();
+  ok('starts unfitted, so build() uses the CONFIG weights',
+     KT.learn.weights() === null && KT.learn.summary().fitted === false);
+  ok('no opening gain until there are mornings to learn from',
+     KT.learn.openBetas() === null);
+
+  /* A model asking for more than one step gets dropped, not clamped. Clamping
+     would honour 8% of a request that shows the model misunderstood the task,
+     and hide that it did. */
+  const cur = KT.CONFIG.forecast.weights.news;
+  KT.learn.propose({ text: 'quadruple the news lane', model: 'test',
+                     changes: { news: cur * 4 } });
+  ok('a proposal outside one step is dropped, not shrunk',
+     KT.learn.proposal().changes.length === 0);
+
+  KT.learn.propose({ text: 'nudge news up', model: 'test',
+                     changes: { news: cur * 1.05 } });
+  ok('a proposal inside one step survives', KT.learn.proposal().changes.length === 1);
+  ok('a proposal cannot invent a lane',
+     (KT.learn.propose({ text: 'x', changes: { sgx_nifty: 0.5, news: cur * 1.02 } }),
+      KT.learn.proposal().changes.every(c => KT.CONFIG.forecast.weights.hasOwnProperty(c.id))));
+
+  ok('a proposal changes nothing until it is accepted', KT.learn.weights() === null);
+  KT.learn.accept();
+  const after = KT.learn.weights();
+  ok('accepting applies it and marks the weights fitted', !!after && after.fitted === true);
+  ok('the accepted weights still sum to 1',
+     Math.abs(Object.keys(KT.CONFIG.forecast.weights)
+       .reduce((a, k) => a + after[k], 0) - 1) < 1e-6);
+  ok('no lane is ever driven below the floor',
+     Object.keys(KT.CONFIG.forecast.weights).every(k => after[k] >= KT.learn.FLOOR));
+  ok('the step is kept in the history so the change is checkable',
+     KT.learn.history().length === 1 && KT.learn.history()[0].source === 'proposal');
+
+  /* The thin-sample guard. A lane right 4 times out of 5 has said nothing -
+     Wilson runs 38% to 99% - and must not move anything. */
+  KT.learn.reset();
+  const res = KT.learn.update('NOSUCHSYM', '1D', { force: true });
+  ok('an empty record moves no weight', res.moved.length === 0);
+  ok('and leaves the model on the CONFIG weights', KT.learn.weights() === null);
+  KT.learn.reset();
+}
+
+/* ============================================= THE CHART DRAWS TWO LINES */
+section('CHART — the band lines are gone');
+{
+  const src = fs.readFileSync(path.join(ROOT, 'assets/js/chart.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  ['upSeries', 'loSeries', 'up2Series', 'lo2Series'].forEach(name => {
+    ok(`${name} is no longer drawn`, !new RegExp('\\b' + name + '\\b').test(src));
+  });
+  ok('the two lines that replaced them are drawn',
+     /lockSeries\s*=\s*chart\.addLineSeries/.test(src) &&
+     /actualSeries\s*=\s*chart\.addLineSeries/.test(src));
+  /* Removing the lines from the chart must not remove the band from the
+     model: the hover card quotes it, calibrate() scores it, and the ledger
+     settles against it. Deleting it to tidy the chart would silently gut the
+     accuracy panel. */
+  ok('the band is still computed for the panels that score it',
+     f && f.upper && f.lower && f.upper2 && f.lower2 &&
+     f.upper.length === f.path.length,
+     'drawn is not the same question as computed');
+  ok('checkpoints still carry both bands',
+     f.checkpoints.every(c => c.low != null && c.high != null &&
+                              c.low95 != null && c.high95 != null));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -79,11 +79,107 @@ global feed shifts its weight onto the rest instead of quietly voting neutral.
 |---|---|---|
 | News flow | 24% | recency- and impact-weighted sentiment, 6-hour half-life |
 | Momentum | 20% | price vs 20/50 EMA, RSI, MACD histogram, supertrend, scaled by ADX |
-| Global cue | 16% | US futures, GIFT Nifty, crude, USD/INR, dollar index, US 10y, gold |
+| Global cue | 14% | US and Nasdaq futures, Nikkei, Hang Seng, crude, USD/INR, dollar index, US 10y, gold, CBOE VIX |
 | Chart structure | 13% | measured moves from triangles, flags, double tops, head and shoulders |
 | Seasonal | 12% | this month's historical average and win rate, plus day-of-week and expiry-week |
 | Room to run | 8% | how far the nearest wall is on each side, in ATR |
 | Flows and breadth | 7% | advances vs declines, FII and DII net |
+
+### What price does it open at
+
+Every lane above answers "which way from here". None of them answered the
+question people actually ask on a Sunday evening: **what does it open at
+tomorrow.**
+
+That is a different question with a different shape. NIFTY does not walk from
+Friday's close to Monday's open one bar at a time — it is shut while the rest of
+the world trades and reprices in a single jump at 09:15. So the opening call is
+a level shift, not drift, and it is computed and bounded separately: overnight
+futures, Asia, the rupee, crude and the dollar, each with a stated coefficient,
+clipped at 1.5% because NIFTY opening further than that from its close is a
+handful of days a decade.
+
+The panel prints the price, the gap in points and percent, and the three cues
+that moved it most with the number each one moved it by — so the call can be
+argued with rather than taken on faith. It says, every time, that the
+coefficients are judgements and not fits, because they are.
+
+One thing is deliberately **not** an input: NIFTY's own last change. It used to
+be. The global lane carried a row labelled "GIFT / SGX Nifty" at 24% of its
+weight, fetched from Yahoo symbol `^NSEI` — which is NIFTY spot. A quarter of
+that lane was the index voting on itself, and an opening model reading it would
+have been handed the answer and called the gap zero every morning. The row is
+gone rather than relabelled; there is no keyless GIFT Nifty quote, and the test
+suite greps for the symbol so it cannot come back quietly.
+
+### Minute by minute, to the bell
+
+The **Session** view runs one bar a minute and projects to 15:30 rather than to
+a fixed number of bars. That distinction matters more than it sounds: at 09:20
+the rest of today is 370 minutes and at 15:00 it is 30, and a fixed count either
+stops short of the close every morning or walks straight through it every
+afternoon.
+
+The same volatility term structure applies, so the band widens through the open
+and tightens into the lunch lull exactly as it does on the other views — it is
+simply not drawn any more. Four dotted band lines occupied most of the picture
+and answered a question nobody was asking it. The numbers are still in the hover
+card, still in the checkpoint table, and still what the accuracy panel scores.
+
+### Predicted against actual
+
+What replaced the band lines is the pair that answers the question the band
+never did.
+
+**Predicted** is the forecast frozen before the session — once the evening
+before, and once again in the 09:00–09:15 pre-open window when the overnight
+cues are complete. It is written to this browser once and never rewritten. A
+line that keeps updating and is then compared against the tape is a model
+marking its own homework with the answers in front of it, and it will look
+excellent forever.
+
+**Actual** is the close line over the same window.
+
+The gap between them is the error, in points, and the panel beside the chart
+keeps score: what was predicted now, what printed now, the average error so far,
+how the opening call itself did, and — the only number that means anything —
+whether the line beat "price stays at yesterday's close". An average error of 40
+points is excellent on a day the index moved 300 and useless on a day it moved
+45. Against a flat line is the benchmark that survives both days.
+
+Forgetting the record is in Settings, two clicks away from the panel that scores
+it, and it asks first. The whole value of a frozen call is that a bad morning
+cannot be deleted on the morning it happens.
+
+### How it learns
+
+Once there are settled calls, two numbers move on their own: the eight lane
+weights, and one scalar gain on the opening coefficients. Nothing else. The
+model stays deterministic arithmetic; learning only changes how much each lane
+is listened to.
+
+Three limits, each of which is a way this otherwise goes wrong:
+
+- **Twenty calls before a lane may move at all.** A lane right four times out of
+  five has told you nothing — the interval on 4/5 runs from 38% to 99%. Steps
+  are sized by how far a lane's interval clears a coin, not by its hit rate,
+  because the hit rate steps hardest exactly where the sample is thinnest.
+- **Eight percent of its own weight per step.** Recovering from a run of noise
+  takes as many sessions as creating it did. A learner with momentum is a
+  weathervane.
+- **No lane is ever driven to zero.** A lane at zero stops being scored, so it
+  can never earn its way back, so one unlucky fortnight silently amputates an
+  input forever.
+
+The language model is not in that loop. OpenRouter or Gemini reads the record
+and writes the post-mortem in English, and may *propose* a weight change — which
+sits as a suggestion until a person accepts it, and is dropped outright if it
+asks for more than one step. The free pool contains classifiers; one of them
+once answered "User Safety: safe" to a forecast prompt with a valid 200. That is
+not something to put one keystroke away from the model's parameters.
+
+Every step is kept, with the sample it was taken on, so "the model learned" is
+checkable rather than decorative.
 
 ### Where it goes, by the clock
 

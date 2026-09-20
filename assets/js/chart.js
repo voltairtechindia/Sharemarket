@@ -1,8 +1,17 @@
 /* ============================================================================
-   Chart: candles for the past and present, a dashed projection with two
-   confidence bands for the future, the geometry of every detected pattern
-   drawn where it actually sits, the levels price has respected, and a reason
-   point wherever something moved the index.
+   Chart: candles for the past and present, a live projection for the future,
+   the geometry of every detected pattern drawn where it actually sits, the
+   levels price has respected, and a reason point wherever something moved
+   the index.
+
+   The band lines were removed on 20 Sep 2026. Four dotted lines - 68% and 95%
+   either side - occupied most of the picture and answered a question nobody
+   was asking it; the band is still computed, still in the hover card and still
+   what the accuracy panel scores, it is simply not drawn. What replaced it is
+   the pair that does answer the question: `lockSeries`, the forecast frozen at
+   the moment the session's call was made, and `actualSeries`, the close line
+   over the same window. Divergence between those two is the model being wrong,
+   in the one place a reader will look.
 
    The visible window is always 4 parts history to 1 part forecast, which is
    what makes the projection read as "the last fifth of the picture".
@@ -17,7 +26,7 @@
   var C = KT.CONFIG, core = KT.core;
 
   var chart = null, candleSeries = null;
-  var fcSeries = null, upSeries = null, loSeries = null, up2Series = null, lo2Series = null;
+  var fcSeries = null, lockSeries = null, actualSeries = null;
   var newsFcSeries = null, patFcSeries = null;   // the two component projections
   var pool = { structure: [], overlay: [] };     // reusable line series
   var priceLines = [];                            // horizontal lines on the candle series
@@ -26,7 +35,7 @@
     structures: [], levels: null, indicators: null,
     overlays: { ema: true, bands: false, supertrend: false, vwap: false, levels: true, patterns: true },
     tf: C.defaultTimeframe, symbol: C.defaultSymbol,
-    lastCandleTime: null, pinned: null, total: 0,
+    lastCandleTime: null, pinned: null, total: 0, locked: null,
   };
   var els = {};
 
@@ -69,6 +78,8 @@
       forecast: css('--forecast', '#7c3aed'),
       fcNews: css('--fc-news', '#0284c7'),
       fcPattern: css('--fc-pattern', '#ea580c'),
+      locked: css('--fc-locked', '#db2777'),
+      actual: css('--actual-line', '#111827'),
       now: css('--now-line', '#94a3b8'),
       bull: css('--pattern-bull', '#0ea5e9'),
       bear: css('--pattern-bear', '#d97706'),
@@ -119,23 +130,21 @@
       lastValueVisible: true,
     });
 
-    upSeries = chart.addLineSeries({
-      color: p.forecast, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted,
-      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-      title: '',
+    /* The frozen call. Set once per session and never rewritten, so what is
+       drawn at 15:30 is the same line that was drawn at 09:15. Widening it or
+       nudging it later would turn the whole record into decoration. */
+    lockSeries = chart.addLineSeries({
+      color: p.locked, lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed,
+      priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
+      title: 'Predicted',
     });
-    loSeries = chart.addLineSeries({
-      color: p.forecast, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted,
-      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-      title: '',
-    });
-    up2Series = chart.addLineSeries({
-      color: p.forecast, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted,
-      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, title: '',
-    });
-    lo2Series = chart.addLineSeries({
-      color: p.forecast, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted,
-      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, title: '',
+    /* What price actually did over the frozen call's window. Drawn on top of
+       the candles rather than instead of them: the candles are the evidence,
+       this line is only there to be compared against the one above it. */
+    actualSeries = chart.addLineSeries({
+      color: p.actual, lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid,
+      priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
+      title: 'Actual',
     });
     // Component paths sit under the blended line so the blend reads on top.
     newsFcSeries = chart.addLineSeries({
@@ -175,7 +184,9 @@
     var p = palette();
     chart.applyOptions(chartOptions());
     candleSeries.applyOptions({ upColor: p.up, downColor: p.down, borderUpColor: p.up, borderDownColor: p.down, wickUpColor: p.up, wickDownColor: p.down });
-    [fcSeries, upSeries, loSeries, up2Series, lo2Series].forEach(function (s) { s.applyOptions({ color: p.forecast }); });
+    fcSeries.applyOptions({ color: p.forecast });
+    if (lockSeries) lockSeries.applyOptions({ color: p.locked });
+    if (actualSeries) actualSeries.applyOptions({ color: p.actual });
     if (newsFcSeries) newsFcSeries.applyOptions({ color: p.fcNews });
     if (patFcSeries) patFcSeries.applyOptions({ color: p.fcPattern });
     drawStructures(); drawOverlays(); drawLevels();
@@ -202,20 +213,18 @@
       // grows out of the candles instead of floating beside them.
       var anchor = { time: state.lastCandleTime, value: state.candles[state.candles.length - 1].close };
       fcSeries.setData([anchor].concat(forecast.path));
-      upSeries.setData([anchor].concat(forecast.upper));
-      loSeries.setData([anchor].concat(forecast.lower));
-      up2Series.setData(forecast.upper2 ? [anchor].concat(forecast.upper2) : []);
-      lo2Series.setData(forecast.lower2 ? [anchor].concat(forecast.lower2) : []);
       // Both start from the same real close, so any divergence between them is
       // the models disagreeing rather than a plotting offset.
       newsFcSeries.setData(forecast.pathNews ? [anchor].concat(forecast.pathNews) : []);
       patFcSeries.setData(forecast.pathPattern ? [anchor].concat(forecast.pathPattern) : []);
       state.total = state.candles.length + forecast.path.length;
     } else {
-      [fcSeries, upSeries, loSeries, up2Series, lo2Series, newsFcSeries, patFcSeries]
+      [fcSeries, newsFcSeries, patFcSeries]
         .forEach(function (x) { if (x) x.setData([]); });
       state.total = state.candles.length;
     }
+
+    drawLocked(forecast && forecast.locked);
 
     drawStructures();
     drawOverlays();
@@ -225,6 +234,58 @@
     if (els.empty) els.empty.classList.add('hidden');
     if (els.zone) els.zone.hidden = !(forecast && forecast.path && forecast.path.length);
     if (els.now) els.now.hidden = !state.lastCandleTime;
+  }
+
+  /* ======================================================= locked call
+
+     Two lines and nothing else: what was predicted, and what happened.
+
+     `locked.path` is written once and is not recomputed here - if this
+     function ever rebuilt it, the comparison would be a model scoring its own
+     hindsight, which is the failure the ledger exists to prevent. The actual
+     line is derived from the candle series rather than stored, because the
+     candles are the only record of price this page is entitled to treat as
+     true, and deriving it means a corrected bar corrects the comparison too.
+
+     Both lines are clipped to the locked window. Drawing the actual line
+     before the lock existed would make the model look right about a stretch
+     it never called. */
+  function drawLocked(locked) {
+    if (!lockSeries || !actualSeries) return;
+    if (!locked || !locked.path || !locked.path.length) {
+      lockSeries.setData([]); actualSeries.setData([]);
+      state.locked = null;
+      return;
+    }
+    state.locked = locked;
+
+    var from = locked.anchorTime, to = locked.path[locked.path.length - 1].time;
+    var seed = { time: from, value: locked.anchorPrice };
+
+    // A point whose time is not strictly increasing makes Lightweight Charts
+    // throw and take the whole repaint with it, so the seed is dropped rather
+    // than prepended when the path already starts at the anchor.
+    var pathData = locked.path[0].time <= from ? locked.path.slice() : [seed].concat(locked.path);
+    lockSeries.setData(pathData);
+
+    var real = [];
+    for (var i = 0; i < state.candles.length; i++) {
+      var b = state.candles[i];
+      if (b.time < from || b.time > to) continue;
+      real.push({ time: b.time, value: b.close });
+    }
+    if (real.length && real[0].time > from) real.unshift(seed);
+    actualSeries.setData(real);
+  }
+
+  /* The actual line has to grow with the tape or it stops being the actual
+     line. Called from tick(), which is the only place a bar changes between
+     repaints. */
+  function extendActual(price, slot) {
+    if (!actualSeries || !state.locked) return;
+    var L = state.locked;
+    if (slot < L.anchorTime || slot > L.path[L.path.length - 1].time) return;
+    actualSeries.update({ time: slot, value: price });
   }
 
   /* Live tick: rewrite the forming candle without touching the rest. */
@@ -246,6 +307,7 @@
       if (price < last.low) last.low = price;
       candleSeries.update(last);
     }
+    extendActual(price, slot);
     positionOverlays();
   }
 
@@ -430,7 +492,7 @@
     if (!chart || !state.total) return;
     var tf = C.timeframes[state.tf];
     var fcBars = state.forecast && state.forecast.path ? state.forecast.path.length : 0;
-    var histBars = Math.min(state.candles.length, fcBars ? fcBars * 4 : tf.visibleBars);
+    var histBars = Math.min(state.candles.length, fcBars ? fcBars * (tf.histPerForecast || 4) : tf.visibleBars);
     var span = histBars + fcBars;
     var to = state.total - 0.5;
     try {
@@ -563,7 +625,14 @@
     var mv = core.el('fcd-move');
     if (mv) { mv.textContent = core.fmt.pct(a.driftPct); mv.className = 'fcard-move num ' + core.fmt.cls(a.driftPct); }
     core.text('fcd-price', core.fmt.price(centre));
-    core.text('fcd-prob', a.pUp + '% chance above ' + core.fmt.price(last));
+    /* Above what, exactly. The reference moved from "the last close" to "the
+       price the projection starts from" when the opening gap arrived, and a
+       card that kept naming the old one would be labelling the number with a
+       price it is no longer measured against. */
+    var fc = state.forecast;
+    var ref = fc && fc.checkpoints && fc.checkpoints.length && fc.checkpoints[0].pUpFrom != null
+      ? fc.checkpoints[0].pUpFrom : last;
+    core.text('fcd-prob', a.pUp + '% chance above ' + core.fmt.price(ref));
 
     /* The lead sentence names the lane doing the most work at THIS bar, which
        is often not the lane doing the most work overall - that is the whole

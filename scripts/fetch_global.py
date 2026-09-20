@@ -26,7 +26,10 @@ INSTRUMENTS = [
     ("us_futures", "S&P 500 futures", "ES=F", "^spx"),
     ("nasdaq_fut", "Nasdaq futures", "NQ=F", None),
     ("dow_fut", "Dow futures", "YM=F", None),
-    ("sgx_nifty", "GIFT Nifty", "^NSEI", None),
+    # ("sgx_nifty", "GIFT Nifty", "^NSEI", None) was here until 20 Sep 2026.
+    # ^NSEI is NIFTY spot, not GIFT Nifty, so this row fed the index back
+    # into its own global lane and into the opening-gap model. There is no
+    # keyless GIFT Nifty quote, so the row is gone rather than relabelled.
     ("crude", "Brent crude", "BZ=F", "cb.f"),
     ("gold", "Gold", "GC=F", "xauusd"),
     ("usdinr", "USD/INR", "INR=X", "usdinr"),

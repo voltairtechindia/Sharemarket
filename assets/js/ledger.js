@@ -491,10 +491,257 @@
     return { seeded: made, settled: res.settled };
   }
 
+  /* ========================================================= session lock
+
+     The ledger above answers "was the model right, on average, over many
+     horizons". This answers the cruder question a person actually asks on the
+     day: the line you drew this morning - did price follow it?
+
+     That question is only worth asking if the line cannot move. A forecast
+     recomputed every second and then compared against the tape is a model
+     marking its own homework with the answers in front of it, and it will
+     look excellent forever. So exactly two calls are frozen per session and
+     neither is ever rewritten:
+
+       advance  the first time the page computes a forecast for a session that
+                has not opened yet - Sunday evening, or after Friday's close.
+                This is the "where does it start on Monday" call.
+       open     recomputed once between 09:00 and 09:15 IST, when the overnight
+                cues are complete and the pre-open auction is under way. This
+                is the call that gets scored against the day.
+
+     Both are kept. The chart draws the later one, because that is the live
+     claim, and the record keeps the earlier one so a good pre-open call
+     cannot be back-dated into a good Sunday call.
+
+     Rewriting a lock is the single failure mode that would make this whole
+     panel worthless, so `write()` refuses rather than overwrites, and the
+     refusal is silent by design - it happens on most of the 25,000 ticks in a
+     session and is not news. */
+  var LOCK_KEY = 'fcLocks';
+  var MAX_LOCKS = 40;                                  // a few weeks of sessions
+
+  function lockLoad() {
+    var rows = core.store.get(LOCK_KEY, []);
+    return Object.prototype.toString.call(rows) === '[object Array]' ? rows : [];
+  }
+  function lockSave(rows) {
+    return core.store.set(LOCK_KEY, rows.slice(-MAX_LOCKS));
+  }
+
+  /* The IST calendar date of the session a forecast is about - which is not
+     today's date when the market is shut. A Sunday-evening forecast is about
+     Monday, so it must key on Monday or Monday's lock would be created twice
+     and Sunday's would be scored against Monday's tape. The first projected
+     bar already carries that answer, because advance() walked the holiday
+     table to produce it. */
+  function sessionKeyOf(f) {
+    var t = f && f.path && f.path.length ? f.path[0].time : null;
+    if (!t) return null;
+    return dateKey(core.fmt.ist(t));
+  }
+  function dateKey(d) {
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+  /* Which of the two stages we are entitled to write right now. Null means
+     neither - during the session, after the open lock exists, there is nothing
+     left to freeze and the honest answer is to leave the record alone. */
+  function stageNow(f) {
+    if (!f || !f.path || !f.path.length) return null;
+    var now = core.fmt.ist(Math.floor(Date.now() / 1000));
+    var mins = now.getHours() * 60 + now.getMinutes();
+    var open = C.market.regular.from;
+
+    /* Which session is being forecast decides this, not the wall clock alone.
+
+       This read the clock only, and it was wrong in the case the feature was
+       built for: on a Sunday afternoon the minute count is past 09:15, so it
+       returned null and refused to freeze anything - on the one evening a
+       person is most likely to be asking where Monday opens. The same hole
+       swallowed every weekday evening after 15:30, which is when tomorrow's
+       call is worth writing down.
+
+       If the session in the forecast is not today's, nothing about it has
+       traded yet whatever the time is, and the call is the day-before one. */
+    var target = sessionKeyOf(f);
+    if (target && target !== dateKey(now)) return 'advance';
+
+    // The pre-open window: the auction is running, the cues are in, nothing
+    // has traded in the cash market yet.
+    if (mins >= open - 15 && mins < open) return 'open';
+    // Anything earlier, on a day the market has not opened yet.
+    if (mins < open - 15) return 'advance';
+    return null;
+  }
+
+  function lock(f, ctx) {
+    if (!f || !f.path || !f.path.length) return null;
+    var symbol = (ctx && ctx.symbol) || 'NIFTY';
+    var key = sessionKeyOf(f);
+    if (!key) return null;
+
+    var rows = lockLoad();
+    /* Scoped to the timeframe as well as the session. A 5-minute path and a
+       1-minute path are different claims about the same day, and sharing one
+       lock between them would let whichever view loaded first decide what the
+       other one is judged on. */
+    var mine = rows.filter(function (r) {
+      return r.session === key && r.symbol === symbol && r.timeframe === f.timeframe;
+    });
+    var stage = stageNow(f);
+
+    // Already have this stage, or the clock has closed the window: read, do
+    // not write. Never both - a lock that can be rewritten is not a lock.
+    var have = {};
+    mine.forEach(function (r) { have[r.stage] = true; });
+    if (stage && !have[stage]) {
+      var row = {
+        id: symbol + ':' + key + ':' + f.timeframe + ':' + stage,
+        symbol: symbol, session: key, stage: stage,
+        timeframe: f.timeframe,
+        lockedAt: Date.now(),
+        anchorTime: f.path[0].time - (C.timeframes[f.timeframe] ? C.timeframes[f.timeframe].barSec : 60),
+        anchorPrice: f.lastClose,
+        openPrice: f.open && f.open.hasData ? f.open.price : f.path[0].value,
+        openGapPct: f.open && f.open.hasData ? f.open.gapPct : null,
+        openParts: f.open ? (f.open.parts || []).slice(0, 5) : [],
+        direction: f.direction, confidence: f.confidence,
+        target: f.target, targetPct: f.targetPct,
+        /* Every projected minute. This is the whole point of the row and the
+           reason it is capped: 375 points at two numbers each is about 9 KB,
+           and forty of those is well inside what localStorage will hold, but
+           a thousand would not be. */
+        path: f.path.map(function (pt) { return { time: pt.time, value: pt.value }; }),
+        lanes: (f.lanes || []).filter(function (l) { return l.hasData; })
+          .map(function (l) { return { id: l.id, label: l.label, contribution: l.contribution, note: l.note }; }),
+        topHeadline: f.topNews ? {
+          headline: String(f.topNews.headline || '').slice(0, 180),
+          source: f.topNews.source, ts: f.topNews.ts,
+        } : null,
+      };
+      rows.push(row);
+      lockSave(rows);
+      mine.push(row);
+    }
+
+    if (!mine.length) return null;
+    // The later stage is the live claim; 'open' sorts after 'advance'.
+    mine.sort(function (a, b) { return a.lockedAt - b.lockedAt; });
+    return mine[mine.length - 1];
+  }
+
+  /* ---------------------------------------------------------- lock score
+
+     What the locked line claimed against what printed, minute by minute.
+
+     Read by time, never by index. `candles[i]` and `path[i]` are not the same
+     minute the moment one bar is missing from the feed - which happens - and
+     scoring them as if they were would silently compare 11:04's forecast with
+     11:07's price for the rest of the day. Same rule the replay learned the
+     hard way; see closeAtTime() in forecast.js. */
+  function scoreLock(row, candles) {
+    if (!row || !row.path || !row.path.length || !candles || candles.length < 2) return null;
+    var byTime = {};
+    for (var i = 0; i < candles.length; i++) byTime[candles[i].time] = candles[i].close;
+
+    var pairs = [], absErr = 0, naive = 0, dirRight = 0, dirCalls = 0, worst = null;
+    for (var k = 0; k < row.path.length; k++) {
+      var pt = row.path[k];
+      var actual = byTime[pt.time];
+      if (actual == null) continue;
+      var err = actual - pt.value;
+      absErr += Math.abs(err);
+      naive += Math.abs(actual - row.anchorPrice);
+      // A minute the model called flat is not a direction call.
+      var called = Math.abs(pt.value - row.anchorPrice) / row.anchorPrice * 100 > 0.02;
+      if (called) {
+        dirCalls++;
+        if ((actual > row.anchorPrice) === (pt.value > row.anchorPrice)) dirRight++;
+      }
+      if (!worst || Math.abs(err) > Math.abs(worst.err)) worst = { time: pt.time, err: round(err, 2) };
+      pairs.push({ time: pt.time, predicted: pt.value, actual: actual, err: round(err, 2) });
+    }
+    if (!pairs.length) {
+      return { n: 0, pending: true, session: row.session, stage: row.stage };
+    }
+
+    /* The open is scored on its own because it is its own claim. A model that
+       calls the gap well and the day badly is a different animal from one that
+       does the reverse, and one blended error number hides which you have. */
+    var firstActual = pairs[0];
+    var openErr = row.openPrice != null ? round(firstActual.actual - row.openPrice, 2) : null;
+
+    var last = pairs[pairs.length - 1];
+    return {
+      n: pairs.length, total: row.path.length, pending: pairs.length < row.path.length,
+      session: row.session, stage: row.stage, lockedAt: row.lockedAt,
+      anchorPrice: row.anchorPrice,
+      openPredicted: row.openPrice, openActual: firstActual.actual, openErr: openErr,
+      openErrPct: openErr != null ? round(openErr / row.anchorPrice * 100, 3) : null,
+      openDirectionRight: row.openGapPct == null || Math.abs(row.openGapPct) < 0.02 ? null
+        : ((firstActual.actual > row.anchorPrice) === (row.openGapPct > 0)),
+      nowPredicted: last.predicted, nowActual: last.actual, nowErr: last.err,
+      nowErrPct: round(last.err / row.anchorPrice * 100, 3),
+      mae: round(absErr / pairs.length, 2),
+      maePct: round(absErr / pairs.length / row.anchorPrice * 100, 3),
+      /* Below 1 the locked line beat "price stays at yesterday's close", which
+         is the only benchmark worth clearing. Above 1 it was worse than doing
+         nothing, and the panel should say so in those words. */
+      skill: naive ? round(absErr / naive, 3) : null,
+      directionCalls: dirCalls, directionRight: dirRight,
+      directionRate: dirCalls ? round(dirRight / dirCalls * 100, 1) : null,
+      worst: worst,
+      pairs: pairs,
+    };
+  }
+
+  /* Write each lock's outcome onto the row, once, when its session has
+     printed. The learner reads these rather than rescoring from candles,
+     because by the time it runs the candles for that session are usually no
+     longer loaded - the page is showing today and the lock is from Tuesday.
+     A number that can only be recomputed while the evidence happens to be in
+     memory is not a record. */
+  function settleLocks(candles, symbol) {
+    if (!candles || candles.length < 2) return 0;
+    var rows = lockLoad(), changed = 0;
+    var last = candles[candles.length - 1].time;
+    rows.forEach(function (r) {
+      if (r.outcome || !r.path || !r.path.length) return;
+      if (r.symbol !== symbol) return;
+      // Only once the whole locked window is behind us. A partial score
+      // frozen at lunchtime would be a half-day masquerading as a session.
+      if (last < r.path[r.path.length - 1].time) return;
+      var sc = scoreLock(r, candles);
+      if (!sc || !sc.n) return;
+      r.outcome = {
+        n: sc.n, total: sc.total,
+        openPredicted: sc.openPredicted, openActual: sc.openActual, openErr: sc.openErr,
+        mae: sc.mae, maePct: sc.maePct, skill: sc.skill,
+        directionRate: sc.directionRate, directionCalls: sc.directionCalls,
+        closePredicted: sc.nowPredicted, closeActual: sc.nowActual,
+        settledAt: Date.now(),
+      };
+      changed++;
+    });
+    if (changed) lockSave(rows);
+    return changed;
+  }
+
+  function locks(symbol, limit) {
+    return lockLoad().filter(function (r) { return !symbol || r.symbol === symbol; })
+      .sort(function (a, b) { return b.lockedAt - a.lockedAt; })
+      .slice(0, limit || 20);
+  }
+
   KT.ledger = {
     record: record, settle: settle, explain: explain, aggregate: aggregate,
     missRecord: missRecord, latest: latest, all: all, clear: clear,
     seedFromHistory: seedFromHistory, wilson: wilson, callsNeeded: callsNeeded,
+    lock: lock, scoreLock: scoreLock, locks: locks, sessionKeyOf: sessionKeyOf,
+    stageNow: stageNow,
+    settleLocks: settleLocks,
     // app.js points this at the live news array so arrivalsIn() can scan it.
     newsSource: null,
   };

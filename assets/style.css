@@ -40,6 +40,11 @@
   --forecast:      #7c3aed;
   --fc-news:       #0284c7;
   --fc-pattern:    #ea580c;
+  /* The frozen call and what actually happened. Deliberately outside the
+     violet/blue/orange family the live projections use, because these two are
+     the only lines a reader is asked to compare against each other. */
+  --fc-locked:     #db2777;
+  --actual-line:   #111827;
   --forecast-soft: #ede9fe;
   --now-line:      #94a3b8;
   --pattern-bull:  #0ea5e9;
@@ -92,6 +97,8 @@
   --forecast:      #a78bfa;
   --fc-news:       #38bdf8;
   --fc-pattern:    #fb923c;
+  --fc-locked:     #f472b6;
+  --actual-line:   #e5e7eb;
   --forecast-soft: #251d3d;
   --now-line:      #64748b;
   --pattern-bull:  #38bdf8;
@@ -292,7 +299,8 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .lg-swatch.fc   { background: repeating-linear-gradient(90deg, var(--forecast) 0 4px, transparent 4px 7px); }
 .lg-swatch.fcnews { background: repeating-linear-gradient(90deg, var(--fc-news) 0 4px, transparent 4px 7px); }
 .lg-swatch.fcpat  { background: repeating-linear-gradient(90deg, var(--fc-pattern) 0 4px, transparent 4px 7px); }
-.lg-swatch.cone { background: var(--forecast-soft); border: 1px solid var(--forecast); height: 8px; border-radius: 2px; }
+.lg-swatch.lock { background: repeating-linear-gradient(90deg, var(--fc-locked) 0 5px, transparent 5px 8px); }
+.lg-swatch.act  { background: var(--actual-line); }
 
 .chart-stage { position: relative; flex: 1 1 auto; min-height: 260px; }
 #chart { position: absolute; inset: 0; }
@@ -985,3 +993,55 @@ html, body { max-width: 100%; overflow-x: clip; }
 .fcard-val { font: 600 10px/1 var(--mono); text-align: right; }
 .fcard-foot { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--ink-muted); }
 .fcard-fine { font-size: 9.5px; line-height: 1.4; color: var(--ink-faint); margin: 6px 0 0; }
+
+
+/* ------------------------------------------------------- the opening call
+   Given its own block rather than a row in the verdict grid because it is a
+   different kind of statement: everything else on that card is "which way
+   from here" and this is a price, at a time, that has not happened yet. */
+.open-call {
+  border: 1px solid var(--fc-locked); border-radius: 8px;
+  padding: 10px 12px; margin: 0 0 10px;
+  background: color-mix(in srgb, var(--fc-locked) 7%, transparent);
+}
+.open-call-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.open-call-k {
+  font: 600 9.5px/1 var(--sans); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--fc-locked);
+}
+.open-call-when { font: 500 10px/1 var(--sans); color: var(--ink-muted); }
+.open-call-price { font: 700 26px/1.1 var(--sans); margin-top: 6px; letter-spacing: -.02em; }
+.open-call-gap { font: 600 12px/1.3 var(--sans); margin-top: 2px; }
+.open-call-gap.up { color: var(--up); }
+.open-call-gap.down { color: var(--down); }
+.open-call-why { font: 400 11px/1.5 var(--sans); color: var(--ink); margin-top: 6px; }
+.open-call-basis { font: 400 10px/1.45 var(--sans); color: var(--ink-muted); margin-top: 4px; }
+
+/* --------------------------------------------------- predicted vs actual */
+.lockscore {
+  border: 1px solid var(--axis); border-radius: 8px;
+  padding: 10px 12px; margin: 0 0 10px;
+}
+.lockscore-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.lockscore-when { font: 500 10px/1 var(--sans); color: var(--ink-muted); }
+.lockscore-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 10px; margin-top: 8px;
+}
+.lockscore-grid > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ls-k {
+  font: 600 9px/1 var(--sans); letter-spacing: .07em; text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.ls-v { font: 600 13px/1.2 var(--sans); }
+.ls-v.up { color: var(--up); }
+.ls-v.down { color: var(--down); }
+.lockscore-verdict {
+  font: 400 11px/1.5 var(--sans); color: var(--ink); margin-top: 8px;
+  padding-top: 8px; border-top: 1px solid var(--grid);
+}
+@media (max-width: 420px) { .lockscore-grid { grid-template-columns: repeat(2, 1fr); } }
+
+.learn-note {
+  font: 400 10.5px/1.5 var(--sans); color: var(--ink-muted);
+  margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--grid);
+}

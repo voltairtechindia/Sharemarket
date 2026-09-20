@@ -108,6 +108,26 @@
     return day + (OPEN_MIN - mins) * 60;
   }
 
+  /* How many bars are left between a time and this session's close.
+
+     Every other view projects a fixed bar count, which is the right shape for
+     "the next N bars" and the wrong one for "the rest of today": at 09:20 the
+     rest of today is 370 minutes and at 15:00 it is 30, and a fixed count
+     would either stop short of the close every morning or walk straight
+     through it every afternoon. The session view asks the clock instead.
+
+     When the market is shut this returns a whole session, because the thing
+     being forecast is the next one, start to finish. */
+  function barsToSessionClose(fromSec, barSec) {
+    var perBar = Math.max(1, Math.round(barSec / 60));
+    var full = Math.round((CLOSE_MIN - OPEN_MIN) / perBar);
+    var d = core.fmt.ist(fromSec);
+    if (isClosed(d)) return full;
+    var m = d.getHours() * 60 + d.getMinutes();
+    if (m < OPEN_MIN || m >= CLOSE_MIN) return full;
+    return Math.max(1, Math.round((CLOSE_MIN - m) / perBar));
+  }
+
   function advance(epochSec, barSec) {
     if (barSec >= 604800) return epochSec + barSec;
     if (barSec >= 86400) {
@@ -585,14 +605,30 @@
      Each instrument votes with a sign that reflects how it maps onto Indian
      equities: crude up and dollar up are headwinds, US futures up is a
      tailwind. Falls back to international news sentiment when absent. */
+  /* The heaviest row in this table used to be `sgx_nifty`, at 0.24, labelled
+     "GIFT / SGX Nifty". `fetch_global.py` fetched it from Yahoo symbol
+     `^NSEI` - which is NIFTY spot. So a quarter of the global lane was NIFTY
+     voting on NIFTY, and the open prediction built on top of it would have
+     read its own answer back as evidence and called the gap zero every single
+     day. Removed 20 Sep 2026 rather than reweighted: there is no keyless GIFT
+     Nifty quote, and a row that is not what its label says is worse than a
+     missing row.
+
+     Nikkei, Hang Seng and the CBOE VIX were already being fetched and were
+     read by nothing. They are the cues that actually trade while India is
+     shut, which is precisely the window an opening gap is made in, so they
+     go in here and carry the weight that came free. */
   var GLOBAL_MAP = {
-    us_futures: { w: 0.26, sign: 1, label: 'US futures' },
-    sgx_nifty: { w: 0.24, sign: 1, label: 'GIFT / SGX Nifty' },
+    us_futures: { w: 0.24, sign: 1, label: 'US futures' },
+    nasdaq_fut: { w: 0.10, sign: 1, label: 'Nasdaq futures' },
+    nikkei:     { w: 0.10, sign: 1, label: 'Nikkei' },
+    hangseng:   { w: 0.08, sign: 1, label: 'Hang Seng' },
     crude: { w: 0.14, sign: -1, label: 'Crude' },
     usdinr: { w: 0.14, sign: -1, label: 'USD/INR' },
     dxy: { w: 0.10, sign: -1, label: 'Dollar index' },
     us10y: { w: 0.06, sign: -1, label: 'US 10y' },
     gold: { w: 0.06, sign: -1, label: 'Gold' },
+    cboe_vix: { w: 0.06, sign: -1, label: 'CBOE VIX' },
   };
 
   function globalLane(cues, newsGlobal) {
@@ -622,6 +658,108 @@
       score: blended, parts: parts, hasData: true,
       note: lead ? (lead.label + ' ' + core.fmt.pct(lead.changePct) +
                     (parts[1] ? ', ' + parts[1].label + ' ' + core.fmt.pct(parts[1].changePct) : '')) : 'global cues flat',
+    };
+  }
+
+  /* ==================================================== the opening gap
+
+     Every other lane in this file answers "which way from here". This one
+     answers a different question that the page could not answer at all until
+     now: what price does the next session START at.
+
+     It is a separate question because a gap is not drift. NIFTY does not walk
+     from Friday's close to Monday's open one bar at a time; it is shut while
+     the rest of the world trades, and it reprices in one jump at 09:15 to
+     whatever happened in between. Modelling that as drift spread over the
+     first few bars is the wrong shape and will read wrong on the chart every
+     single morning.
+
+     The betas below are judgements, not fits - stated plainly because the rest
+     of this file states its measurements plainly and these are not measurements.
+     They are the conventional ordering: US futures lead, Asia trades inside
+     India's own morning and so carries real information about the open, the
+     rupee matters more than crude, and volatility is a damper rather than a
+     direction. `KT.learn` moves them from the settled record once there are
+     opens to learn from, and until then `fitted` is false and the UI says so.
+
+     What is NOT in here, deliberately: NIFTY's own last change. That was the
+     bug in `sgx_nifty` - see GLOBAL_MAP above - and it is the one input that
+     would make this lane look brilliant while predicting nothing.
+
+     One more thing these numbers have to account for, which the first draft of
+     them did not: the four equity rows are not four independent opinions. S&P
+     futures, Nasdaq futures, the Nikkei and the Hang Seng mostly move
+     together, so betas chosen as if each were the only cue sum to far more
+     than the response actually is. Measured against the live cue file on 20
+     Sep 2026 - a night with Nasdaq futures up 3.3% - the first draft produced
+     a gap of exactly 1.5%, which is to say it hit the clamp and stopped being
+     a model. The equity block now totals 0.52 rather than 1.05, so a 1% US
+     night reads as roughly half a percent on the open, and the clamp goes back
+     to being what it is for: one feed printing nonsense. */
+  var OPEN_BETA = {
+    us_futures: 0.22,
+    nasdaq_fut: 0.12,
+    nikkei:     0.12,
+    hangseng:   0.06,
+    usdinr:    -0.30,
+    dxy:       -0.08,
+    crude:     -0.04,
+    us10y:     -0.04,
+    cboe_vix:  -0.02,
+  };
+  /* A gap is bounded by what gaps actually are. NIFTY opening more than 1.5%
+     away from its close is a handful of days a decade - budget, an election
+     result, a global shock - and on those days no cross-asset regression was
+     going to call it either. Clipping here keeps one bad print in one feed
+     from drawing a projection off the top of the chart. */
+  var MAX_GAP_PCT = 1.5;
+
+  function openLane(cues, newsOvernight, lastClose, betas) {
+    var B = betas || OPEN_BETA;
+    var out = { gapPct: 0, price: lastClose, parts: [], hasData: false,
+                note: 'no overnight cues', fitted: !!(betas && betas.fitted) };
+    if (!lastClose) return out;
+
+    var gap = 0, seen = 0, parts = [];
+    if (cues && cues.items) {
+      Object.keys(B).forEach(function (k) {
+        if (k === 'fitted') return;
+        var row = cues.items[k];
+        if (!row || row.changePct == null || !isFinite(row.changePct)) return;
+        /* One cue cannot carry the whole gap. A 9% crude print - which the
+           feed has produced - would otherwise be worth -0.45% on its own, and
+           a single bad tick in one instrument would move the opening call
+           further than any real morning does. */
+        var move = core.clamp(row.changePct, -4, 4);
+        var add = move * B[k];
+        gap += add;
+        seen++;
+        parts.push({ key: k, label: (GLOBAL_MAP[k] && GLOBAL_MAP[k].label) || k,
+                     changePct: row.changePct, contributionPct: r3(add) });
+      });
+    }
+    if (!seen) return out;
+
+    /* Overnight headlines, scaled to a tenth of a percent at full strength.
+       Small on purpose: a sentiment score is an opinion about text, and the
+       futures are a price somebody paid. When they disagree the price wins. */
+    if (newsOvernight && newsOvernight.n > 3) {
+      var newsAdd = core.clamp(newsOvernight.score, -1, 1) * 0.10;
+      gap += newsAdd;
+      parts.push({ key: 'news', label: 'Overnight headlines',
+                   changePct: null, contributionPct: r3(newsAdd) });
+    }
+
+    gap = core.clamp(gap, -MAX_GAP_PCT, MAX_GAP_PCT);
+    parts.sort(function (a, b) { return Math.abs(b.contributionPct) - Math.abs(a.contributionPct); });
+
+    var lead = parts[0];
+    return {
+      gapPct: r3(gap),
+      price: r2(lastClose * (1 + gap / 100)),
+      parts: parts, cues: seen, hasData: true, fitted: !!(betas && betas.fitted),
+      note: lead ? (lead.label + ' ' + core.fmt.pct(lead.changePct != null ? lead.changePct : lead.contributionPct))
+                 : 'cues flat',
     };
   }
 
@@ -827,10 +965,19 @@
       var parts = typeof out === 'number' ? null : out.parts;
 
       var driftPct = core.clamp(rawPct, -cfg.capPct, cfg.capPct);
+      /* The gap is added outside the per-bar cap and is not scaled by k. It is
+         a level shift that has already happened by the time the first
+         projected bar prints - the market reopens at a different price - so
+         capping it with `maxDriftPctPerBar`, which exists to stop a *drift*
+         running away over many bars, would be capping the wrong quantity with
+         the wrong number. It is bounded by MAX_GAP_PCT where it is produced. */
+      var gapPct = cfg.gapPct || 0;
+      // The price every probability on this path is measured against.
+      var refP = cfg.lastClose * (1 + gapPct / 100);
       // A wall does not stop price, it slows it. Beyond a level with a real
       // record, the remaining drift is halved rather than cut off, which keeps
       // the path continuous and still reflects the resistance.
-      var untempered = cfg.lastClose * (1 + driftPct / 100);
+      var untempered = cfg.lastClose * (1 + (gapPct + driftPct) / 100);
       var mid = temper(untempered, cfg.lastClose, cfg.lv);
 
       var band1 = cfg.lastClose * sd / 100 * cfg.z68;
@@ -846,6 +993,7 @@
           time: t, bar: k, frac: frac,
           parts: parts,
           rawPct: r3(rawPct),
+          gapPct: r3(gapPct),
           // What the cap and the level tempering took off, separately, because
           // "the model wanted more but a wall was in the way" is a different
           // statement from "the model wanted more but the cap said no".
@@ -854,8 +1002,22 @@
           driftPct: r3((mid - cfg.lastClose) / cfg.lastClose * 100),
           sdPct: r3(sd),
           profileMult: Math.round(profileMult * 100) / 100,
-          // Probability of finishing above the current price at this bar.
-          pUp: sd > 0 ? Math.round(ncdf((mid - cfg.lastClose) / (cfg.lastClose * sd / 100)) * 100) : 50,
+          /* Probability of finishing above the price the projection starts
+             from: the last close intraday, and the PREDICTED OPEN once a gap
+             is in play.
+
+             Measured against the last close it was arithmetically right and
+             useless. With a 0.92% gap called, "above yesterday's close at
+             15:30" is 99% by lunchtime and says nothing, because the gap
+             already answered it - the chart printed 100% on every checkpoint
+             the first time this ran. What is still uncertain is whether the
+             session holds its open, so that is what this measures.
+
+             Clamped to 1-99 either way. A page that prints a certainty has
+             stopped describing a forecast. */
+          pUp: sd > 0
+            ? core.clamp(Math.round(ncdf((mid - refP) / (cfg.lastClose * sd / 100)) * 100), 1, 99)
+            : 50,
         });
       }
     }
@@ -998,9 +1160,28 @@
     var flow = flowLane(ctx.flows);
     var opts = optionsLane(ctx.options, lastClose, Date.now());
 
+    /* ------------------------------------------------------ opening gap
+       Only meaningful while India is shut. Intraday there is no gap left to
+       call - the market has already opened, the reprice is in the candles,
+       and adding it again would double-count the morning for the rest of the
+       day. `gapApplies` is therefore the market clock, not a setting. */
+    var mState = core.marketState ? core.marketState() : null;
+    var gapApplies = tf.barSec < 86400 && !!(mState && mState.state !== 'live');
+    var nOvernight = gapApplies ? newsLane(items, { halfLifeSec: 43200 }) : null;
+    var open = openLane(ctx.global, nOvernight, lastClose,
+                        (KT.learn && KT.learn.openBetas && KT.learn.openBetas()) || null);
+    var gapPct = gapApplies && open.hasData ? open.gapPct : 0;
+    // Shared by the band, the checkpoints and the narrative, for the reason
+    // bandPath() itself exists: one number, computed once.
+    var refPrice = lastClose * (1 + gapPct / 100);
+
     var shape = dayShape(candles, tf.barSec);
 
-    var W = C.forecast.weights;
+    /* Weights come from the learner when it has settled rows to learn from,
+       and from CONFIG when it does not. One line, one source, and the object
+       carries `fitted` so the page can say which it is showing rather than
+       leaving a reader to assume the numbers were measured. */
+    var W = (KT.learn && KT.learn.weights && KT.learn.weights()) || C.forecast.weights;
     var lanes = [
       { id: 'news', label: 'News flow', score: nAll.score, weight: W.news, hasData: nAll.hasData,
         note: nAll.n ? (nAll.n + ' scored headlines, ' + nAll.high + ' high impact') : 'no headlines yet' },
@@ -1044,6 +1225,11 @@
 
     var bars = Math.max(6, Math.round(tf.visibleBars * tf.forecastRatio));
     if (tf.maxForecastBars) bars = Math.min(bars, tf.maxForecastBars);
+    // The session view runs to the bell, not to a bar count. Applied after the
+    // cap above on purpose: maxForecastBars exists to stop a long view
+    // projecting years, and a horizon that ends at 15:30 today is not the
+    // thing it is guarding against.
+    if (tf.sessionForecast) bars = barsToSessionClose(lastCandle.time, tf.barSec);
 
     /* ---------------------------------------------------- volatility -----
        The intraday profile, the fitted model, the VIX blend, the forward
@@ -1092,7 +1278,7 @@
     var drawn = bandPath({
       lastCandle: lastCandle, lastClose: lastClose, bars: bars, barSec: tf.barSec,
       sigmaBlend: sigmaBlend, varPath: varPath, vp: vp, z68: z68, z95: z95,
-      lv: lv, capPct: capPct,
+      lv: lv, capPct: capPct, gapPct: gapPct,
       drift: function (k, frac, t) {
         var newsDecay = 1 - Math.pow(0.5, k / newsHalfBars);   // front-loaded
         var structRamp = Math.pow(frac, 1.4);                  // back-loaded
@@ -1210,7 +1396,7 @@
             a.analogPct = r3(shiftPct);
             a.driftPct = r3((shaped[aIdx].value - lastClose) / lastClose * 100);
             a.pUp = a.sdPct > 0
-              ? Math.round(ncdf((shaped[aIdx].value - lastClose) / (lastClose * a.sdPct / 100)) * 100)
+              ? core.clamp(Math.round(ncdf((shaped[aIdx].value - refPrice) / (lastClose * a.sdPct / 100)) * 100), 1, 99)
               : 50;
           }
           path = shaped;
@@ -1240,7 +1426,12 @@
         var sr = Math.pow(fr, 1.4);
         var d = ((parts.news || 0) * nd + (parts.even || 0) * fr + (parts.struct || 0) * sr) * scale;
         d = core.clamp(d, -capPct, capPct);
-        out.push({ time: tc, value: r2(temper(lastClose * (1 + d / 100), lastClose, lv)) });
+        // Same gap as the blended path. The opening reprice is not a lane's
+        // opinion - it happens to all three lines equally - so leaving it out
+        // here would make the news and pattern lines start from a price the
+        // market will not open at, and the fan between them would read as
+        // disagreement that is really just a missing gap.
+        out.push({ time: tc, value: r2(temper(lastClose * (1 + (gapPct + d) / 100), lastClose, lv)) });
       }
       return out;
     }
@@ -1287,7 +1478,7 @@
       if (idx < 0 || idx >= path.length) return;
       var mid = path[idx].value, band = mid - lower[idx].value;
       var sd = band / z68;
-      var z = sd > 0 ? (mid - lastClose) / sd : 0;
+      var z = sd > 0 ? (mid - refPrice) / sd : 0;
       checkpoints.push({
         time: path[idx].time,
         label: timeLabel(path[idx].time, tf.barSec),
@@ -1295,7 +1486,13 @@
         low: lower[idx].value, high: upper[idx].value,
         low95: lower2[idx].value, high95: upper2[idx].value,
         changePct: r2((mid - lastClose) / lastClose * 100),
-        pUp: Math.round(ncdf(z) * 100),
+        // Same 1-99 clamp as bandPath: a checkpoint that says 100% is not a
+        // forecast, and these are the numbers printed on the chart.
+        pUp: core.clamp(Math.round(ncdf(z) * 100), 1, 99),
+        /* What that probability is above. Carried on the row so the chart,
+           the table and the narrative cannot each assume a different one -
+           which they would, the moment a gap made them differ. */
+        pUpFrom: refPrice,
         bars: k2,
       });
     });
@@ -1380,6 +1577,23 @@
       structure: struct.target || null,
       globalParts: glob.parts || [],
       options: opts.hasData ? opts : null,
+      /* The opening call. `applies` is what the UI must read before printing
+         a number: intraday the gap is behind us and this object is a stale
+         description of a reprice that already happened, so showing it then
+         would be an answer to a question the clock has closed. */
+      open: {
+        applies: gapApplies,
+        hasData: open.hasData,
+        price: open.hasData ? open.price : null,
+        gapPct: open.hasData ? open.gapPct : null,
+        gapPoints: open.hasData ? r2(open.price - lastClose) : null,
+        at: path.length ? path[0].time : null,
+        parts: open.parts || [],
+        cues: open.cues || 0,
+        fitted: !!open.fitted,
+        note: open.note,
+        prevClose: lastClose,
+      },
       narrative: narrate(direction, lanes, nAll, checkpoints, lastClose),
       generatedAt: Date.now(),
     };
@@ -1486,7 +1700,10 @@
     if (lastCp) {
       s += 'By ' + lastCp.label + ' the centre of the range is ' + core.fmt.price(lastCp.value) +
            ' (' + core.fmt.pct(lastCp.changePct) + '), with about a ' + lastCp.pUp +
-           '% chance of trading above ' + core.fmt.price(price) + '. ';
+           '% chance of finishing above ' +
+           core.fmt.price(lastCp.pUpFrom != null ? lastCp.pUpFrom : price) +
+           (lastCp.pUpFrom != null && Math.abs(lastCp.pUpFrom - price) / price > 0.0002
+             ? ' (the predicted open)' : '') + '. ';
     }
     if (news.top) s += 'Loudest headline: "' + news.top.headline.slice(0, 110) + '" (' + news.top.source + ').';
     return s;
@@ -1835,7 +2052,8 @@
     build: build, calibrate: calibrate,
     newsLane: newsLane, seasonalLane: seasonalLane, momentumLane: momentumLane,
     globalLane: globalLane, levelsLane: levelsLane, flowLane: flowLane,
-    optionsLane: optionsLane,
+    optionsLane: optionsLane, openLane: openLane, openBetaDefaults: OPEN_BETA,
+    barsToSessionClose: barsToSessionClose,
     volProfile: volProfile, dayShape: dayShape, ncdf: ncdf,
     bandPath: bandPath, volContext: volContext, advance: advance,
     setHolidays: setHolidays, isClosed: isClosed,

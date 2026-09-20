@@ -137,6 +137,15 @@
       ' KB in this browser. Headlines older than ' + C.storage.newsTtlHours +
       ' hours and anything past ' + C.storage.newsMax + ' items are dropped automatically.');
 
+    if (KT.ledger && KT.ledger.locks) {
+      var rows = KT.ledger.locks(null, 999);
+      var settled = rows.filter(function (r) { return r.outcome; }).length;
+      text('locks-note', rows.length
+        ? rows.length + ' frozen call' + (rows.length === 1 ? '' : 's') + ', ' + settled + ' already scored. ' +
+          'The oldest is ' + rows[rows.length - 1].session + '.'
+        : 'Nothing frozen yet. The first call is written before the next session opens.');
+    }
+
     var sel = el('cfg-model');
     if (sel && !sel.options.length) {
       sel.innerHTML = '<option>Loading free models…</option>';
@@ -187,6 +196,21 @@
     el('btn-clear-cache').addEventListener('click', function () {
       core.store.clearNews();
       text('storage-note', 'Cached news cleared. It refills on the next refresh.');
+    });
+
+    /* Wiping the frozen record is destructive and permanent, so it asks, and
+       it says how many sessions are about to go. Everything this panel is
+       worth rests on old calls being unarguable; the button exists only
+       because a development run leaves locks that were never a real claim. */
+    el('btn-clear-locks').addEventListener('click', function () {
+      if (!KT.ledger || !KT.ledger.locks) return;
+      var n = KT.ledger.locks(null, 999).length;
+      if (!n) { text('locks-note', 'There are no locked calls to forget.'); return; }
+      if (!window.confirm('Forget ' + n + ' locked call' + (n === 1 ? '' : 's') +
+                          '? The predicted-vs-actual record goes with them and cannot be rebuilt.')) return;
+      core.store.set('fcLocks', []);
+      text('locks-note', n + ' locked call' + (n === 1 ? '' : 's') + ' forgotten.');
+      recompute();
     });
 
     el('btn-theme').addEventListener('click', function () {
@@ -434,6 +458,23 @@
     });
     S.reasons = engine.buildReasons(S.candles, news, S.timeframe);
 
+    /* The frozen call, and how it is doing. Written before the chart draws,
+       because the chart reads `forecast.locked` and a lock created after the
+       repaint would show up a second late on every load.
+
+       Intraday only. A lock is a claim about one session; on the monthly and
+       yearly views there is no session to claim, and the minute path that
+       makes the comparison readable does not exist. */
+    var tfDef = C.timeframes[S.timeframe];
+    S.forecast.locked = null;
+    S.lockScore = null;
+    if (KT.ledger && KT.ledger.lock && tfDef && tfDef.barSec <= 300) {
+      try {
+        S.forecast.locked = KT.ledger.lock(S.forecast, { symbol: S.symbol });
+        if (S.forecast.locked) S.lockScore = KT.ledger.scoreLock(S.forecast.locked, S.candles);
+      } catch (e) { S.forecast.locked = null; S.lockScore = null; }
+    }
+
     chart.setStructures(S.structures);
     chart.setLevels(S.levels);
     chart.setData(S.candles, S.forecast, S.reasons, S.timeframe, S.symbol);
@@ -441,6 +482,8 @@
     renderPosition();
     computePatterns();
     renderForecast(S.forecast);
+    renderOpenCall(S.forecast);
+    renderLockScore(S.lockScore, S.forecast.locked);
     renderCheckpoints(S.forecast);
     renderStructures();
     renderLevels();
@@ -552,9 +595,49 @@
     try {
       KT.ledger.record(S.forecast, { symbol: S.symbol, vix: S.vix });
       KT.ledger.settle(S.candles, S.symbol, S.timeframe);
+      // Freeze each finished session's verdict onto its own lock row, so the
+      // learner can read Tuesday's result on Friday without Tuesday's candles.
+      if (KT.ledger.settleLocks) KT.ledger.settleLocks(S.candles, S.symbol);
       maybeSeedLedger();
+      maybeLearn();
     } catch (e) { /* a full localStorage must not take the page down */ }
     renderLedger();
+  }
+
+  /* The learner reads the whole settled record and rewrites two numbers. That
+     is a localStorage read, an aggregate over every row and a write - far too
+     much to do on a one-second tick, and the evidence it reads only changes
+     when a horizon elapses. Ten minutes here, and its own hourly guard inside,
+     because the thing being measured moves once a day. */
+  var lastLearnAt = 0;
+  function maybeLearn() {
+    if (!KT.learn || Date.now() - lastLearnAt < 600000) return;
+    lastLearnAt = Date.now();
+    try {
+      KT.learn.update(S.symbol, S.timeframe);
+      renderLearn();
+    } catch (e) { /* learning is optional; the forecast is not */ }
+  }
+
+  /* What the model has actually changed about itself, in numbers a reader can
+     check. When nothing has moved this says nothing has moved - a learning
+     panel that always has something to report is reporting noise. */
+  function renderLearn() {
+    var box = el('learn-note');
+    if (!box || !KT.learn) return;
+    var sum = KT.learn.summary();
+    if (!sum.fitted) {
+      box.textContent = 'Weights are the hand-written defaults. ' + sum.samples +
+        ' settled call' + (sum.samples === 1 ? '' : 's') + ' so far; a lane needs ' +
+        sum.minSample + ' before it may move.';
+      return;
+    }
+    var bits = ['Weights fitted over ' + sum.samples + ' settled calls, ' + sum.steps + ' step' +
+                (sum.steps === 1 ? '' : 's') + ' taken'];
+    if (sum.openSamples >= 10 && sum.openGain !== 1) {
+      bits.push('opening gaps scaled ' + sum.openGain + 'x on ' + sum.openSamples + ' mornings');
+    }
+    box.textContent = bits.join('. ') + '.';
   }
 
   /* The band is only worth showing if it has been checked. This replays the
@@ -1383,9 +1466,123 @@
         box.appendChild(row);
       });
     }
+    /* The weights the build actually used, not the ones in CONFIG. Once the
+       learner has moved them those are two different sets of numbers, and
+       printing the static one under a fitted forecast would be describing a
+       model the page is not running. */
+    var wUsed = (KT.learn && KT.learn.weights && KT.learn.weights()) || C.forecast.weights;
     text('fc-weights-note', 'weights ' + Object.keys(C.forecast.weights).map(function (k) {
-      return Math.round(C.forecast.weights[k] * 100) + '%';
-    }).join(' / '));
+      return Math.round(wUsed[k] * 100) + '%';
+    }).join(' / ') + (wUsed.fitted ? ' (fitted)' : ''));
+  }
+
+  /* ========================================================= OPENING CALL
+
+     One price, one time, one reason. Shown only while the market is shut,
+     because once it opens the gap is a fact in the candles and repeating the
+     prediction next to it would be describing the past in the future tense.
+
+     The basis line is not decoration. These betas have not been fitted to
+     anything yet - see OPEN_BETA in forecast.js - and a page that prints a
+     confident-looking price without saying that is doing the thing this
+     project exists not to do. */
+  function renderOpenCall(f) {
+    var box = el('open-call');
+    if (!box) return;
+    var o = f && f.open;
+    if (!o || !o.applies || !o.hasData || o.price == null) { box.hidden = true; return; }
+    box.hidden = false;
+
+    text('open-when', o.at ? core.fmt.stamp(o.at, 60) : 'next session');
+    text('open-price', fmt.price(o.price));
+
+    var gapEl = el('open-gap');
+    if (gapEl) {
+      var pts = o.gapPoints;
+      gapEl.textContent = (pts >= 0 ? '+' : '') + fmt.price(Math.abs(pts)) + ' pts  ·  ' +
+                          fmt.pct(o.gapPct) + '  from ' + fmt.price(o.prevClose);
+      gapEl.className = 'open-call-gap num ' + (o.gapPct > 0.02 ? 'up' : o.gapPct < -0.02 ? 'down' : '');
+    }
+
+    // The three cues that moved it most, with the number each one moved it by.
+    var why = (o.parts || []).slice(0, 3).map(function (p) {
+      var moved = (p.contributionPct >= 0 ? '+' : '') + p.contributionPct.toFixed(2) + '%';
+      return p.changePct != null
+        ? p.label + ' ' + fmt.pct(p.changePct) + ' → ' + moved
+        : p.label + ' → ' + moved;
+    }).join('  ·  ');
+    text('open-why', why || 'cues flat');
+
+    text('open-basis', o.cues + ' overnight cue' + (o.cues === 1 ? '' : 's') + '. ' +
+      (o.fitted
+        ? 'Weights fitted on this browser’s settled opens.'
+        : 'Weights are judgements, not fits — nothing has been measured against them yet.'));
+  }
+
+  /* ================================================== PREDICTED VS ACTUAL
+
+     The scoreboard for the frozen call. Every number here compares a line
+     written before the session to prices printed after it, which is the only
+     comparison on this page that the model could not have influenced.
+
+     `skill` carries the verdict, not the error: an average error of 40 points
+     sounds bad and is excellent on a day the index moved 300, and sounds fine
+     and is useless on a day it moved 45. Against "price does not move" is the
+     only benchmark that survives both days. */
+  function renderLockScore(score, row) {
+    var box = el('lockscore');
+    if (!box) return;
+    if (!row || !score) { box.hidden = true; return; }
+    box.hidden = false;
+
+    text('lock-stage', row.stage === 'open' ? 'pre-open' : 'day before');
+    text('lock-when', 'frozen ' + core.fmt.stamp(Math.floor(row.lockedAt / 1000), 60));
+
+    if (score.pending && !score.n) {
+      text('lock-pred', fmt.price(row.openPrice));
+      ['lock-act', 'lock-err', 'lock-open', 'lock-mae', 'lock-dir'].forEach(function (id) { text(id, '—'); });
+      text('lock-verdict', 'Frozen and waiting. Nothing from this session has printed yet, so there is nothing to score.');
+      return;
+    }
+
+    text('lock-pred', fmt.price(score.nowPredicted));
+    text('lock-act', fmt.price(score.nowActual));
+
+    var errEl = el('lock-err');
+    if (errEl) {
+      errEl.textContent = (score.nowErr >= 0 ? '+' : '') + score.nowErr.toFixed(0) + ' pts';
+      // Sign convention: positive means price came in ABOVE the line, so the
+      // model was too low. Coloured by that, not by whether price rose.
+      errEl.className = 'ls-v num ' + (score.nowErr > 0 ? 'up' : score.nowErr < 0 ? 'down' : '');
+    }
+
+    var openEl = el('lock-open');
+    if (openEl) {
+      if (score.openErr == null) openEl.textContent = '—';
+      else openEl.textContent = fmt.price(score.openPredicted) + ' vs ' + fmt.price(score.openActual) +
+                                '  (' + (score.openErr >= 0 ? '+' : '') + score.openErr.toFixed(0) + ')';
+      openEl.className = 'ls-v num';
+    }
+
+    text('lock-mae', score.mae.toFixed(0) + ' pts  ·  ' + score.maePct.toFixed(2) + '%');
+    text('lock-dir', score.directionRate == null
+      ? 'no call'
+      : score.directionRate.toFixed(0) + '%  (' + score.directionRight + '/' + score.directionCalls + ')');
+
+    var bits = [];
+    bits.push(score.n + ' of ' + score.total + ' minutes scored');
+    if (score.skill != null) {
+      bits.push(score.skill < 1
+        ? 'Beating a flat line by ' + Math.round((1 - score.skill) * 100) + '%'
+        : score.skill > 1
+          ? 'Worse than assuming no move, by ' + Math.round((score.skill - 1) * 100) + '%'
+          : 'Level with assuming no move');
+    }
+    if (score.worst) {
+      bits.push('worst minute ' + core.fmt.stamp(score.worst.time, 60) + ' off by ' +
+                Math.abs(score.worst.err).toFixed(0) + ' pts');
+    }
+    text('lock-verdict', bits.join('. ') + '.');
   }
 
   /* ====================================================== CHECKPOINT TABLE
@@ -1873,7 +2070,7 @@
       return;
     }
     text('cues-updated', g.generated_at ? fmt.ago(Math.floor(new Date(g.generated_at).getTime() / 1000)) : '');
-    var order = ['us_futures', 'sgx_nifty', 'crude', 'usdinr', 'dxy', 'us10y', 'gold', 'vix'];
+    var order = ['us_futures', 'nasdaq_fut', 'nikkei', 'hangseng', 'crude', 'usdinr', 'dxy', 'us10y', 'gold', 'vix'];
     order.forEach(function (k) {
       var row = g.items[k];
       if (!row) return;
