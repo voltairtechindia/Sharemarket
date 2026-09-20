@@ -66,6 +66,23 @@ jobs:
           git checkout origin/live-data -- data/ 2>/dev/null || true
           ls -la data/ | head -30
 
+      # The seed above restores every file the live branch holds, which is the
+      # point - a lane that fails this run keeps its last good value. It also
+      # restores files that were retired, because the live branch still has
+      # them and nothing on that branch ever deletes anything.
+      #
+      # Five files were removed on 20 Sep 2026 for being written and never
+      # read (see CLAUDE.md). Without this step the seed would hand them back
+      # every run, the snapshot would copy them to main, and deleting them
+      # would be a thing somebody has to redo forever.
+      #
+      # A name leaves this list only when the file is genuinely wanted again.
+      - name: Drop retired lanes the seed brought back
+        run: |
+          rm -f data/market.json data/predictions.json data/live_impact.json \
+                data/social.json data/rss_config.json
+          echo "retired lanes pruned"
+
       - name: Rebuild feed index if config changed
         run: python scripts/feeds_build.py
         continue-on-error: true
