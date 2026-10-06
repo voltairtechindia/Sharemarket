@@ -864,6 +864,20 @@
       s += core.clamp(flows.dii.netCr / 3000, -1, 1) * 0.2; w += 0.2;
       bits.push('DII net ' + core.fmt.signed(flows.dii.netCr, 0) + ' cr');
     }
+    /* FII positioning in index futures, from NSE's participant-wise open
+       interest (added 6 Oct 2026). The level is famously lopsided - FIIs ran
+       8% long on 1 Oct 2026 - and a level that sits at an extreme for weeks
+       says little about the next session, so what votes is the CHANGE in the
+       long share since the previous file: foreign desks adding longs or
+       covering shorts reads up, adding shorts reads down. That convention is
+       standard practice, not something this repo has measured, so it is
+       weighted like the midcap divergence - lightly, until the ledger says
+       otherwise. */
+    if (flows.fiiFutIdx && flows.fiiFutIdx.longPctChg != null) {
+      s += core.clamp(flows.fiiFutIdx.longPctChg / 3, -1, 1) * 0.15; w += 0.15;
+      bits.push('FII index futures ' + flows.fiiFutIdx.longPct.toFixed(1) + '% long (' +
+                core.fmt.signed(flows.fiiFutIdx.longPctChg, 1) + ' pts on the session)');
+    }
     if (!w) return { score: 0, note: 'no flow data', hasData: false };
     return { score: core.clamp(s / w, -1, 1), note: bits.join(', '), hasData: true };
   }
@@ -2114,6 +2128,11 @@
     barsToSessionClose: barsToSessionClose,
     volProfile: volProfile, dayShape: dayShape, ncdf: ncdf,
     bandPath: bandPath, volContext: volContext, advance: advance,
+    /* trail.js replays the same drift the band is drawn with, so it needs
+       the same level tempering and the same read-by-time outcome rule rather
+       than copies of either. */
+    temper: temper, closeAtTime: closeAtTime, autocorr: autocorr, stdev: stdev,
+    GLOBAL_MAP: GLOBAL_MAP,
     setHolidays: setHolidays, isClosed: isClosed,
     setConstituents: setConstituents, relevanceOf: relevanceOf, clusterStories: clusterStories,
   };

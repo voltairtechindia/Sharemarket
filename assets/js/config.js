@@ -179,6 +179,98 @@ KT.CONFIG = {
       `&expiry=${encodeURIComponent(expiry)}`,
     openrouterModels: 'https://openrouter.ai/api/v1/models',
     openrouterChat: 'https://openrouter.ai/api/v1/chat/completions',
+
+    /* TradingView's public screener. Measured 6 Oct 2026 from the deployed
+       origin: a plain POST with Content-Type text/plain (a "simple" request,
+       so no preflight) answers 200 in 230-430 ms with CORS headers, no key,
+       no login. CLAUDE.md recorded it as unverifiable from a datacentre; from
+       a real browser it works, which is the only place this page runs.
+
+       What it carries that nothing else here does, in one request:
+         - every NIFTY 50 member with price, change, technical rating,
+           fundamentals and the analyst consensus target (FactSet-sourced)
+         - GIFT Nifty (NSEIX:NIFTY1!), streaming - the only keyless quote of
+           it this repo has found
+         - the overnight cues live, rather than as old as the last workflow run
+       NSE symbols arrive 15 minutes delayed (update_mode says so on every
+       row, and the page prints it); CME futures 10 minutes. */
+    tvScan: (market) => 'https://scanner.tradingview.com/' + market + '/scan',
+
+    /* NSE endpoints that answer through the r.jina.ai hop already in the
+       proxy chain. Each was read from the deployed origin on 6 Oct 2026
+       before any code was written against it, as CLAUDE.md asks:
+         snapshot-capital-market-largedeal   bulk, block and short deals (52 KB)
+         event-calendar                      board meetings / results, ~5 weeks
+         live-analysis-oi-spurts-underlyings change in F&O open interest
+         fiidiiTradeReact                    FII / DII cash, same evening
+         corporate-sast-reg29                takeover-code disclosures
+         corporates-pit-gg                   insider-trading filings (PIT);
+                                             `corporates-pit` now returns empty
+         fao_participant_oi_DDMMYYYY.csv     who is long and short index futures */
+    nseLargeDeals: 'https://www.nseindia.com/api/snapshot-capital-market-largedeal',
+    nseEventCalendar: 'https://www.nseindia.com/api/event-calendar?index=equities',
+    nseOiSpurts: 'https://www.nseindia.com/api/live-analysis-oi-spurts-underlyings',
+    nseFiiDii: 'https://www.nseindia.com/api/fiidiiTradeReact',
+    nseInsider: 'https://www.nseindia.com/api/corporates-pit-gg?index=equities',
+    nseSast: (from, to) => 'https://www.nseindia.com/api/corporate-sast-reg29?index=equities&from_date=' +
+                           from + '&to_date=' + to,
+    nseParticipantOi: (ddmmyyyy) =>
+      'https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_' + ddmmyyyy + '.csv',
+  },
+
+  /* The overnight cues, live from TradingView. Keys match data/global.json so
+     the global lane and the opening-gap model read either source unchanged.
+     Where one symbol is not carried by the screener the next is tried - the
+     list is an order of preference, not a set.
+
+     gift_nifty is shown and is deliberately NOT a model input. It is a
+     near-month future, so its distance from NIFTY's close is the overnight
+     move plus a futures premium of a few tenths of a percent that decays to
+     zero at expiry. Feeding it to the gap model without measuring that
+     premium would be the sgx_nifty bug again in a subtler shape - see
+     CLAUDE.md. */
+  tvGlobal: [
+    { key: 'gift_nifty', tv: ['NSEIX:NIFTY1!'],              label: 'GIFT Nifty' },
+    { key: 'us_futures', tv: ['CME_MINI:ES1!'],              label: 'S&P 500 futures' },
+    { key: 'nasdaq_fut', tv: ['CME_MINI:NQ1!'],              label: 'Nasdaq futures' },
+    { key: 'dow_fut',    tv: ['CBOT_MINI:YM1!'],             label: 'Dow futures' },
+    { key: 'nikkei',     tv: ['TVC:NI225'],                  label: 'Nikkei 225' },
+    { key: 'hangseng',   tv: ['TVC:HSI'],                    label: 'Hang Seng' },
+    // TVC:UKOIL is not carried by the screener (measured 6 Oct 2026); ICE
+    // Brent is, which is the same benchmark the workflow reads as BZ=F.
+    { key: 'crude',      tv: ['ICEEUR:BRN1!', 'NYMEX:BZ1!', 'NYMEX:CL1!'], label: 'Brent crude' },
+    { key: 'usdinr',     tv: ['FX_IDC:USDINR'],              label: 'USD/INR' },
+    { key: 'dxy',        tv: ['TVC:DXY'],                    label: 'Dollar index' },
+    { key: 'us10y',      tv: ['TVC:US10Y'],                  label: 'US 10y yield' },
+    { key: 'gold',       tv: ['TVC:GOLD'],                   label: 'Gold' },
+    { key: 'cboe_vix',   tv: ['TVC:VIX'],                    label: 'CBOE VIX' },
+    { key: 'ftse',       tv: ['TVC:UKX'],                    label: 'FTSE 100' },
+  ],
+
+  /* ------------------------------------------------------- prediction trail
+     The line the model drew N bars ago, kept on the chart after its time has
+     come, so a reader can see how close it landed. `bars` is the lead: the
+     trail point at 11:00 on a one-hour lead is what the forecast made at
+     10:00 said 11:00 would be. Leads are in bars of the timeframe's own
+     candles, so "1 hour" on the 5-minute view is twelve. */
+  trail: {
+    leads: {
+      '1S':  [{ bars: 5, label: '5 min' },  { bars: 15, label: '15 min' }, { bars: 60, label: '1 hour' }],
+      '1H':  [{ bars: 5, label: '5 min' },  { bars: 10, label: '10 min' }, { bars: 30, label: '30 min' }],
+      '1D':  [{ bars: 3, label: '15 min' }, { bars: 12, label: '1 hour' }, { bars: 36, label: '3 hours' }],
+      '1M':  [{ bars: 1, label: '1 day' },  { bars: 5, label: '1 week' }],
+      '1Y':  [{ bars: 5, label: '1 week' }, { bars: 21, label: '1 month' }],
+      'ALL': [{ bars: 1, label: '1 month' }, { bars: 3, label: '3 months' }],
+    },
+    /* Fifteen minutes on the intraday views by default: it is the lead at
+       which the line is meant to be read against the candles beside it.
+       The longer leads are one click away and are scored the same way. */
+    defaultLead: { '1S': 15, '1H': 10, '1D': 3, '1M': 1, '1Y': 5, 'ALL': 1 },
+    // History a replayed point needs behind it: EMA50, ADX and the level
+    // clustering are all meaningless on fewer bars than this.
+    warmBars: 60,
+    // Forward points kept per symbol, timeframe and lead.
+    liveMax: 1500,
   },
 
   /* ------------------------------------------------------------ data lanes

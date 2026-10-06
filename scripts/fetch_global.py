@@ -55,6 +55,42 @@ def _routes(url):
     ]
 
 
+def prev_session_close(res, meta):
+    """The close of the session before the latest one, from the daily bars.
+
+    This file used to take meta.chartPreviousClose, which is the close before
+    the *requested range* starts - with range=5d, five sessions back. Every
+    changePct in global.json was therefore a five-session move: measured
+    6 Oct 2026, Nikkei +5.89% here against +1.05% live on TradingView, and the
+    opening call it fed read +1.37% where the live cues gave +0.47%.
+    fetch_market.py found and fixed the same bug in quote.json on 18 Sep 2026
+    (prev_close() there); this is the same rule for the overnight cues.
+
+    Bars are folded to one per exchange-local date (Yahoo sometimes repeats
+    the live day), and if the series lags the quote by more than a day and a
+    half - the current session has no bar yet - the last bar IS the previous
+    session.
+    """
+    ts = res.get("timestamp") or []
+    quote = ((res.get("indicators") or {}).get("quote") or [{}])[0]
+    closes = quote.get("close") or []
+    off = int(meta.get("gmtoffset") or 0)
+    days = {}
+    for t, c in zip(ts, closes):
+        if c is not None and t is not None:
+            days[(int(t) + off) // 86400] = (int(t), float(c))
+    if not days:
+        return None
+    order = sorted(days)
+    last_t, last_c = days[order[-1]]
+    rmt = meta.get("regularMarketTime")
+    if rmt and int(rmt) - last_t > 1.5 * 86400:
+        return last_c
+    if len(order) < 2:
+        return None
+    return days[order[-2]][1]
+
+
 def yahoo_quote(symbol):
     url = CHART.format(sym=quote(symbol, safe=""))
     last_err = "no route"
@@ -67,7 +103,7 @@ def yahoo_quote(symbol):
             res = r.json()["chart"]["result"][0]
             meta = res.get("meta") or {}
             price = meta.get("regularMarketPrice")
-            prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+            prev = prev_session_close(res, meta)
             if price is None:
                 # Fall back to the last non-null close in the series.
                 closes = [c for c in res["indicators"]["quote"][0]["close"] if c is not None]
@@ -77,7 +113,10 @@ def yahoo_quote(symbol):
                 price = closes[-1]
                 prev = closes[-2] if len(closes) > 1 else price
             if prev in (None, 0):
-                prev = price
+                # No earlier session in the window: a 0% change is a claim, so
+                # the row is dropped rather than reported flat.
+                last_err = "no previous session"
+                continue
             return {
                 "price": round(float(price), 4),
                 "prevClose": round(float(prev), 4),
@@ -106,6 +145,10 @@ def stooq_quote(symbol):
         "changePct": round((close - open_) / open_ * 100, 4),
         "currency": None,
         "via": "stooq",
+        # Stooq's quote line carries today's bar only, so this is the move
+        # since the open, not since the previous close. Labelled rather than
+        # passed off as the same quantity.
+        "basis": "open",
     }
 
 

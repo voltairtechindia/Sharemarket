@@ -34,7 +34,8 @@ const ROOT = path.resolve(__dirname, '..');
    one. */
 const MODULES = ['config', 'core', 'indicators', 'levels', 'candles', 'patterns',
                  'structures', 'journal', 'portfolio', 'data', 'analogs',
-                 'vol', 'forecast', 'ledger', 'learn', 'evidence', 'ipo'];
+                 'vol', 'forecast', 'ledger', 'learn', 'trail', 'evidence', 'ipo',
+                 'orders', 'streetcalls'];
 
 let pass = 0, fail = 0;
 function ok(name, cond, detail) {
@@ -1154,6 +1155,175 @@ section('MARKUP — every id the code writes to exists');
      orphans.length < 40, `${orphans.length} declared ids nothing reads`);
 }
 
+/* ===================================================== PREDICTION TRAIL
+
+   Added 6 Oct 2026. The trail is only worth showing if every point on it is
+   something the model could have drawn at the time it claims - so the test
+   that matters is that a point is identical whether or not the future exists
+   in the series it was computed from. */
+section('TRAIL — the remembered line');
+{
+  const T = KT.trail;
+  const ser = T.seriesFor(candles);
+  let mism = 0;
+  [120, 400, 800, candles.length - 5].forEach(i => {
+    const a = KT.forecast.momentumLane(T.snapAt(ser, i, candles[i].close), null).score;
+    const b = KT.forecast.momentumLane(KT.ind.snapshot(candles.slice(0, i + 1)), null).score;
+    if (Math.abs(a - b) > 1e-12) mism++;
+  });
+  ok('one pass of causal series equals a snapshot per bar', mism === 0, 'the momentum inputs read at index i');
+
+  const full = T.replay(candles, '1D', { lead: 3, symbol: 'TEST-A', span: 160 });
+  ok('the replay produces scored points', full.points.filter(p => p.a != null).length > 100,
+     `${full.points.length} points in ${full.ms}ms`);
+  ok('every point was made before the bar it points at', full.points.every(p => p.m < p.t));
+
+  /* No look-ahead: cut the series just after a point's own target and
+     rebuild. If anything in the replay reads past the bar it was made on,
+     the prediction changes. */
+  const pick = full.points.filter(p => p.a != null)[40];
+  const cut = candles.findIndex(c => c.time === pick.t);
+  const part = T.replay(candles.slice(0, cut + 2), '1D', { lead: 3, symbol: 'TEST-B', span: 160 });
+  const same = part.points.find(p => p.m === pick.m);
+  ok('a point is identical with the future removed', !!same && same.p === pick.p,
+     same ? `${pick.p} vs ${same.p}` : 'point missing from the truncated replay');
+
+  const st = T.stats(full.points, 3);
+  const scored = full.points.filter(p => p.a != null);
+  const mae = scored.reduce((t, p) => t + Math.abs(p.e), 0) / scored.length;
+  ok('the average miss is the mean absolute error', Math.abs(st.maePts - mae) < 0.01, `${st.maePts} pts`);
+  ok('every scored point lands in exactly one bucket', st.above + st.below + st.inside === st.n);
+  ok('the comparison with a flat line is reported', st.skill > 0 && isFinite(st.skill), `skill ${st.skill}`);
+
+  const g = T.grade({ p: 100, b: 100, sd: 0.5 }, 100.2);
+  ok('a miss inside the carried range reads as on target', g.side === 'on' && g.inside === true);
+  const g2 = T.grade({ p: 100, b: 100, sd: 0.1 }, 100.5);
+  ok('a miss outside it reads above or below', g2.side === 'above' && g2.e === 0.5);
+
+  /* First write wins: a second forecast for the same bar must not replace
+     the one already recorded, or the live record could be improved after
+     the fact. */
+  const fc = (v) => ({ timeframe: '1D', lastClose: 100, z68: 1, direction: 'BULLISH',
+    path: [{ time: 1791275700 + 300, value: v }, { time: 1791275700 + 600, value: v }, { time: 1791275700 + 900, value: v }],
+    lower: [{ value: v - 1 }, { value: v - 1 }, { value: v - 1 }] });
+  KT.trail.clearLive('TEST');
+  T.recordLive(fc(101), { symbol: 'TEST', lastTime: 1791275700, leads: [3] });
+  T.recordLive(fc(150), { symbol: 'TEST', lastTime: 1791275700 + 30, leads: [3] });
+  const rows = T.liveLoad('TEST', '1D', 3);
+  ok('the live record keeps the first forecast of a bar', rows.length === 1 && rows[0].p === 101, `${rows.length} row(s)`);
+  KT.trail.clearLive('TEST');
+}
+
+/* ============================================================ ORDER BOOK */
+section('ORDERS — FIFO, P&L and XIRR');
+{
+  const O = KT.orders;
+  O.load(); O.clear();
+  O.add({ symbol: 'reliance', side: 'BUY', qty: 10, price: 1000, date: '2025-01-10' });
+  O.add({ symbol: 'RELIANCE', side: 'BUY', qty: 10, price: 1200, date: '2025-06-10' });
+  O.add({ symbol: 'RELIANCE', side: 'SELL', qty: 15, price: 1300, date: '2026-02-10', charges: 20 });
+  O.add({ symbol: 'TCS', side: 'SELL', qty: 5, price: 2200, date: '2026-10-01', product: 'MIS' });
+  O.add({ symbol: 'TCS', side: 'BUY', qty: 5, price: 2100, date: '2026-10-01', product: 'MIS' });
+  const b = O.book({ RELIANCE: { price: 1218 }, TCS: { price: 2100 } });
+  ok('realised P&L matches first-in first-out', b.realised === 4000, `${b.realised}`);
+  const rel = b.positions.find(p => p.symbol === 'RELIANCE');
+  ok('the open lot is the later purchase', rel.qty === 5 && rel.avgPrice === 1200, `${rel.qty} @ ${rel.avgPrice}`);
+  ok('unrealised is price against the open lot', rel.unrealised === 90, `${rel.unrealised}`);
+  ok('a lot held twelve months is long-term', b.closed.some(c => c.symbol === 'RELIANCE' && c.term === 'long-term'));
+  ok('a sell before a buy books as a short', b.closed.some(c => c.symbol === 'TCS' && c.side === 'short' && c.pnl === 500));
+  ok('charges come off the realised figure', b.netRealised === 3980, `${b.netRealised}`);
+  let threw = false;
+  try { O.add({ symbol: 'X', side: 'BUY', qty: 0, price: 10 }); } catch (e) { threw = true; }
+  ok('a zero-quantity order is refused', threw);
+  const x = O.xirr([{ date: '2025-01-01', amt: -100 }, { date: '2026-01-01', amt: 110 }]);
+  ok('XIRR of 100 to 110 over a year is ten percent', Math.abs(x - 10) < 0.05, `${x}%`);
+  O.clear();
+}
+
+/* ========================================================== STREET CALLS */
+section('STREET CALLS — published tips, parsed conservatively');
+{
+  const uni = readJSON('data/universe.json', { symbols: [] }).symbols;
+  const n = KT.streetcalls.setUniverse(uni);
+  ok('the stock index builds', n > 1000, `${n} names`);
+  const P = h => KT.streetcalls.parse({ headline: h, ts: 1, source: 'test' });
+  const a = P("Nomura retains 'Buy' on Godrej Consumer, target price Rs 1,110");
+  ok('a broker call is read whole', a && a.rating === 'buy' && a.broker === 'Nomura' && a.target === 1110 &&
+     a.stocks.indexOf('GODREJCP') !== -1, a ? `${a.broker} ${a.rating} ${a.stocks} ${a.target}` : 'no parse');
+  const b2 = P("DMart falls 6.7% as Citi, Goldman retain sell call");
+  ok('a sell call is a sell', b2 && b2.rating === 'sell' && b2.stocks.indexOf('DMART') !== -1, b2 ? b2.stocks.join(',') : 'no parse');
+  ok('a question is not a call', P('Meesho shares jump 6%. Buy, sell or hold the stock?') === null);
+  const c = P('Motilal Oswal initiates coverage on Molbio Diagnostics stock with Buy, sees 21% upside');
+  ok('the broker is not mistaken for the stock', c && c.stocks.length === 1 && c.stocks[0] === 'MOLBIO',
+     c ? c.stocks.join(',') : 'no parse');
+  const e = P('Top 2 stocks to buy or sell for tomorrow: Nykaa, LIC by Chandan Taparia - Check stop-loss, targets');
+  ok('a buy-or-sell list is a pick, not a buy', e && e.rating === 'pick', e ? e.rating : 'no parse');
+  const f = P('Kotak, BoB, PB Fintech: Macquarie Upgrades Nine Stocks, Downgrades One');
+  ok('the broker is the one doing the calling', f && f.broker === 'Macquarie', f ? String(f.broker) : 'no parse');
+  ok('a which-to-buy comparison is not a call',
+     P('Maruti Suzuki vs TVS Motor vs Mahindra: Which auto stock to buy ahead of festive season? Check target price') === null);
+  ok('an upgrade to a forecast is not an upgrade to a stock',
+     P('India GDP growth gets a wave of upgrades after robust Q1 show') === null &&
+     P("McDonald's stock falls as it unveils plan to spend big on restaurant upgrades") === null);
+  ok('a credit-rating action is not a broker call',
+     P('Shriram Finance Gets Quadruple Rating Upgrades; Fitch Joins AAA Club with BBB- Rating') === null);
+  const g = P("'India's drone leader': Buy Ideaforge stock for 27% upside, says Ashika Securities");
+  ok('a broker that is also a listed company is not the stock', g && g.stocks.join() === 'IDEAFORGE',
+     g ? g.stocks.join(',') : 'no parse');
+  const d = P('Jefferies keeps Buy on Sun Pharma, raises target to Rs 2,100');
+  ok('a brand name the press uses resolves to the listed company', d && d.stocks[0] === 'SUNPHARMA',
+     d ? d.stocks.join(',') : 'no parse');
+}
+
+/* ============================================================ NSE EXTRAS */
+section('DATA — the NSE extras and the screener');
+{
+  const csv = '""Participant wise Open Interest (no. of contracts) in Equity Derivatives as on Oct 06, 2026"",,,\r\n' +
+    'Client Type,Future Index Long,Future Index Short,Future Stock Long,Future Stock Short       ,Option Index Call Long\r\n' +
+    'FII,30285,324010,3442046,2831549,393444\r\nTOTAL,428208,428208,7921065,7921065,3518112\r\n';
+  const p = KT.data.parseParticipantCsv(csv);
+  ok('the participant file parses', p && p.rows.FII && p.rows.FII.longPct === 8.55, p ? `FII ${p.rows.FII.longPct}% long` : 'no parse');
+  ok('and reads its own date', p && p.date === '06-Oct-2026', p && p.date);
+  ok('a refusal page is not a file', KT.data.parseParticipantCsv('Access Denied\nYou do not have permission') === null);
+  const t = KT.data.nseDate('06-Oct-2026 14:46');
+  ok('NSE timestamps are read as IST', t === Date.UTC(2026, 9, 6, 9, 16) / 1000, `${t}`);
+  const dataSrc = fs.readFileSync(path.join(ROOT, 'assets/js/data.js'), 'utf8');
+  ok('the screener request stays a simple request', /text\/plain/.test(dataSrc.slice(dataSrc.indexOf('function tvScan'), dataSrc.indexOf('function tvScan') + 600)),
+     'a JSON content type would trigger a preflight the screener refuses');
+  const cfg = fs.readFileSync(path.join(ROOT, 'assets/js/config.js'), 'utf8');
+  ok('GIFT Nifty is shown, not fed to the model',
+     !/gift_nifty/.test(fs.readFileSync(path.join(ROOT, 'assets/js/forecast.js'), 'utf8')) && /gift_nifty/.test(cfg));
+}
+
+/* =================================================== THE TWO NEW PAGES */
+section('MARKUP — the profile page and the data hub');
+{
+  [['profile.html', 'assets/js/profile-app.js'], ['data.html', 'assets/js/hub-app.js']].forEach(pair => {
+    const html = fs.readFileSync(path.join(ROOT, pair[0]), 'utf8');
+    const src = fs.readFileSync(path.join(ROOT, pair[1]), 'utf8');
+    const declared = new Set();
+    let m;
+    const idRx = /\bid="([A-Za-z0-9_-]+)"/g;
+    while ((m = idRx.exec(html))) declared.add(m[1]);
+    // Ids the script builds into its own templates exist when it writes to them.
+    while ((m = idRx.exec(src))) declared.add(m[1]);
+    const used = new Set();
+    const useRx = /(?:core\.)?(?:text|el)\('([A-Za-z0-9_-]+)'|getElementById\('([A-Za-z0-9_-]+)'\)/g;
+    while ((m = useRx.exec(src))) used.add(m[1] || m[2]);
+    const missing = [...used].filter(id => !declared.has(id));
+    ok(pair[0] + ' declares every id its script writes to', missing.length === 0,
+       missing.length ? 'missing: ' + missing.join(', ') : `${used.size} ids`);
+  });
+  const idx = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  ok('orders.js loads before portfolio.js on the terminal',
+     idx.indexOf('assets/js/orders.js') > 0 && idx.indexOf('assets/js/orders.js') < idx.indexOf('assets/js/portfolio.js'));
+  ok('every page links to the other three',
+     ['index.html', 'profile.html', 'data.html'].every(f => {
+       const h = fs.readFileSync(path.join(ROOT, f), 'utf8');
+       return /href="profile\.html"/.test(h) && /href="data\.html"/.test(h) && /href="index\.html"/.test(h);
+     }));
+}
+
 /* ============================================= THE PANELS THIS SESSION ADDED */
 section('PANELS — sectors, movers, flows');
 {
@@ -1185,8 +1355,9 @@ section('PANELS — sectors, movers, flows');
   /* Bank Nifty and India VIX are on the board and are not chartable. Clicking
      one used to switch the chart to a symbol with no candle series behind it
      and leave the page on "Loading" forever. */
+  // Bank Nifty, India VIX and (since 6 Oct 2026) GIFT Nifty.
   ok('quote-only tickers are marked in the markup',
-     (html.match(/class="tick is-quote"/g) || []).length === 2);
+     (html.match(/class="tick is-quote"/g) || []).length === 3);
   const appSrc2 = fs.readFileSync(path.join(ROOT, 'assets/js/app.js'), 'utf8');
   ok('and the click handler refuses to switch to them',
      /is-quote/.test(appSrc2.slice(appSrc2.indexOf("el('ticker-strip')"),
@@ -1248,6 +1419,14 @@ section('IPO — the engine');
      "biggest IPO" ranking sorts on and what the money-on-the-table tile adds
      up, so a wrong one is wrong in three places at once. */
   const nse = m.issues.find(i => i.symbol === 'NSE');
+  /* These assertions were written against the 20 Sep 2026 capture, whose
+     reference issue was NSE's own IPO. snapshot.yml now copies the live file
+     over data/ipo.json four times a day, so the reference issue is gone from
+     it and the block below would throw rather than test. Skipped and said
+     so, which is the honest state - not counted as a pass. */
+  if (!nse) {
+    console.log('  SKIP  issue-level IPO checks: data/ipo.json is a live snapshot without the 20 Sep reference issue');
+  } else {
   ok('issue value is shares times the cap, in crore',
      Math.abs(nse.issueValueCr - 1785 * 88642911 / 1e7) < 1,
      `${nse.issueValueCr} Cr`);
@@ -1341,6 +1520,7 @@ section('IPO — the engine');
   ok('with nothing priced, the base rate factor goes dark rather than guessing',
      m.history.n === 0 &&
      nse.card.factors.find(f => f.id === 'history').hasData === false);
+  }
 }
 
 section('IPO — the page and the fetcher');

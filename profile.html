@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Profile &middot; NIFTY Terminal</title>
+<meta name="description" content="Your investment profile: every buy and sell, FIFO positions, realised and unrealised P&amp;L, XIRR, live prices, and what is happening to each stock you hold. Stored in this browser only." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23387ed1'/><path d='M7 21l5-7 4 4 9-11' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="assets/style.css" />
+<link rel="stylesheet" href="assets/profile.css" />
+</head>
+<body class="pf-body">
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">N</div>
+    <div>
+      <span class="brand-name">NIFTY Terminal</span>
+      <span class="brand-sub">Voltairtech &middot; internal</span>
+    </div>
+  </div>
+  <div class="pf-topstats" id="pf-topstats"></div>
+  <div class="topbar-right">
+    <nav class="top-nav" aria-label="Pages">
+      <a class="btn btn-sm" href="index.html">Terminal</a>
+      <a class="btn btn-sm is-current" href="profile.html">Profile</a>
+      <a class="btn btn-sm" href="data.html">Data hub</a>
+      <a class="btn btn-sm" href="ipo.html">IPO</a>
+    </nav>
+    <div class="clock">
+      <span class="dot" id="market-dot"></span>
+      <span class="clock-time" id="market-clock">--:--:--</span>
+      <span class="clock-state" id="market-state">&mdash;</span>
+    </div>
+    <button class="icon-btn" id="btn-theme" title="Toggle dark mode" aria-label="Toggle dark mode">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="pf-main">
+  <!-- ================================================================ HEAD -->
+  <section class="pf-hero">
+    <div class="pf-who">
+      <div class="pf-avatar" id="pf-avatar">?</div>
+      <div class="pf-who-text">
+        <h1 id="pf-name">Your profile</h1>
+        <p class="pf-who-sub" id="pf-who-sub">Add your name and style below. Everything on this page stays in this browser.</p>
+      </div>
+      <button class="btn btn-sm" id="btn-edit-profile">Edit profile</button>
+    </div>
+    <form class="pf-profile-form hidden" id="profile-form">
+      <div class="field"><label for="pp-name">Name</label><input id="pp-name" maxlength="60" placeholder="Harshal" /></div>
+      <div class="field"><label for="pp-style">Style</label>
+        <select id="pp-style">
+          <option value="">Choose</option><option>Long-term investor</option><option>Swing trader</option>
+          <option>Intraday trader</option><option>F&amp;O trader</option><option>Mixed</option>
+        </select></div>
+      <div class="field"><label for="pp-horizon">Usual horizon</label>
+        <select id="pp-horizon"><option value="">Choose</option><option>Days</option><option>Weeks</option><option>Months</option><option>Years</option></select></div>
+      <div class="field"><label for="pp-broker">Broker</label><input id="pp-broker" maxlength="40" placeholder="Zerodha, Groww, Angel One…" /></div>
+      <div class="field field-wide"><button class="btn btn-primary" type="submit">Save profile</button></div>
+    </form>
+
+    <div class="pf-kpis" id="pf-kpis">
+      <div class="kpi"><span class="kpi-k">Current value</span><span class="kpi-v num" id="k-current">&mdash;</span><span class="kpi-s" id="k-current-s">&mdash;</span></div>
+      <div class="kpi"><span class="kpi-k">Invested (open)</span><span class="kpi-v num" id="k-invested">&mdash;</span><span class="kpi-s" id="k-invested-s">&mdash;</span></div>
+      <div class="kpi"><span class="kpi-k">Unrealised P&amp;L</span><span class="kpi-v num" id="k-unreal">&mdash;</span><span class="kpi-s num" id="k-unreal-s">&mdash;</span></div>
+      <div class="kpi"><span class="kpi-k">Realised P&amp;L</span><span class="kpi-v num" id="k-real">&mdash;</span><span class="kpi-s" id="k-real-s">&mdash;</span></div>
+      <div class="kpi"><span class="kpi-k">Today</span><span class="kpi-v num" id="k-day">&mdash;</span><span class="kpi-s" id="k-day-s">&mdash;</span></div>
+      <div class="kpi"><span class="kpi-k">XIRR</span><span class="kpi-v num" id="k-xirr">&mdash;</span><span class="kpi-s" id="k-xirr-s">annualised, on the money put in</span></div>
+    </div>
+  </section>
+
+  <div class="pf-grid">
+    <div class="pf-col-main">
+
+      <!-- ======================================================= ADD ORDER -->
+      <section class="pf-card" id="order-card">
+        <div class="pf-card-head">
+          <h2 id="order-title">Record a buy or a sell</h2>
+          <span class="muted" id="order-hint">Every order you place with your broker, one line each. Positions and P&amp;L are worked out from these, first-in first-out.</span>
+        </div>
+        <form class="order-form" id="order-form" autocomplete="off">
+          <div class="side-toggle" role="radiogroup" aria-label="Buy or sell">
+            <button type="button" class="side-btn is-on" data-side="BUY" role="radio" aria-checked="true">Buy</button>
+            <button type="button" class="side-btn" data-side="SELL" role="radio" aria-checked="false">Sell</button>
+          </div>
+          <div class="field f-sym"><label for="of-symbol">Stock</label>
+            <input id="of-symbol" list="of-universe" placeholder="RELIANCE" spellcheck="false" required />
+            <datalist id="of-universe"></datalist>
+            <small id="of-name">&nbsp;</small>
+          </div>
+          <div class="field f-exch"><label for="of-exchange">Exchange</label>
+            <select id="of-exchange"><option>NSE</option><option>BSE</option></select></div>
+          <div class="field"><label for="of-qty">Quantity</label><input id="of-qty" type="number" min="0" step="any" required /></div>
+          <div class="field"><label for="of-price">Price</label>
+            <div class="price-wrap"><input id="of-price" type="number" min="0" step="any" required />
+            <button type="button" class="btn btn-sm" id="btn-use-ltp" title="Fill in the live price">LTP</button></div>
+            <small id="of-ltp">&nbsp;</small>
+          </div>
+          <div class="field"><label for="of-date">Date</label><input id="of-date" type="date" required /></div>
+          <div class="field"><label for="of-time">Time <em>(optional)</em></label><input id="of-time" type="time" /></div>
+          <div class="field"><label for="of-charges">Charges <em>(₹, optional)</em></label><input id="of-charges" type="number" min="0" step="any" placeholder="0" /></div>
+          <div class="field"><label for="of-product">Product</label>
+            <select id="of-product"><option value="CNC">Delivery (CNC)</option><option value="MIS">Intraday (MIS)</option></select></div>
+          <div class="field"><label for="of-tag">Strategy tag</label><input id="of-tag" maxlength="40" placeholder="long-term, breakout, dividend…" /></div>
+          <div class="field f-note"><label for="of-note">Why <em>(optional)</em></label><input id="of-note" maxlength="240" placeholder="what you expected when you placed it" /></div>
+          <div class="order-actions">
+            <span class="order-total num" id="of-total">&mdash;</span>
+            <button type="button" class="btn hidden" id="btn-order-cancel">Cancel edit</button>
+            <button type="submit" class="btn btn-primary" id="btn-order-save">Add order</button>
+          </div>
+        </form>
+        <p class="fine" id="order-error"></p>
+      </section>
+
+      <!-- ======================================================= POSITIONS -->
+      <section class="pf-card" id="positions-card">
+        <div class="pf-card-head">
+          <h2>Positions</h2>
+          <span class="muted" id="pos-note">&mdash;</span>
+          <div class="pf-head-actions">
+            <label class="pf-check"><input type="checkbox" id="show-closed" /> show closed</label>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="pf-table" id="pos-table">
+            <thead><tr>
+              <th>Stock</th><th class="num">Qty</th><th class="num">Avg cost</th><th class="num">LTP</th>
+              <th class="num">Value</th><th class="num">Unrealised</th><th class="num">Realised</th>
+              <th class="num">Weight</th><th>Signals</th><th></th>
+            </tr></thead>
+            <tbody id="pos-rows"></tbody>
+          </table>
+        </div>
+        <p class="fine" id="pos-empty">No orders yet. Record your first buy above, or import a broker tradebook (CSV) or a file exported from this page.</p>
+      </section>
+
+      <!-- ========================================================== ORDERS -->
+      <section class="pf-card" id="orders-card">
+        <div class="pf-card-head">
+          <h2>Order book</h2>
+          <span class="muted" id="orders-note">&mdash;</span>
+          <div class="pf-head-actions">
+            <input type="search" id="orders-filter" placeholder="Filter by stock or tag" />
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="pf-table" id="orders-table">
+            <thead><tr>
+              <th>Date</th><th>Stock</th><th>Side</th><th class="num">Qty</th><th class="num">Price</th>
+              <th class="num">Value</th><th class="num">Charges</th><th>Product</th><th>Tag / why</th><th></th>
+            </tr></thead>
+            <tbody id="orders-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===================================================== CLOSED TRADES -->
+      <section class="pf-card" id="closed-card">
+        <div class="pf-card-head">
+          <h2>Closed trades</h2>
+          <span class="muted" id="closed-note">&mdash;</span>
+        </div>
+        <div class="table-wrap">
+          <table class="pf-table" id="closed-table">
+            <thead><tr>
+              <th>Stock</th><th>Side</th><th class="num">Qty</th><th>Opened</th><th>Closed</th>
+              <th class="num">In</th><th class="num">Out</th><th class="num">P&amp;L</th><th class="num">Days</th><th>Holding</th>
+            </tr></thead>
+            <tbody id="closed-rows"></tbody>
+          </table>
+        </div>
+        <p class="fine">Matched first-in first-out. Twelve months or more is marked long-term, which is how listed-equity
+          holding periods are counted in India; check your broker's tax statement for the figures you file.</p>
+      </section>
+
+      <!-- ======================================================== DATA FILES -->
+      <section class="pf-card" id="io-card">
+        <div class="pf-card-head">
+          <h2>Your data</h2>
+          <span class="muted">Stored in this browser only. Never uploaded, never written to the repository, never sent to a model.</span>
+        </div>
+        <div class="io-row">
+          <button class="btn" id="btn-export-json">Export everything (JSON)</button>
+          <button class="btn" id="btn-export-csv">Export orders (CSV)</button>
+          <button class="btn" id="btn-import">Import JSON or broker CSV</button>
+          <input type="file" id="import-file" accept=".json,.csv,application/json,text/csv" class="hidden" />
+          <button class="btn" id="btn-clear-all">Remove every order</button>
+        </div>
+        <p class="fine" id="io-note">A broker tradebook CSV works if it has columns for symbol, side (buy/sell), quantity, price and date in any order; Zerodha's tradebook download has all five.</p>
+      </section>
+    </div>
+
+    <!-- ======================================================== SIDEBAR -->
+    <aside class="pf-col-side">
+      <section class="pf-card" id="alerts-card">
+        <div class="pf-card-head"><h2>Alerts</h2><span class="muted" id="alerts-note">&mdash;</span></div>
+        <ul class="pf-feed" id="pf-alerts"></ul>
+      </section>
+
+      <section class="pf-card" id="alloc-card">
+        <div class="pf-card-head"><h2>Allocation</h2><span class="muted" id="alloc-note">&mdash;</span></div>
+        <div class="alloc" id="alloc-stocks"></div>
+        <h3 class="pf-sub">By sector</h3>
+        <div class="alloc" id="alloc-sectors"></div>
+      </section>
+
+      <section class="pf-card" id="feed-card">
+        <div class="pf-card-head"><h2>What is happening to your stocks</h2><span class="muted" id="feed-note">&mdash;</span></div>
+        <div class="feed-filters" id="feed-filters" role="group" aria-label="Filter the feed">
+          <button class="filter-btn" data-f="all" aria-pressed="true">All</button>
+          <button class="filter-btn" data-f="news" aria-pressed="false">News</button>
+          <button class="filter-btn" data-f="call" aria-pressed="false">Calls</button>
+          <button class="filter-btn" data-f="deal" aria-pressed="false">Deals</button>
+          <button class="filter-btn" data-f="event" aria-pressed="false">Results</button>
+          <button class="filter-btn" data-f="filing" aria-pressed="false">Insider</button>
+        </div>
+        <ul class="pf-feed" id="pf-feed"></ul>
+        <p class="fine" id="feed-sources">&mdash;</p>
+      </section>
+    </aside>
+  </div>
+</main>
+
+<!-- One stock, everything about it. Filled by openDetail() in profile-app.js. -->
+<div class="modal-backdrop hidden" id="detail-modal" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+  <div class="modal modal-wide">
+    <div class="modal-head">
+      <h2 id="detail-title">&mdash;</h2>
+      <button class="icon-btn" id="btn-close-detail" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="detail-body"></div>
+  </div>
+</div>
+
+<script src="assets/js/config.js"></script>
+<script src="assets/local-config.js" onerror="void 0"></script>
+<script src="assets/js/core.js"></script>
+<script src="assets/js/data.js"></script>
+<!-- orders before portfolio: the holdings book reads its positions off the
+     order book, and both are read by the page script. -->
+<script src="assets/js/orders.js"></script>
+<script src="assets/js/portfolio.js"></script>
+<script src="assets/js/streetcalls.js"></script>
+<script src="assets/js/profile-app.js"></script>
+</body>
+</html>

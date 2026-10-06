@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Data hub &middot; NIFTY Terminal</title>
+<meta name="description" content="Every dataset the NIFTY Terminal reads, checked live from this browser: what it is, where it comes from, what it feeds, and what can be added next." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23387ed1'/><path d='M7 21l5-7 4 4 9-11' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="assets/style.css" />
+<link rel="stylesheet" href="assets/profile.css" />
+<link rel="stylesheet" href="assets/hub.css" />
+</head>
+<body class="pf-body hub-body">
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">N</div>
+    <div>
+      <span class="brand-name">NIFTY Terminal</span>
+      <span class="brand-sub">Voltairtech &middot; internal</span>
+    </div>
+  </div>
+  <div class="pf-topstats" id="hub-topstats"></div>
+  <div class="topbar-right">
+    <nav class="top-nav" aria-label="Pages">
+      <a class="btn btn-sm" href="index.html">Terminal</a>
+      <a class="btn btn-sm" href="profile.html">Profile</a>
+      <a class="btn btn-sm is-current" href="data.html">Data hub</a>
+      <a class="btn btn-sm" href="ipo.html">IPO</a>
+    </nav>
+    <div class="clock">
+      <span class="dot" id="market-dot"></span>
+      <span class="clock-time" id="market-clock">--:--:--</span>
+      <span class="clock-state" id="market-state">&mdash;</span>
+    </div>
+    <button class="icon-btn" id="btn-theme" title="Toggle dark mode" aria-label="Toggle dark mode">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="pf-main">
+  <section class="pf-hero hub-hero">
+    <div>
+      <h1>Every dataset behind the forecast</h1>
+      <p class="pf-who-sub">Each source below is checked live from this browser when the page opens: whether it answered, how long it took, how many rows came back and how old they are. Nothing here is a description of what should work — it is what did, just now.</p>
+    </div>
+    <div class="hub-totals" id="hub-totals">
+      <div class="kpi"><span class="kpi-k">Sources live now</span><span class="kpi-v num" id="h-live">&mdash;</span><span class="kpi-s" id="h-live-s">checking&hellip;</span></div>
+      <div class="kpi"><span class="kpi-k">Rows read this load</span><span class="kpi-v num" id="h-rows">&mdash;</span><span class="kpi-s">across every lane</span></div>
+      <div class="kpi"><span class="kpi-k">News feeds</span><span class="kpi-v num" id="h-feeds">&mdash;</span><span class="kpi-s" id="h-feeds-s">&mdash;</span></div>
+      <div class="kpi"><span class="kpi-k">Headlines archived</span><span class="kpi-v num" id="h-arch">&mdash;</span><span class="kpi-s" id="h-arch-s">&mdash;</span></div>
+    </div>
+  </section>
+
+  <!-- =========================================================== STATUS -->
+  <section class="pf-card">
+    <div class="pf-card-head">
+      <h2>Connected sources</h2>
+      <span class="muted">Free and keyless unless marked. <b>Direct</b>: your browser reads it. <b>Proxy</b>: through r.jina.ai, because the publisher does not send CORS headers. <b>Workflow</b>: fetched by GitHub Actions and read from the live-data branch.</span>
+      <div class="pf-head-actions"><button class="btn btn-sm" id="btn-recheck">Check again</button></div>
+    </div>
+    <div class="src-grid" id="src-grid"></div>
+  </section>
+
+  <!-- ========================================================= EXPLORER -->
+  <section class="pf-card">
+    <div class="pf-card-head">
+      <h2>Explore the data</h2>
+      <div class="hub-tabs" id="hub-tabs" role="tablist">
+        <button class="filter-btn" data-tab="money" aria-pressed="true">Smart money</button>
+        <button class="filter-btn" data-tab="calls" aria-pressed="false">Street calls &amp; consensus</button>
+        <button class="filter-btn" data-tab="deriv" aria-pressed="false">Derivatives positioning</button>
+        <button class="filter-btn" data-tab="cal" aria-pressed="false">Results calendar</button>
+        <button class="filter-btn" data-tab="global" aria-pressed="false">Global cues</button>
+      </div>
+    </div>
+
+    <div class="hub-pane" data-pane="money">
+      <div class="hub-two">
+        <div>
+          <h3 class="pf-sub">Bulk and block deals <small id="deals-asof">&mdash;</small></h3>
+          <p class="fine">A bulk deal is one client trading more than 0.5% of a company's shares in a session; a block deal is a large negotiated trade in the separate window. Both are published by NSE with the client's name.</p>
+          <div class="table-wrap"><table class="pf-table" id="deals-table"><thead><tr>
+            <th>Stock</th><th>Type</th><th>Client</th><th>Side</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Value</th>
+          </tr></thead><tbody id="deals-rows"></tbody></table></div>
+        </div>
+        <div>
+          <h3 class="pf-sub">Takeover-code disclosures <small id="sast-asof">SAST regulation 29, last 14 days</small></h3>
+          <p class="fine">Filed when an acquirer crosses 5% of a company or a promoter moves 2% or more. Disclosed by rule, which is what makes it usable: insider information that has been published is public information.</p>
+          <ul class="pf-feed" id="sast-list"></ul>
+          <h3 class="pf-sub">Insider-trading filings <small id="pit-asof">PIT, newest first</small></h3>
+          <ul class="pf-feed" id="pit-list"></ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="hub-pane hidden" data-pane="calls">
+      <div class="hub-two">
+        <div>
+          <h3 class="pf-sub">Published broker and analyst calls <small id="calls-asof">&mdash;</small></h3>
+          <p class="fine">Pulled out of the headlines: who made the call, on which stock, which way and to what target. Tracked from the price when this page first saw each one, so the record builds up rather than being taken on trust. These are other people's published views, not advice.</p>
+          <div class="table-wrap"><table class="pf-table" id="calls-table"><thead><tr>
+            <th>When</th><th>Stock</th><th>Call</th><th>By</th><th class="num">Target</th><th class="num">Price now</th><th class="num">To target</th><th>Headline</th>
+          </tr></thead><tbody id="calls-rows"></tbody></table></div>
+        </div>
+        <div>
+          <h3 class="pf-sub">Analyst consensus, NIFTY 50 <small id="cons-asof">&mdash;</small></h3>
+          <p class="fine">FactSet consensus as carried by TradingView: how many analysts cover each stock, their average rating and average 12-month target.</p>
+          <div class="table-wrap"><table class="pf-table" id="cons-table"><thead><tr>
+            <th>Stock</th><th class="num">Price</th><th class="num">Analysts</th><th>Rating</th><th class="num">Avg target</th><th class="num">Upside</th><th>Tech</th>
+          </tr></thead><tbody id="cons-rows"></tbody></table></div>
+          <h3 class="pf-sub">Most-called this fortnight</h3>
+          <div class="alloc" id="calls-tally"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hub-pane hidden" data-pane="deriv">
+      <div class="hub-two">
+        <div>
+          <h3 class="pf-sub">Who is long index futures <small id="poi-asof">&mdash;</small></h3>
+          <p class="fine">NSE's participant-wise open interest, one file per session. The share of each participant's index-futures book that is long; the change since the previous session is what the forecast's flow lane reads.</p>
+          <div class="table-wrap"><table class="pf-table" id="poi-table"><thead id="poi-head"></thead><tbody id="poi-rows"></tbody></table></div>
+        </div>
+        <div>
+          <h3 class="pf-sub">Open-interest spurts <small id="oi-asof">&mdash;</small></h3>
+          <p class="fine">Stocks where F&amp;O open interest moved most today. Rising OI with a rising price is new longs; rising OI with a falling price is new shorts.</p>
+          <div class="table-wrap"><table class="pf-table" id="oi-table"><thead><tr>
+            <th>Stock</th><th class="num">OI now</th><th class="num">Change</th><th class="num">Underlying</th>
+          </tr></thead><tbody id="oi-rows"></tbody></table></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hub-pane hidden" data-pane="cal">
+      <h3 class="pf-sub">Board meetings and results <small id="cal-asof">&mdash;</small></h3>
+      <p class="fine">From NSE's event calendar. NIFTY 50 members are marked; results days are where single stocks gap, so they are worth knowing for anything you hold.</p>
+      <div class="table-wrap"><table class="pf-table" id="cal-table"><thead><tr>
+        <th>Date</th><th>Stock</th><th>Company</th><th>Purpose</th><th></th>
+      </tr></thead><tbody id="cal-rows"></tbody></table></div>
+    </div>
+
+    <div class="hub-pane hidden" data-pane="global">
+      <h3 class="pf-sub">Overnight cues, live <small id="glob-asof">&mdash;</small></h3>
+      <p class="fine">What the global lane and the opening call read. Changes are against each instrument's previous close, so before 09:15 they are the overnight move. The workflow copy is shown beside the live one: until 6 Oct 2026 it was publishing five-session moves, and the difference is visible here.</p>
+      <div class="table-wrap"><table class="pf-table" id="glob-table"><thead><tr>
+        <th>Cue</th><th>Symbol</th><th class="num">Last</th><th class="num">Change (live)</th><th class="num">Workflow copy</th><th>Delay</th><th>Feeds</th>
+      </tr></thead><tbody id="glob-rows"></tbody></table></div>
+    </div>
+  </section>
+
+  <!-- ======================================================== CATALOGUE -->
+  <section class="pf-card">
+    <div class="pf-card-head">
+      <h2>What can be added next</h2>
+      <span class="muted">Sources tested or known, with what each would add to the prediction and what it would take. Ordered by value for the model.</span>
+    </div>
+    <div class="table-wrap"><table class="pf-table" id="cat-table"><thead><tr>
+      <th>Dataset</th><th>Source</th><th>Access</th><th>What it adds</th><th>Status</th>
+    </tr></thead><tbody id="cat-rows"></tbody></table></div>
+  </section>
+</main>
+
+<div class="modal-backdrop hidden" id="peek-modal" role="dialog" aria-modal="true" aria-labelledby="peek-title">
+  <div class="modal modal-wide">
+    <div class="modal-head">
+      <h2 id="peek-title">&mdash;</h2>
+      <button class="icon-btn" id="btn-close-peek" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body"><pre class="peek-pre" id="peek-body"></pre></div>
+  </div>
+</div>
+
+<script src="assets/js/config.js"></script>
+<script src="assets/local-config.js" onerror="void 0"></script>
+<script src="assets/js/core.js"></script>
+<script src="assets/js/data.js"></script>
+<script src="assets/js/orders.js"></script>
+<script src="assets/js/portfolio.js"></script>
+<script src="assets/js/streetcalls.js"></script>
+<script src="assets/js/hub-app.js"></script>
+</body>
+</html>

@@ -58,6 +58,15 @@
       <span class="tick-ltp num" data-field="ltp">&mdash;</span>
       <span class="tick-chg num" data-field="chg">&mdash;</span>
     </div>
+    <!-- GIFT Nifty, the NSE IX near-month future, live from TradingView's
+         screener. Quote-only like the two above, and shown rather than fed to
+         the model: see tvGlobal in config.js for why its distance from
+         NIFTY's close is not yet a clean gap signal. -->
+    <div class="tick is-quote" data-symbol="GIFTNIFTY" title="GIFT Nifty near-month future (NSE IX). Trades almost round the clock, so it moves while NSE is shut.">
+      <span class="tick-name">GIFT NIFTY</span>
+      <span class="tick-ltp num" data-field="ltp">&mdash;</span>
+      <span class="tick-chg num" data-field="chg">&mdash;</span>
+    </div>
   </div>
 
   <div class="topbar-right">
@@ -79,7 +88,12 @@
     <button class="icon-btn" id="btn-journal" title="Trade journal" aria-label="Trade journal">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h7M9 11h7"/></svg>
     </button>
-    <a class="btn btn-sm" href="ipo.html" title="Indian IPOs: the live book, the filings and the listing record">IPO</a>
+    <nav class="top-nav" aria-label="Pages">
+      <a class="btn btn-sm is-current" href="index.html" title="NIFTY and SENSEX terminal">Terminal</a>
+      <a class="btn btn-sm" href="profile.html" title="Your profile: every buy and sell, positions, P&amp;L and alerts">Profile</a>
+      <a class="btn btn-sm" href="data.html" title="Every dataset this terminal reads, live status, and what can be added">Data hub</a>
+      <a class="btn btn-sm" href="ipo.html" title="Indian IPOs: the live book, the filings and the listing record">IPO</a>
+    </nav>
     <button class="icon-btn" id="btn-theme" title="Toggle dark mode" aria-label="Toggle dark mode">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
     </button>
@@ -166,6 +180,18 @@
           <div class="flow"><span class="flow-k">DII</span><span class="flow-v num" id="flow-dii">&mdash;</span></div>
         </div>
         <p class="hint" id="flows-read">&mdash;</p>
+        <!-- Who is long and who is short NIFTY futures, from NSE's
+             participant-wise open interest file. FII and DII cash numbers say
+             what institutions bought today; this says how the derivative book
+             is positioned going into tomorrow. -->
+        <div class="pos-block" id="fiipos-block">
+          <div class="section-head" style="margin:10px 0 6px">
+            <span class="label">Index futures positioning</span>
+            <span class="label" id="fiipos-date">&mdash;</span>
+          </div>
+          <div class="pos-rows" id="fiipos-rows"></div>
+          <p class="hint" id="fiipos-read">&mdash;</p>
+        </div>
       </div>
 
       <!-- Market breadth -->
@@ -173,7 +199,10 @@
       <div class="section" id="holdings-section">
         <div class="section-head">
           <span class="label">Your holdings</span>
-          <button class="btn btn-sm" id="btn-open-portfolio">Manage</button>
+          <span class="section-actions">
+            <a class="btn btn-sm" href="profile.html" title="Every buy and sell, positions, P&amp;L, alerts">Profile</a>
+            <button class="btn btn-sm" id="btn-open-portfolio">Quick add</button>
+          </span>
         </div>
         <div class="kv"><span class="kv-k">Invested</span><span class="kv-v" id="pf-invested">&mdash;</span></div>
         <div class="kv"><span class="kv-k">Current value</span><span class="kv-v" id="pf-current">&mdash;</span></div>
@@ -231,10 +260,23 @@
         <button class="tf-btn" data-tf="ALL" aria-pressed="false" title="Till date">TILL DATE</button>
       </div>
 
+      <div class="chart-actions">
+        <label class="trail-pick" title="How far ahead the remembered line was drawn. The trail point at 11:00 on a 1 hour lead is what the forecast made at 10:00 said 11:00 would be.">
+          <span>Trail</span>
+          <select id="trail-lead" aria-label="Prediction trail lead"></select>
+        </label>
+        <button class="btn btn-sm" id="btn-replay" title="Play a past session back bar by bar: the line runs ahead, the market arrives to meet it">&#9654; Replay</button>
+        <button class="icon-btn" id="btn-focus" title="Expand the chart (F)" aria-label="Expand the chart" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+        </button>
+      </div>
+
       <div class="chart-legend">
         <span class="lg"><span class="lg-swatch hist"></span> Past &amp; current &middot; 4/5</span>
         <span class="lg" title="All lanes blended. This is the headline forecast."><span class="lg-swatch fc"></span> Blended forecast &middot; 1/5</span>
-        <span class="lg" title="The call frozen when this session opened. It is never rewritten, so the line you see at close is the line that was drawn at the open."><span class="lg-swatch lock"></span> Predicted &middot; locked</span>
+        <span class="lg" title="The line the model drew one lead earlier, kept after its time came. Violet stretches are replayed from history; amber is what this browser recorded live and never rewrote."><span class="lg-swatch trail"></span> Predicted earlier <span class="lg-swatch trail-live"></span> recorded live</span>
+        <span class="lg" title="Actual close minus the remembered line, at every bar. Grey: inside the range the line carried. Green: price came in above it. Red: below it."><span class="lg-swatch err"></span> Miss</span>
+        <span class="lg" title="The call frozen when this session opened. It is never rewritten, so the line you see at close is the line that was drawn at the open."><span class="lg-swatch lock"></span> Locked call</span>
         <span class="lg" title="What price actually did over the locked window. The gap between this and the line above is the error, in points."><span class="lg-swatch act"></span> Actual</span>
         <span class="lg" id="reason-granularity">Reason points: every 1 hour</span>
       </div>
@@ -246,11 +288,29 @@
         <button class="ov-btn"        data-ov="supertrend" title="Supertrend 10 period, 3x ATR">Supertrend</button>
         <button class="ov-btn"        data-ov="vwap"       title="Session VWAP (needs volume)">VWAP</button>
         <button class="ov-btn is-on"  data-ov="why"        title="The hover card explaining why the line is at a given point">Why</button>
+        <button class="ov-btn is-on"  data-ov="trail"      title="The line the model drew one lead earlier, kept on the chart">Trail</button>
+        <button class="ov-btn is-on"  data-ov="errors"     title="Actual minus the remembered line, at every bar">Misses</button>
       </div>
     </div>
 
     <div class="chart-stage" id="chart-stage">
       <div id="chart"></div>
+      <!-- What traded at the bar under the pointer, what the line said it
+           would be, and the miss. See renderHud() in chart.js. -->
+      <div class="chart-hud" id="chart-hud" aria-live="off"></div>
+      <div class="replay-bar hidden" id="replay-bar" role="group" aria-label="Replay controls">
+        <span class="replay-tag">Replay</span>
+        <select id="replay-session" aria-label="Session to replay"></select>
+        <select id="replay-speed" aria-label="Replay speed">
+          <option value="160">1&times;</option>
+          <option value="60" selected>3&times;</option>
+          <option value="20">8&times;</option>
+        </select>
+        <span class="replay-clock num" id="replay-clock">&mdash;</span>
+        <div class="replay-progress"><div class="replay-fill" id="replay-fill"></div></div>
+        <span class="replay-score num" id="replay-score">&mdash;</span>
+        <button class="btn btn-sm" id="btn-replay-stop">Back to live</button>
+      </div>
       <div class="forecast-zone" id="forecast-zone" hidden></div>
       <div class="now-divider" id="now-divider" hidden></div>
       <div class="reason-card hidden" id="reason-card" role="status">
@@ -314,6 +374,9 @@
     <!-- ---------------------------------------------------- NEWS CONSOLE -->
     <section class="news-console" aria-label="News stream">
       <div class="news-head">
+        <button class="news-toggle" id="btn-news-toggle" aria-expanded="true" title="Show or hide the headline stream (the chart takes the space)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
         <span class="label">Live news intelligence</span>
         <span class="chip brand" id="feed-count">&mdash; feeds</span>
         <span class="chip" id="news-updated">&mdash;</span>
@@ -421,6 +484,51 @@
           <div class="fc-split-verdict" id="fc-split-verdict">&mdash;</div>
         </div>
         <p style="font-size:11.5px;line-height:1.5;color:var(--ink);margin:6px 0 0" id="fc-narrative">&mdash;</p>
+      </div>
+
+      <!-- ================================================== PREDICTION TRAIL
+           How close the remembered line landed. Replayed and live points are
+           scored separately, and every average sits next to what a flat
+           "no change" line would have scored, because on a short lead any
+           line that starts at the last price looks close. -->
+      <div class="section" id="trail-section">
+        <div class="section-head">
+          <span class="label">Prediction trail &mdash; <span id="trail-lead-label">&mdash;</span> ahead</span>
+          <span class="label" id="trail-n">&mdash;</span>
+        </div>
+        <div class="trail-score">
+          <div class="ts-big">
+            <span class="ts-k">Average miss</span>
+            <span class="ts-v num" id="trail-mae">&mdash;</span>
+            <span class="ts-sub num" id="trail-mae-pct">&mdash;</span>
+          </div>
+          <div class="ts-big">
+            <span class="ts-k">Inside its range</span>
+            <span class="ts-v num" id="trail-inside">&mdash;</span>
+            <span class="ts-sub">target 68%</span>
+          </div>
+          <div class="ts-big">
+            <span class="ts-k">vs no-change</span>
+            <span class="ts-v num" id="trail-skill">&mdash;</span>
+            <span class="ts-sub" id="trail-skill-sub">&mdash;</span>
+          </div>
+        </div>
+        <div class="trail-split" role="img" aria-label="Where price landed against the line">
+          <div class="tsp below" id="trail-bar-below"></div>
+          <div class="tsp on" id="trail-bar-on"></div>
+          <div class="tsp above" id="trail-bar-above"></div>
+        </div>
+        <div class="trail-split-legend">
+          <span class="down" id="trail-below">&mdash;</span>
+          <span id="trail-on">&mdash;</span>
+          <span class="up" id="trail-above">&mdash;</span>
+        </div>
+        <div class="kv"><span class="kv-k">Direction right <em>(95% interval)</em></span><span class="kv-v" id="trail-dir">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Lean of the misses</span><span class="kv-v" id="trail-bias">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Biggest miss</span><span class="kv-v" id="trail-worst">&mdash;</span></div>
+        <div class="kv"><span class="kv-k">Recorded live in this browser</span><span class="kv-v" id="trail-live">&mdash;</span></div>
+        <p class="verdict-line" id="trail-verdict">&mdash;</p>
+        <p class="fine" id="trail-note">&mdash;</p>
       </div>
 
       <!-- ============================================= WHERE IT GOES BY TIME -->
@@ -648,7 +756,9 @@
     <div class="modal-body">
       <div class="notice">
         Type in what you bought through your broker. It is kept in this browser only, never uploaded and never
-        written to the repository. Adding the same symbol twice averages it into one line, the way your broker shows it.
+        written to the repository. Each line here is recorded as an order on your <a href="profile.html">profile</a>,
+        where every buy and sell is kept, matched first-in first-out, with realised P&amp;L, XIRR and alerts.
+        A negative quantity records a sale.
       </div>
       <form class="journal-form" id="portfolio-form">
         <div class="field">
@@ -750,6 +860,12 @@
              deleted on the morning it happens. -->
         <button class="btn btn-sm" id="btn-clear-locks" style="justify-self:start">Forget every locked call</button>
       </div>
+
+      <div class="field">
+        <label>Live prediction trail</label>
+        <small id="trail-store-note">&mdash;</small>
+        <button class="btn btn-sm" id="btn-clear-trail" style="justify-self:start">Forget the live trail</button>
+      </div>
     </div>
     <div class="modal-foot">
       <button class="btn" id="btn-cancel-settings">Cancel</button>
@@ -837,6 +953,9 @@
 <script src="assets/js/patterns.js"></script>
 <script src="assets/js/structures.js"></script>
 <script src="assets/js/journal.js"></script>
+<!-- The order book (profile.html) is the source of truth for holdings; the
+     portfolio module reads positions off it, so it loads first. -->
+<script src="assets/js/orders.js"></script>
 <script src="assets/js/portfolio.js"></script>
 <script src="assets/js/data.js"></script>
 <script src="assets/js/analogs.js"></script>
@@ -846,6 +965,9 @@
 <!-- learn reads the ledger and is read by forecast at build time, so it
      sits between them in the load order. -->
 <script src="assets/js/learn.js"></script>
+<!-- trail replays the forecast's technical core and records the live one, so
+     it needs forecast, ledger (for the interval maths) and learn loaded. -->
+<script src="assets/js/trail.js"></script>
 <!-- evidence reads every other module's output, so it loads after them. -->
 <script src="assets/js/evidence.js"></script>
 <script src="assets/js/engine.js"></script>

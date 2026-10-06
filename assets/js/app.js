@@ -46,6 +46,11 @@
     events: null,           // NSE trading holidays + scheduled global releases
     vix: null,
     alertsOpen: false,
+    /* --- prediction trail (trail.js) --------------------------------------- */
+    trailReplay: null,      // the walk-forward replay for the current view
+    trailKey: null,         // what the replay above was computed for
+    trailRun: 0,            // token, so a slow replay for an old view is dropped
+    trailStats: null,       // { merged, replay, live } stats for the panel
   };
 
   /* ================================================================= BOOT */
@@ -87,8 +92,8 @@
           data.loadBaked(C.baked.rollup).then(function (r) { S.rollup = r; renderSectors(); }).catch(noop),
           loadFilings().catch(noop),
           data.loadBaked(C.baked.index).then(function (i) { if (!S.feedsTotal) { S.feedsTotal = i.count; renderFeedCount(null); } }).catch(noop),
-          data.loadBaked(C.baked.global).then(function (g) { S.global = g; renderCues(); }).catch(noop),
-          data.loadBaked(C.baked.flows).then(function (f) { S.flows = f; }).catch(noop),
+          data.loadBaked(C.baked.global).then(function (g) { S.globalBaked = g; applyGlobal(); renderCues(); }).catch(noop),
+          data.loadBaked(C.baked.flows).then(function (f) { S.flowsBaked = f; applyFlows(); }).catch(noop),
           data.loadBaked(C.baked.options).then(function (o) { S.options = o; }).catch(noop),
           data.loadBaked(C.baked.events).then(applyEvents).catch(noop),
           data.loadBaked(C.baked.constituents).then(applyConstituents).catch(noop),
@@ -144,6 +149,13 @@
         ? rows.length + ' frozen call' + (rows.length === 1 ? '' : 's') + ', ' + settled + ' already scored. ' +
           'The oldest is ' + rows[rows.length - 1].session + '.'
         : 'Nothing frozen yet. The first call is written before the next session opens.');
+    }
+
+    if (KT.trail) {
+      var tn = KT.trail.liveCount();
+      text('trail-store-note', tn
+        ? tn + ' live trail point' + (tn === 1 ? '' : 's') + ' recorded in this browser. They are the forward record of the line.'
+        : 'Nothing recorded yet. Points are written while this page is open, one per bar.');
     }
 
     var sel = el('cfg-model');
@@ -293,8 +305,119 @@
       });
     }, 150));
 
+    wireChartChrome();
+
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') closeSettings();
+      if (e.key === 'Escape') {
+        closeSettings();
+        if (document.body.classList.contains('chart-focus')) setFocus(false);
+      }
+      // F for focus, unless the key is being typed into a field.
+      var tag = e.target && e.target.tagName;
+      if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey &&
+          tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
+        setFocus(!document.body.classList.contains('chart-focus'));
+      }
+    });
+  }
+
+  /* ========================================================= CHART CHROME
+
+     Focus mode, the folding news stream, the trail lead and the replay. All
+     of it is per-viewer layout preference, so it lives in localStorage and
+     losing it costs nothing. */
+  function setFocus(on) {
+    document.body.classList.toggle('chart-focus', !!on);
+    var b = el('btn-focus');
+    if (b) {
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.title = on ? 'Back to the full terminal (F or Esc)' : 'Expand the chart (F)';
+    }
+    // The ResizeObserver catches the new size; this covers the frame before.
+    setTimeout(function () { chart.resize(); chart.frameView(); }, 30);
+  }
+
+  function setNewsCollapsed(on) {
+    document.body.classList.toggle('news-collapsed', !!on);
+    var b = el('btn-news-toggle');
+    if (b) b.setAttribute('aria-expanded', on ? 'false' : 'true');
+    core.store.set('newsCollapsed', !!on);
+    setTimeout(function () { chart.resize(); }, 30);
+  }
+
+  function trailLeadFor(tf) {
+    var saved = core.store.get('trailLead', {}) || {};
+    var want = saved[tf];
+    var opts = KT.trail ? KT.trail.leads(tf) : [];
+    if (want && opts.some(function (o) { return o.bars === want; })) return want;
+    return KT.trail ? KT.trail.defaultLead(tf) : 1;
+  }
+
+  function fillTrailLeads() {
+    var sel = el('trail-lead');
+    if (!sel || !KT.trail) return;
+    var cur = trailLeadFor(S.timeframe);
+    sel.innerHTML = '';
+    KT.trail.leads(S.timeframe).forEach(function (o) {
+      var opt = document.createElement('option');
+      opt.value = String(o.bars);
+      opt.textContent = o.label + ' ahead';
+      if (o.bars === cur) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    var rb = el('btn-replay');
+    if (rb) {
+      var intraday = C.timeframes[S.timeframe] && C.timeframes[S.timeframe].barSec < 86400;
+      rb.disabled = !intraday;
+      rb.title = intraday ? 'Play a past session back bar by bar: the line runs ahead, the market arrives to meet it'
+                          : 'Replay works on the intraday views: Session, 1H and 1D';
+    }
+  }
+
+  function wireChartChrome() {
+    var fb = el('btn-focus');
+    if (fb) fb.addEventListener('click', function () {
+      setFocus(!document.body.classList.contains('chart-focus'));
+    });
+
+    // Folded by default: the brief was a bigger chart, and the headline count
+    // and consensus stay readable in the header row either way.
+    var collapsed = core.store.get('newsCollapsed', null);
+    setNewsCollapsed(collapsed === null ? true : !!collapsed);
+    var nb = el('btn-news-toggle');
+    if (nb) nb.addEventListener('click', function () {
+      setNewsCollapsed(!document.body.classList.contains('news-collapsed'));
+    });
+
+    fillTrailLeads();
+    var sel = el('trail-lead');
+    if (sel) sel.addEventListener('change', function () {
+      var saved = core.store.get('trailLead', {}) || {};
+      saved[S.timeframe] = parseInt(sel.value, 10);
+      core.store.set('trailLead', saved);
+      S.trailKey = null;
+      refreshTrail();
+    });
+
+    var rb = el('btn-replay');
+    if (rb) rb.addEventListener('click', openReplay);
+    var stop = el('btn-replay-stop');
+    if (stop) stop.addEventListener('click', closeReplay);
+    var sp = el('replay-speed');
+    if (sp) sp.addEventListener('change', function () { chart.replaySpeed(parseInt(sp.value, 10) || 60); });
+    var rs = el('replay-session');
+    if (rs) rs.addEventListener('change', function () { startReplay(parseInt(rs.value, 10)); });
+
+    var ct = el('btn-clear-trail');
+    if (ct) ct.addEventListener('click', function () {
+      if (!KT.trail) return;
+      var n = KT.trail.liveCount();
+      if (!n) { text('trail-store-note', 'Nothing recorded yet.'); return; }
+      if (!window.confirm('Forget ' + n + ' live trail point' + (n === 1 ? '' : 's') +
+                          '? They are the forward record and cannot be rebuilt.')) return;
+      KT.trail.clearLive();
+      text('trail-store-note', n + ' live point' + (n === 1 ? '' : 's') + ' forgotten.');
+      updateTrailView();
     });
   }
 
@@ -309,6 +432,9 @@
       b.setAttribute('aria-pressed', String(b.getAttribute('data-tf') === tf));
     });
     text('reason-granularity', 'Reason points: ' + C.timeframes[tf].reasonLabel);
+    if (chart.isReplaying()) closeReplay();
+    S.trailReplay = null; S.trailKey = null;
+    fillTrailLeads();
     chart.showEmpty('Loading ' + C.timeframes[tf].label.toLowerCase() + ' candles…', '');
     refreshCandles().then(recompute).catch(function (e) {
       chart.showEmpty('Could not load candles', String(e && e.message || e));
@@ -329,6 +455,8 @@
       li.setAttribute('aria-selected', String(li.getAttribute('data-symbol') === sym));
     });
     chart.showEmpty('Loading ' + meta.label + '…', '');
+    if (chart.isReplaying()) closeReplay();
+    S.trailReplay = null; S.trailKey = null;
     refreshAll();
   }
 
@@ -401,12 +529,17 @@
       }).catch(noop),
       data.loadBaked(C.baked.rollup).then(function (r) { S.rollup = r; renderSectors(); }).catch(noop),
       loadFilings().catch(noop),
-      data.loadBaked(C.baked.global).then(function (g) { S.global = g; renderCues(); }).catch(noop),
-      data.loadBaked(C.baked.flows).then(function (f) { S.flows = f; }).catch(noop),
+      data.loadBaked(C.baked.global).then(function (g) { S.globalBaked = g; applyGlobal(); renderCues(); }).catch(noop),
+      data.loadBaked(C.baked.flows).then(function (f) { S.flowsBaked = f; applyFlows(); }).catch(noop),
       data.loadBaked(C.baked.options).then(function (o) { S.options = o; }).catch(noop),
       data.loadBaked(C.baked.events).then(applyEvents).catch(noop),
       data.loadBaked(C.baked.constituents).then(applyConstituents).catch(noop),
-      data.loadBaked(C.baked.stocks).then(function (q) { KT.portfolio.setQuotes(q); }).catch(noop),
+      data.loadBaked(C.baked.stocks).then(function (q) {
+        KT.portfolio.setQuotes(q);
+        // The live screener copy is fresher than the workflow's; re-apply it
+        // so a baked refresh never rolls the movers back by hours.
+        if (S.indexLive) feedIndexQuotes(S.indexLive);
+      }).catch(noop),
     ]).then(function () { renderNews(); scanAlerts(); });
   }
 
@@ -492,9 +625,23 @@
       } catch (e) { S.forecast.locked = null; S.lockScore = null; }
     }
 
+    /* The live trail. Written before the chart draws, for the same reason the
+       lock is: a point recorded after the repaint shows up a repaint late.
+       recordLive refuses a second write for the same bar, so calling it on
+       every recompute writes once per bar and reads otherwise. */
+    if (KT.trail && S.candles.length) {
+      try {
+        KT.trail.recordLive(S.forecast, {
+          symbol: S.symbol, lastTime: S.candles[S.candles.length - 1].time,
+          leads: KT.trail.leads(S.timeframe).map(function (o) { return o.bars; }),
+        });
+      } catch (e) { /* a full localStorage must not take the page down */ }
+    }
+
     chart.setStructures(S.structures);
     chart.setLevels(S.levels);
     chart.setData(S.candles, S.forecast, S.reasons, S.timeframe, S.symbol);
+    refreshTrail();
 
     renderPosition();
     computePatterns();
@@ -538,11 +685,7 @@
       if (!m) return false;
       S.internals = m;
       if (m.vix) S.vix = m.vix;
-      if (m.breadth || m.breadthDivergence != null) {
-        S.flows = S.flows || {};
-        if (m.breadth) { S.flows.breadth = m.breadth; S.flows.breadthOrigin = 'browser'; }
-        if (m.breadthDivergence != null) S.flows.breadthDivergence = m.breadthDivergence;
-      }
+      applyFlows();
       recompute();
       return true;
     }).catch(function () { return false; });
@@ -603,6 +746,181 @@
       var n = KT.forecast.setHolidays(e.holidays || []);
       if (n) recompute();
     } catch (err) { /* a bad calendar must not take the clock down */ }
+  }
+
+  /* ============================================================ LIVE LANES
+
+     Added 6 Oct 2026. Each of these overrides a workflow copy rather than
+     replacing it: the baked file is kept in S.*Baked, the browser result in
+     S.*Live, and apply*() merges them, so a throttled lane falls back to the
+     older-but-real number and a baked refresh never rolls a live one back.
+     That second half was a real bug: refreshBaked() used to assign S.flows
+     wholesale every minute, throwing away the live breadth refreshInternals()
+     had put there until its next five-minute poll. */
+  function applyGlobal() {
+    var base = S.globalBaked, live = S.globalLive;
+    if (!live || !live.items) { S.global = base || null; return; }
+    var items = {};
+    if (base && base.items) Object.keys(base.items).forEach(function (k) { items[k] = base.items[k]; });
+    Object.keys(live.items).forEach(function (k) { items[k] = live.items[k]; });
+    S.global = {
+      generated_at: live.generated_at, origin: 'browser', items: items,
+      count: Object.keys(items).length, source: live.source,
+      liveKeys: Object.keys(live.items), bakedAt: base ? base.generated_at : null,
+      note: live.note,
+    };
+  }
+
+  function applyFlows() {
+    var f = {}, b = S.flowsBaked || {};
+    Object.keys(b).forEach(function (k) { f[k] = b[k]; });
+    if (S.internals) {
+      if (S.internals.breadth) { f.breadth = S.internals.breadth; f.breadthOrigin = 'browser'; }
+      if (S.internals.breadthDivergence != null) f.breadthDivergence = S.internals.breadthDivergence;
+    }
+    var L = S.flowsLive;
+    if (L) ['fii', 'dii'].forEach(function (k) {
+      if (!L[k]) return;
+      var cur = f[k];
+      // The newer report wins; the same date from the exchange directly wins
+      // over the workflow's copy of it.
+      if (!cur || !cur.date || (data.nseDate(L[k].date) || 0) >= (data.nseDate(cur.date) || 0)) f[k] = L[k];
+    });
+    if (S.partOi && S.partOi.fii) f.fiiFutIdx = S.partOi.fii;
+    S.flows = f;
+  }
+
+  function refreshLiveGlobal() {
+    if (!data.getLiveGlobal) return Promise.resolve(false);
+    return data.getLiveGlobal().then(function (g) {
+      if (!g) return false;
+      S.globalLive = g;
+      applyGlobal();
+      renderCues();
+      renderGift();
+      recompute();
+      return true;
+    }).catch(function () { return false; });
+  }
+
+  /* GIFT Nifty on the board. Its distance from NIFTY is printed in the
+     tooltip with the reason it is not the gap: a future carries a premium to
+     the index that runs off to nothing at expiry. */
+  function renderGift() {
+    var g = S.globalLive && S.globalLive.items && S.globalLive.items.gift_nifty;
+    if (!g) return;
+    renderTicker('GIFTNIFTY', { symbol: 'GIFTNIFTY', price: g.price, changePct: g.changePct,
+                                change: g.price - g.prevClose });
+    var t = document.querySelector('.tick[data-symbol="GIFTNIFTY"]');
+    var n = S.quotes.NIFTY;
+    if (t) {
+      var vs = n && n.price ? g.price - n.price : null;
+      t.title = 'GIFT Nifty (NSE IX near-month future, live) ' + fmt.price(g.price) + ', ' +
+        fmt.pct(g.changePct) + ' against its previous settlement.' +
+        (vs != null ? '\n' + fmt.signed(vs) + ' pts against NIFTY at ' + fmt.price(n.price) + '.' : '') +
+        '\nA future trades at a premium to the index that shrinks to nothing at expiry, so not all of that gap is the overnight move.';
+    }
+  }
+
+  /* NIFTY 50 members priced live by the screener, fed into the one shared
+     quote map so the movers panel and the holdings book read the same copy. */
+  function feedIndexQuotes(res) {
+    var q = {};
+    res.rows.forEach(function (r) {
+      q[r.symbol] = { price: r.price, changePct: r.changePct, dayHigh: r.dayHigh, dayLow: r.dayLow,
+                      week52High: r.week52High, week52Low: r.week52Low };
+    });
+    KT.portfolio.setQuotes({ quotes: q, generated_at: res.at });
+  }
+
+  function refreshIndexLive() {
+    if (!data.getIndexMembers) return Promise.resolve(false);
+    return data.getIndexMembers('SYML:NSE;NIFTY').then(function (res) {
+      if (!res) return false;
+      S.indexLive = res;
+      feedIndexQuotes(res);
+      renderMovers();
+      renderPortfolio();
+      return true;
+    }).catch(function () { return false; });
+  }
+
+  function refreshFiiDiiLive() {
+    if (!data.getFiiDiiLive) return Promise.resolve(false);
+    return data.getFiiDiiLive().then(function (r) {
+      if (!r) return false;
+      S.flowsLive = r;
+      applyFlows();
+      renderFlows();
+      recompute();
+      return true;
+    }).catch(function () { return false; });
+  }
+
+  function refreshPartOi() {
+    if (!data.getParticipantOi) return Promise.resolve(false);
+    return data.getParticipantOi(6).then(function (res) {
+      if (!res || !res.sessions || !res.sessions.length) return false;
+      var ss = res.sessions, last = ss[ss.length - 1], prev = ss.length > 1 ? ss[ss.length - 2] : null;
+      var fii = last.rows.FII, fp = prev && prev.rows.FII;
+      S.partOi = {
+        sessions: ss, date: last.date,
+        fii: fii && fii.longPct != null ? {
+          longPct: fii.longPct, net: fii.futIdxNet, date: last.date,
+          longPctChg: fp && fp.longPct != null ? Math.round((fii.longPct - fp.longPct) * 100) / 100 : null,
+        } : null,
+      };
+      applyFlows();
+      renderPositioning();
+      recompute();
+      return true;
+    }).catch(function () { return false; });
+  }
+
+  /* Index-futures positioning by participant: the share of each book that is
+     long. A bar per participant, the change since the previous file beside
+     it, and one sentence. */
+  function renderPositioning() {
+    var host = el('fiipos-rows');
+    if (!host) return;
+    var P = S.partOi;
+    if (!P || !P.sessions || !P.sessions.length) {
+      text('fiipos-date', 'not loaded');
+      text('fiipos-read', 'NSE publishes participant-wise open interest after each session; the proxy has not returned it yet.');
+      return;
+    }
+    var ss = P.sessions, last = ss[ss.length - 1], prev = ss.length > 1 ? ss[ss.length - 2] : null;
+    text('fiipos-date', last.date || '—');
+    host.innerHTML = '';
+    [['FII', 'FII'], ['CLIENT', 'Retail'], ['PRO', 'Prop'], ['DII', 'DII']].forEach(function (pair) {
+      var r = last.rows[pair[0]];
+      if (!r || r.longPct == null) return;
+      var pr = prev && prev.rows[pair[0]];
+      var chg = pr && pr.longPct != null ? r.longPct - pr.longPct : null;
+      var row = document.createElement('div');
+      row.className = 'pos-row';
+      row.title = pair[1] + ': ' + fmt.count(r.futIdxLong) + ' long vs ' + fmt.count(r.futIdxShort) +
+                  ' short index-futures contracts on ' + last.date;
+      row.innerHTML = '<span class="pos-k">' + esc(pair[1]) + '</span>' +
+        '<span class="pos-bar"><span style="width:' + Math.max(1, Math.min(100, r.longPct)).toFixed(1) + '%"></span></span>' +
+        '<span class="pos-v">' + r.longPct.toFixed(0) + '% <small>long</small>' +
+        (chg != null ? ' <small class="' + fmt.cls(chg) + '">' + (chg >= 0 ? '+' : '') + chg.toFixed(1) + '</small>' : '') + '</span>';
+      host.appendChild(row);
+    });
+    var f = last.rows.FII;
+    var read = '';
+    if (f && f.longPct != null) {
+      read = 'FIIs are ' + f.longPct.toFixed(0) + '% long in index futures';
+      if (f.longPct < 25) read += ' — heavily short, which is where they have sat for most of this series';
+      else if (f.longPct > 60) read += ' — net long';
+      read += '.';
+      if (P.fii && P.fii.longPctChg != null) {
+        read += ' ' + (P.fii.longPctChg >= 0 ? 'Up ' : 'Down ') + Math.abs(P.fii.longPctChg).toFixed(1) +
+                ' points on the previous session' + (Math.abs(P.fii.longPctChg) < 0.5 ? ', barely moved.' : '.');
+      }
+      read += ' The change, not the level, is what the flow lane reads.';
+    }
+    text('fiipos-read', read);
   }
 
   /* ============================================================== LEDGER
@@ -703,6 +1021,247 @@
     }
   }
 
+  /* ====================================================== PREDICTION TRAIL
+
+     The line the model drew one lead earlier, kept on the chart once its time
+     has come. Two sources (trail.js explains both): the replay rebuilds it
+     from history the instant the page loads, and recordLive() writes the
+     full model's line down as it is made, never to be rewritten.
+
+     The replay is incremental - trail.js caches every prediction by the bar
+     it was made on - so this runs whenever a bar closes and pays only for
+     the new bars. It is sliced across macrotasks for the reason calibrate()
+     is: a few hundred replayed bars is a second or two of arithmetic, and the
+     live price must keep ticking through it. */
+  function trailLead() { return trailLeadFor(S.timeframe); }
+
+  function refreshTrail() {
+    if (!KT.trail || !S.candles.length) return;
+    var n = S.candles.length;
+    var ms = core.marketState();
+    var key = [S.symbol, S.timeframe, trailLead(), n, S.candles[n - 2] ? S.candles[n - 2].time : 0,
+               ms.live ? 1 : 0].join(':');
+    if (key === S.trailKey) { updateTrailView(); return; }
+    S.trailKey = key;
+    var run = ++S.trailRun;
+    var forSym = S.symbol, forTf = S.timeframe, lead = trailLead();
+    text('trail-note', 'Replaying the line bar by bar from history…');
+    try {
+      KT.trail.replay(S.candles, forTf, { lead: lead, symbol: forSym, marketLive: !!ms.live, slice: 16 },
+        function (res) {
+          if (run !== S.trailRun || forSym !== S.symbol || forTf !== S.timeframe) return;
+          S.trailReplay = res;
+          updateTrailView();
+        });
+    } catch (e) {
+      S.trailReplay = null;
+      text('trail-note', 'The replay could not run on this series: ' + (e && e.message || e));
+    }
+  }
+
+  /* Join the live record, merge it with the replay, hand both to the chart
+     and the panel. Cheap: a localStorage read and a pass over a few hundred
+     points, so it runs on every recompute and the forming bar's live point
+     stays current. */
+  function updateTrailView() {
+    if (!KT.trail) return;
+    var lead = trailLead();
+    var ms = core.marketState();
+    var replayPts = (S.trailReplay && S.trailReplay.lead === lead) ? S.trailReplay.points : [];
+    var live = KT.trail.liveScored(S.symbol, S.timeframe, lead, S.candles, !!ms.live);
+    var merged = KT.trail.merge(replayPts, live);
+    var leadText = KT.trail.leadLabel(S.timeframe, lead);
+    var stM = KT.trail.stats(merged, lead);
+    var stR = KT.trail.stats(replayPts, lead);
+    var stL = KT.trail.stats(live, lead);
+    S.trailStats = { merged: stM, replay: stR, live: stL, lead: lead, leadText: leadText,
+                     liveRows: live.length };
+    chart.setTrail(merged, {
+      leadLabel: leadText,
+      summary: stM.n ? ('average miss ' + fmt.price(stM.maePts) + ' pts (' + stM.maePct.toFixed(2) + '%), ' +
+                        stM.insideRate.toFixed(0) + '% inside its range, ' + core.fmt.count(stM.n) + ' bars scored')
+                     : 'waiting for the first scored bar',
+    });
+    renderTrail();
+  }
+
+  function renderTrail() {
+    var T = S.trailStats;
+    if (!T) return;
+    text('trail-lead-label', T.leadText);
+    var st = T.merged;
+    if (!st || !st.n) {
+      ['trail-mae', 'trail-mae-pct', 'trail-inside', 'trail-skill', 'trail-skill-sub', 'trail-dir',
+       'trail-bias', 'trail-worst', 'trail-below', 'trail-on', 'trail-above'].forEach(function (id) { text(id, '—'); });
+      text('trail-n', S.trailReplay ? 'nothing scored' : 'replaying…');
+      text('trail-verdict', S.trailReplay && S.trailReplay.note ? S.trailReplay.note : 'The trail fills in as soon as the replay finishes.');
+      renderTrailLive(T);
+      return;
+    }
+    text('trail-n', core.fmt.count(st.n) + ' bars scored');
+    text('trail-mae', fmt.price(st.maePts) + ' pts');
+    text('trail-mae-pct', st.maePct.toFixed(3) + '% · median ' + st.medianPct.toFixed(3) + '%');
+    var ins = el('trail-inside');
+    if (ins) {
+      ins.textContent = st.insideRate.toFixed(0) + '%';
+      ins.className = 'ts-v num ' + (Math.abs(st.insideRate - 68) <= 8 ? 'up' : 'flat');
+    }
+    var sk = el('trail-skill');
+    if (sk) {
+      if (st.skill == null) { sk.textContent = '—'; }
+      else {
+        var pct = Math.round((1 - st.skill) * 100);
+        sk.textContent = (pct > 0 ? pct + '% closer' : pct < 0 ? (-pct) + '% further' : 'level');
+        sk.className = 'ts-v num ' + (pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat');
+      }
+    }
+    text('trail-skill-sub', 'flat line misses ' + st.naivePct.toFixed(3) + '%');
+
+    var tot = Math.max(1, st.n);
+    var w = function (k) { return (k / tot * 100).toFixed(1) + '%'; };
+    var bb = el('trail-bar-below'), bo = el('trail-bar-on'), ba = el('trail-bar-above');
+    if (bb) bb.style.width = w(st.below);
+    if (bo) bo.style.width = w(st.inside);
+    if (ba) ba.style.width = w(st.above);
+    text('trail-below', st.below + ' below the line');
+    text('trail-on', st.inside + ' inside its range');
+    text('trail-above', st.above + ' above');
+
+    text('trail-dir', st.dirRate == null ? '—'
+      : st.dirRate.toFixed(1) + '%' + (st.dirCi ? '  (' + st.dirCi[0].toFixed(0) + '–' + st.dirCi[1].toFixed(0) + '%)' : ''));
+    var bias = el('trail-bias');
+    if (bias) {
+      // Positive mean error: price tended to finish above the line, so the
+      // line was set too low on average - a lean, not just noise, if it is
+      // large against the average miss.
+      bias.textContent = st.biasPct >= 0
+        ? 'price above the line by ' + st.biasPct.toFixed(3) + '% on average'
+        : 'price below the line by ' + Math.abs(st.biasPct).toFixed(3) + '% on average';
+      bias.className = 'kv-v ' + (Math.abs(st.biasPct) > st.maePct * 0.35 ? 'down' : '');
+    }
+    var tf = C.timeframes[S.timeframe];
+    text('trail-worst', st.worst
+      ? fmt.signed(st.worst.e) + ' pts at ' + core.fmt.stamp(st.worst.t, tf && tf.barSec < 86400 ? 60 : 86400)
+      : '—');
+
+    text('trail-verdict', KT.trail.verdict(st, T.leadText));
+    renderTrailLive(T);
+  }
+
+  function renderTrailLive(T) {
+    var L = T.live;
+    var node = el('trail-live');
+    if (node) {
+      if (L && L.n) {
+        node.textContent = core.fmt.count(L.n) + ' scored · avg miss ' + fmt.price(L.maePts) + ' pts' +
+          (L.skill != null ? ' · ' + (L.skill < 1 ? Math.round((1 - L.skill) * 100) + '% closer' : Math.round((L.skill - 1) * 100) + '% further') + ' than flat' : '');
+        node.className = 'kv-v ' + (L.skill != null && L.skill < 1 ? 'up' : '');
+      } else {
+        node.textContent = T.liveRows ? T.liveRows + ' written, waiting for the bar to close' : 'none yet — keep this page open during the session';
+        node.className = 'kv-v muted';
+      }
+    }
+    var R = S.trailReplay;
+    text('trail-note',
+      'Violet: replayed from history — each point uses only the candles that existed when it claims to have been drawn, ' +
+      'and only the technical core of the model (momentum, room to the next level, chart structure, the session clock), ' +
+      'because news, global cues and flows were not archived before 18 Sep 2026. Amber: what the full model drew live in this ' +
+      'browser, written once and never changed — the forward record. Scored by time, against the close of the bar the line points at. ' +
+      (R && R.ms != null ? 'Replay took ' + (R.ms / 1000).toFixed(1) + 's.' : ''));
+  }
+
+  /* ================================================================ REPLAY
+
+     A past session, played back. The line the model drew `lead` bars earlier
+     runs ahead of the price and the candles arrive to meet it - which is the
+     whole claim of a prediction line, shown rather than asserted. Every point
+     comes from the walk-forward replay, so it is what the model's technical
+     core would have shown somebody watching that session live. */
+  function sessionsIn(candles) {
+    var out = [], cur = null;
+    for (var i = 0; i < candles.length; i++) {
+      var d = core.fmt.ist(candles[i].time);
+      var key = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+      if (!cur || cur.key !== key) { cur = { key: key, from: i, to: i, label: core.fmt.dayShort(candles[i].time) }; out.push(cur); }
+      cur.to = i;
+    }
+    return out.filter(function (x) { return x.to - x.from >= 10; });
+  }
+
+  function openReplay() {
+    if (!KT.trail || !S.candles.length) return;
+    var tf = C.timeframes[S.timeframe];
+    if (!tf || tf.barSec >= 86400) return;
+    var sess = sessionsIn(S.candles);
+    var ms = core.marketState();
+    // Today's session is still trading while the market is open; replaying
+    // it would end in the middle of a bar.
+    if (ms.live && sess.length > 1) sess = sess.slice(0, -1);
+    sess = sess.slice(-5);
+    if (!sess.length) return;
+    var sel = el('replay-session');
+    if (sel) {
+      sel.innerHTML = '';
+      sess.forEach(function (x, k) {
+        var o = document.createElement('option');
+        o.value = String(x.from); o.textContent = x.label;
+        if (k === sess.length - 1) o.selected = true;
+        sel.appendChild(o);
+      });
+    }
+    S.replaySessions = sess;
+    startReplay(sess[sess.length - 1].from);
+  }
+
+  function startReplay(fromIdx) {
+    var sess = (S.replaySessions || []).filter(function (x) { return x.from === fromIdx; })[0];
+    if (!sess) return;
+    var lead = trailLead();
+    var candles = S.candles.slice();
+    var ms = core.marketState();
+    text('replay-clock', 'preparing…');
+    el('replay-bar').classList.remove('hidden');
+    document.body.classList.add('is-replaying');
+    // The replayed window has to reach back past the session's first bar by
+    // a whole lead, so the line is already running ahead when it starts.
+    var span = Math.min(candles.length - 70, candles.length - sess.from + lead + 20);
+    KT.trail.replay(candles, S.timeframe, { lead: lead, symbol: S.symbol, marketLive: !!ms.live, span: span, slice: 24 },
+      function (res) {
+        if (!document.body.classList.contains('is-replaying')) return;
+        var speed = parseInt((el('replay-speed') || {}).value, 10) || 60;
+        var points = res.points;
+        chart.replayStart({
+          candles: candles, points: points, from: Math.max(1, sess.from - 1), to: sess.to,
+          lead: lead, speedMs: speed,
+          onFrame: function (at) { renderReplayFrame(candles, points, sess, at); },
+          onEnd: function () { renderReplayFrame(candles, points, sess, sess.to, true); },
+        });
+      });
+  }
+
+  function renderReplayFrame(candles, points, sess, at, finished) {
+    var bar = candles[at];
+    if (!bar) return;
+    text('replay-clock', core.fmt.timeShort(bar.time) + ' · ' + sess.label);
+    var fill = el('replay-fill');
+    if (fill) fill.style.width = Math.round((at - sess.from) / Math.max(1, sess.to - sess.from) * 100) + '%';
+    var lo = candles[sess.from].time;
+    var sofar = points.filter(function (p) { return p.a != null && p.t >= lo && p.t <= bar.time; });
+    var st = KT.trail.stats(sofar, trailLead());
+    text('replay-score', st.n
+      ? (finished ? 'Session done: ' : 'So far: ') + 'avg miss ' + fmt.price(st.maePts) + ' pts · ' +
+        st.insideRate.toFixed(0) + '% inside range'
+      : 'line running ' + KT.trail.leadLabel(S.timeframe, trailLead()) + ' ahead');
+  }
+
+  function closeReplay() {
+    chart.replayStop(true);
+    var bar = el('replay-bar');
+    if (bar) bar.classList.add('hidden');
+    document.body.classList.remove('is-replaying');
+    recompute();
+  }
+
   /* =============================================================== LOOPS */
   function startLoops() {
     restartLoops();
@@ -730,6 +1289,21 @@
        loaded in boot are what the lanes run on until these land, so there is
        no reason for anything to wait on them. */
     setTimeout(function () { refreshOptionChain(); refreshInternals(); }, 1500);
+    /* The live lanes added 6 Oct 2026. The screener is direct and fast, so
+       the cues poll every minute whether or not India is open - the cues
+       that matter most are the ones that trade while it is shut. The NSE
+       extras go through the shared proxy, so they are spaced and slow. */
+    setTimeout(refreshLiveGlobal, 800);
+    setTimeout(refreshIndexLive, 2200);
+    setTimeout(refreshFiiDiiLive, 4200);
+    setTimeout(refreshPartOi, 6500);
+    S.timers.tvGlobal = setInterval(refreshLiveGlobal, 60000);
+    S.timers.indexLive = setInterval(function () {
+      var m = core.marketState();
+      if (m.live || !S.indexLive || Date.now() - Date.parse(S.indexLive.at) > 900000) refreshIndexLive();
+    }, 120000);
+    S.timers.fiiDii = setInterval(refreshFiiDiiLive, 1200000);
+    S.timers.partOi = setInterval(refreshPartOi, 10800000);
     // Holdings outside the workflow universe are priced on their own slower
     // timer, because each one costs a trip through the shared public proxy.
     S.timers.holdings = setInterval(function () {
@@ -1039,7 +1613,7 @@
     if (wrap) wrap.classList.remove('is-empty');
 
     rows.sort(function (a, b) { return b.pct - a.pct; });
-    text('movers-note', rows.length + ' of 50 priced');
+    text('movers-note', rows.length + '/50' + (S.indexLive ? ' · live, 15m delay' : ' · workflow'));
 
     function fill(box, list) {
       list.forEach(function (r) {
@@ -1073,7 +1647,8 @@
       text('flows-read', 'The FII/DII report comes through the workflow and has not landed this session.');
       return;
     }
-    text('flows-date', (fii && fii.date) || (dii && dii.date) || '—');
+    text('flows-date', ((fii && fii.date) || (dii && dii.date) || '—') +
+         ((fii && fii.via === 'nse-live') || (dii && dii.via === 'nse-live') ? ' · live' : ''));
 
     function put(id, row) {
       var e = el(id);
@@ -1930,10 +2505,21 @@
     }).join('  ·  ');
     text('open-why', why || 'cues flat');
 
-    text('open-basis', o.cues + ' overnight cue' + (o.cues === 1 ? '' : 's') + '. ' +
+    /* Where the cues came from, because it changes what the number means:
+       the workflow copy was a five-session move until 6 Oct 2026 (see
+       getLiveGlobal in data.js), the live screener copy is the overnight one.
+       GIFT Nifty sits beside the call as a market reference, not an input. */
+    var src = S.global && S.global.origin === 'browser' ? 'live cues' : 'workflow cues, ' +
+              (S.global && S.global.generated_at ? ageLabel(S.global.generated_at) : 'age unknown');
+    var gift = S.globalLive && S.globalLive.items && S.globalLive.items.gift_nifty;
+    var giftTxt = gift && o.prevClose
+      ? ' GIFT Nifty now ' + fmt.price(gift.price) + ' (' + fmt.signed(gift.price - o.prevClose) +
+        ' pts vs the close, futures premium included).'
+      : '';
+    text('open-basis', o.cues + ' overnight cue' + (o.cues === 1 ? '' : 's') + ' (' + src + '). ' +
       (o.fitted
         ? 'Weights fitted on this browser’s settled opens.'
-        : 'Weights are judgements, not fits — nothing has been measured against them yet.'));
+        : 'Weights are judgements, not fits — nothing has been measured against them yet.') + giftTxt);
   }
 
   /* ================================================== PREDICTED VS ACTUAL
@@ -2486,8 +3072,10 @@
       host.appendChild(p);
       return;
     }
-    text('cues-updated', g.generated_at ? fmt.ago(Math.floor(new Date(g.generated_at).getTime() / 1000)) : '');
-    var order = ['us_futures', 'nasdaq_fut', 'nikkei', 'hangseng', 'crude', 'usdinr', 'dxy', 'us10y', 'gold', 'vix'];
+    text('cues-updated', (g.origin === 'browser' ? 'live · ' : 'workflow · ') +
+         (g.generated_at ? fmt.ago(Math.floor(new Date(g.generated_at).getTime() / 1000)) : ''));
+    var order = ['gift_nifty', 'us_futures', 'nasdaq_fut', 'dow_fut', 'nikkei', 'hangseng', 'crude', 'usdinr',
+                 'dxy', 'us10y', 'gold', 'cboe_vix', 'vix'];
     order.forEach(function (k) {
       var row = g.items[k];
       if (!row) return;
@@ -3006,6 +3594,38 @@
           : null,
         stale: !S.internals,
         hint: 'NSE allIndices: NIFTY 50 breadth, India VIX and midcap-vs-large-cap breadth, one call',
+      },
+      /* Added 6 Oct 2026. The screener carries the overnight cues, GIFT
+         Nifty and the index members; the NSE extras carry same-evening
+         FII/DII and the futures positioning file. */
+      {
+        k: 'Global cues + GIFT',
+        st: S.globalLive ? { ok: true, note: S.globalLive.count + ' cues live via TradingView' }
+                         : (h.tradingview ? { ok: false, note: h.tradingview.note } : null),
+        stale: !S.globalLive,
+        hint: 'TradingView screener, read directly by your browser: US futures, Asia, crude, rupee, dollar, yields, GIFT Nifty',
+      },
+      {
+        k: 'Index members',
+        st: S.indexLive ? { ok: true, note: S.indexLive.rows.length + ' NIFTY 50 stocks, 15 min delayed' } : null,
+        stale: !S.indexLive,
+        hint: 'TradingView screener: price, change, technical rating and analyst targets for every NIFTY 50 member',
+      },
+      {
+        k: 'FII/DII + positioning',
+        st: (S.flowsLive || S.partOi)
+          ? { ok: true, note: (S.flowsLive ? 'cash ' + ((S.flowsLive.fii || S.flowsLive.dii || {}).date || '') : '') +
+                             (S.partOi ? ' · futures OI ' + S.partOi.date : '') }
+          : null,
+        stale: !(S.flowsLive || S.partOi),
+        hint: 'NSE fiidiiTradeReact and the participant-wise OI file, through the proxy',
+      },
+      {
+        k: 'Prediction trail',
+        st: S.trailReplay ? { ok: true, note: (S.trailReplay.points || []).length + ' replayed points' +
+                                              (S.trailStats && S.trailStats.liveRows ? ', ' + S.trailStats.liveRows + ' live' : '') }
+                          : null,
+        hint: 'Walk-forward replay of the model in this browser, plus the live record it writes as it goes',
       },
     ];
     box.innerHTML = '';

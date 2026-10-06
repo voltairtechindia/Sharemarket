@@ -22,18 +22,35 @@
 
   var state = { rows: [], quotes: {}, universe: null, alerts: [], lastMatch: 0 };
 
-  /* ------------------------------------------------------------- storage */
+  /* ------------------------------------------------------------- storage
+
+     Since 6 Oct 2026 the source of truth is the order book in orders.js -
+     every buy and sell, matched FIFO - and this module reads positions off
+     it in the shape it always used. One record serving both pages, rather
+     than a holdings list and an order list that could disagree about how
+     many shares you own. Without orders.js loaded (the IPO page, an old
+     cached script) it falls back to its own store exactly as before. */
+  function useOrders() { return !!(KT.orders && KT.orders.asHoldings); }
+
   function load() {
-    var raw = core.store.get(KEY, []);
-    state.rows = Array.isArray(raw) ? raw.filter(valid) : [];
+    if (useOrders()) {
+      KT.orders.load();
+      state.rows = KT.orders.asHoldings().filter(valid);
+    } else {
+      var raw = core.store.get(KEY, []);
+      state.rows = Array.isArray(raw) ? raw.filter(valid) : [];
+    }
     var al = core.store.get(ALERT_KEY, []);
     var cutoff = Date.now() / 1000 - C.holdings.alertTtlHours * 3600;
     state.alerts = (Array.isArray(al) ? al : []).filter(function (a) { return a.ts > cutoff; });
     return state.rows;
   }
   function persist() {
-    core.store.set(KEY, state.rows);
+    if (!useOrders()) core.store.set(KEY, state.rows);
     core.store.set(ALERT_KEY, state.alerts.slice(0, C.holdings.maxAlerts));
+  }
+  function reloadFromOrders() {
+    if (useOrders()) state.rows = KT.orders.asHoldings().filter(valid);
   }
   function valid(r) {
     return r && typeof r.symbol === 'string' && r.symbol.length &&
@@ -43,6 +60,16 @@
   function rows() { return state.rows.slice(); }
 
   function add(entry) {
+    if (useOrders()) {
+      // The terminal's quick form records an order; a negative quantity is a
+      // sale, which is what the old averaging maths treated it as.
+      var q = Number(entry.qty);
+      if (!isFinite(q) || q === 0) throw new Error('Quantity must be a non-zero number.');
+      KT.orders.add({ symbol: entry.symbol, exchange: entry.exchange, side: q > 0 ? 'BUY' : 'SELL',
+                      qty: Math.abs(q), price: entry.avgPrice, date: entry.date, note: entry.note });
+      reloadFromOrders();
+      return state.rows.filter(function (r) { return r.symbol === KT.orders.cleanSymbol(entry.symbol); })[0] || null;
+    }
     var sym = String(entry.symbol || '').trim().toUpperCase().replace(/[^A-Z0-9&.\-]/g, '');
     if (!sym) throw new Error('A symbol is required.');
     var qty = Number(entry.qty), price = Number(entry.avgPrice);
@@ -79,10 +106,20 @@
   }
 
   function remove(id) {
+    if (useOrders()) {
+      var hit = state.rows.filter(function (r) { return r.id === id; })[0];
+      if (hit) KT.orders.removeSymbol(hit.symbol, hit.exchange);
+      reloadFromOrders();
+      persist();
+      return;
+    }
     state.rows = state.rows.filter(function (r) { return r.id !== id; });
     persist();
   }
-  function clear() { state.rows = []; state.alerts = []; persist(); }
+  function clear() {
+    if (useOrders()) KT.orders.clear();
+    state.rows = []; state.alerts = []; persist();
+  }
 
   /* ------------------------------------------------------------ universe
      symbol -> { name, aliases } so a headline that says "Reliance Industries"
@@ -90,6 +127,7 @@
   function setUniverse(u) {
     if (!u) return;
     state.universe = {};
+    state.aliasOwners = {};
     var list = u.symbols || u;
     if (Array.isArray(list)) {
       list.forEach(function (row) {
@@ -111,6 +149,21 @@
       });
     }
   }
+  /* How many listed companies answer to each alias. "Bajaj" is four of
+     them and "Tata" a dozen, so a headline about Bajaj Holdings was raising
+     an alert on a Bajaj Auto holding. A name more than one company shares is
+     a group, not a stock, and is not matched on its own. */
+  function countOwners() {
+    var owners = {};
+    Object.keys(state.universe || {}).forEach(function (k) {
+      (state.universe[k].aliases || []).forEach(function (a) {
+        (owners[a] = owners[a] || {})[k] = 1;
+      });
+    });
+    state.aliasOwners = {};
+    Object.keys(owners).forEach(function (a) { state.aliasOwners[a] = Object.keys(owners[a]).length; });
+  }
+
   function nameFor(sym) {
     return state.universe && state.universe[sym] ? state.universe[sym].name : null;
   }
@@ -229,9 +282,12 @@
       if (head.length >= 5 && head !== name) toks.push({ text: head, caseSensitive: false, weight: 0.9 });
     }
     var uni = state.universe && state.universe[sym];
-    if (uni) (uni.aliases || []).forEach(function (a) {
-      if (a.length >= 4) toks.push({ text: a, caseSensitive: false, weight: 0.9 });
-    });
+    if (uni) {
+      if (!state.aliasOwners || !Object.keys(state.aliasOwners).length) countOwners();
+      (uni.aliases || []).forEach(function (a) {
+        if (a.length >= 4 && (state.aliasOwners[a] || 1) === 1) toks.push({ text: a, caseSensitive: false, weight: 0.9 });
+      });
+    }
     return toks;
   }
 
@@ -352,6 +408,11 @@
     return JSON.stringify({ kind: 'kt-holdings', version: 1, exported: new Date().toISOString(), rows: state.rows }, null, 2);
   }
   function importJson(text) {
+    if (useOrders()) {
+      var n = KT.orders.importJson(text);
+      reloadFromOrders();
+      return n;
+    }
     var parsed = JSON.parse(text);
     var incoming = Array.isArray(parsed) ? parsed : parsed.rows;
     if (!Array.isArray(incoming)) throw new Error('That file has no holdings in it.');
@@ -369,7 +430,8 @@
     setQuotes: setQuotes, refreshMissing: refreshMissing, quotes: function () { return state.quotes; },
     valuation: valuation, scan: scan, alerts: alerts, dismiss: dismiss, dismissAll: dismissAll,
     relatedNews: relatedNews, matchNews: matchNews,
-    exportJson: exportJson, importJson: importJson,
+    exportJson: function () { return useOrders() ? KT.orders.exportJson() : exportJson(); },
+    importJson: importJson, reload: reloadFromOrders,
     count: function () { return state.rows.length; },
   };
 })(window.KT);

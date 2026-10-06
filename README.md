@@ -68,6 +68,130 @@ What it does
    stochastic and CCI, and the support and resistance price has actually
    respected, scored by how many times it held.
 
+What was added on 6 Oct 2026
+----------------------------
+
+Built for one question an investor will ask: *did the line the model drew
+actually land near the market?* Everything below either answers it or feeds
+it, and every number on the new screens is read live or computed from what was
+read - nothing is typed in.
+
+### The remembered line (prediction trail)
+
+The forecast is redrawn every second, so a line that only ever points forward
+can never be checked. The trail keeps it: the point drawn at 11:00 on a
+15-minute lead is what the forecast made at 10:45 said 11:00 would be, left on
+the chart after 11:00 arrives. It is a thin line on top of the candles, so
+"close to the market" is something you can see, and a strip of bars under the
+chart shows each miss - above the market, below it, or inside the range the
+forecast carried with it.
+
+- **Violet** stretches are *replayed*: the forecast's technical core (momentum,
+  levels, structure and the day's shape) re-run bar by bar on history, each
+  point computed only from the bars before it. `selftest.js` proves it - a
+  point is identical whether or not the future exists in the series.
+- **Amber** stretches are *live*: written by this browser the moment the
+  forecast was made, with every lane voting (news, global cues, options, the
+  model's vote), first write wins, never rewritten. That is the real record,
+  and it only grows while the terminal is open.
+- The lead is a dropdown (5 min to 3 hours intraday, days to months on the
+  longer views). The panel under it gives the average miss in points and
+  percent, the above / below / inside split, the worst miss, and the comparison
+  that matters: the same average miss for a flat "no change" line.
+
+Measured on the 6 Oct 2026 snapshot, honestly: 15 minutes ahead the replayed
+line misses by about 22 points on average (0.10%), an hour ahead about 55
+(0.24%), and the outcome lands inside the carried 68% range 60-75% of the time.
+**Against a flat line the skill ratio is about 1.0** - the replayable core is
+as good as assuming no change, not better. Fifteen minutes ahead, any line that
+starts at the current price looks close; the panel prints the comparison so
+nobody has to take "close" on trust. The amber record, with the news and
+global lanes in it, is what can beat that, and it is scored the same way.
+
+**Replay** plays a past session back bar by bar: the line runs ahead, the
+market arrives to meet it, and the score builds as it goes. It works after
+hours and at weekends, which is when a demo usually happens.
+
+### A bigger chart
+
+More of the screen by default: the headline stream folds to its header row
+(one click brings it back, and the choice is remembered), the market-watch
+column is narrower, and **Focus** (the expand button, or `F`) hands the chart
+the whole window. The details moved onto the chart as a readout in its corner
+that follows the crosshair: the bar's OHLC and change, the trail point for that
+bar and how far it missed, and on the projected side what the model says for
+that bar with its likely range.
+
+### Live lanes the browser reads itself
+
+Before this, everything except the price, the candles and the fast news sweep
+was as old as the last workflow run - about one run every 2.5 hours (see
+`CLAUDE.md`). These are read by the page directly, each checked from the
+deployed origin on 6 Oct 2026 before any code was written against it:
+
+| Lane | Source | What it changes |
+|---|---|---|
+| Overnight cues, live | TradingView screener (keyless, CORS-open) | the global lane and the opening call read current futures instead of the workflow copy |
+| GIFT Nifty | TradingView `NSEIX:NIFTY1!` | shown beside the opening call; deliberately **not** a model input (futures premium unmeasured) |
+| NIFTY 50 members | TradingView, 15 min delayed | price, change, technical rating and the analyst consensus target per stock |
+| FII / DII cash | NSE `fiidiiTradeReact` via r.jina.ai | the same evening rather than next morning |
+| Who is long index futures | NSE participant-wise open interest (daily CSV) | a new flow-lane input: the change in FII long share |
+| Bulk and block deals | NSE large-deal snapshot | Data hub |
+| Takeover-code and insider filings | NSE SAST reg. 29 and PIT | Data hub, and the Profile feed for anything you hold |
+| Open-interest spurts, results calendar | NSE | Data hub |
+
+`scripts/fetch_global.py` was also publishing **five-session** changes as if
+they were overnight ones (Yahoo's `chartPreviousClose` on a 5-day range - the
+same bug `fetch_market.py` fixed on 18 Sep). Nikkei read +5.89% against a real
++1.05%, and the opening call built on it said +1.37% where live cues gave
++0.47%. It reads the previous session's close from the daily bars now.
+
+### Profile - your orders, tracked (`profile.html`)
+
+Enter every buy and sell - several orders per stock, delivery or intraday,
+with charges. The page matches lots first-in first-out and shows open positions
+at the live price, realised and unrealised P&L, today's change, XIRR, short-
+and long-term splits (Indian 12-month rule), allocation by stock and sector,
+a feed of the headlines, filings, bulk deals, results dates and broker calls
+that touch what you hold, and a target and a stop per stock that raise an alert
+when crossed. Export and import as JSON or CSV. Stored in this browser only -
+nothing is uploaded, and the terminal's holdings alerts read the same book.
+
+### Data hub (`data.html`)
+
+Every source the terminal reads, checked live when the page opens: answered or
+not, how long it took, how many rows, how old. Then the data itself - smart
+money (bulk/block deals, SAST, PIT), street calls and consensus, derivatives
+positioning, the results calendar, global cues side by side with the workflow
+copy - and a catalogue of what can be added next, ordered by value to the
+model.
+
+### Tips, the legal kind
+
+People do share "tips", and some claim inside information. Trading on
+unpublished price-sensitive information is insider trading under SEBI's PIT
+Regulations, 2015, so the page goes nowhere near it. What it does collect is
+the legitimate version: **published** broker and analyst calls ("Nomura
+retains Buy on ..., target Rs 1,110"), pulled out of the headlines with who
+made the call, which way and to what target, and **disclosed** insider and
+promoter trades from NSE's filings. Each call is tracked from the price when
+the page first saw it, so a call is judged by what the stock did next, not by
+how confident it sounded.
+
+### Running it locally
+
+Double-click `serve-local.bat` (needs Python 3). It serves this folder on
+`http://localhost:8080` and opens the terminal. The live sources (TradingView,
+NSE through r.jina.ai, Moneycontrol's price feed, the live-data branch) were
+checked to answer a page on an unrelated origin, so local and Pages behave the
+same.
+Browser storage is per address: orders, the live trail and the OpenRouter key
+entered on `localhost:8080` stay there, separate from the Pages site.
+
+For a demo: open the terminal before 09:15 and leave it running - the amber
+live trail only exists for the minutes the page was open. After hours, use
+**Replay**.
+
 The forecast
 ------------
 
@@ -724,7 +848,13 @@ Layout
 
 ```
 index.html                     the terminal
+profile.html                   your orders, positions, P&L and the news on what you hold
+data.html                      the data hub: every source checked live, explorer, catalogue
+ipo.html                       the IPO product
+serve-local.bat                Windows: serve this folder on localhost:8080 and open it
 assets/style.css               Kite-style theme, light and dark
+assets/profile.css             the profile page and the data hub's shared layout
+assets/hub.css                 the data hub's source cards and explorer
 assets/vendor/                 lightweight-charts, vendored so a CDN outage cannot blank the chart
 
 assets/js/config.js            every tunable: symbols, timeframes, feeds, weights, holdings
@@ -736,14 +866,19 @@ assets/js/levels.js            clustered support and resistance, pivots, Fibonac
 assets/js/patterns.js          candlestick patterns and their measured hit rates
 assets/js/structures.js        chart patterns with drawable geometry, targets and outcomes
 assets/js/journal.js           your trades, browser only
-assets/js/portfolio.js         your holdings, news matching and alerts, browser only
+assets/js/orders.js            the order book: FIFO lots, P&L, XIRR, import/export, browser only
+assets/js/portfolio.js         your holdings, news matching and alerts, browser only (reads orders.js)
+assets/js/streetcalls.js       published broker and analyst calls parsed out of headlines, tracked
 assets/js/data.js              fetch lanes, RSS parsing, news store, OpenRouter
 assets/js/vol.js               GARCH/GJR variance, Parkinson RV, conformal z, Kupiec, CRPS, ACI
 assets/js/forecast.js          the model: eight lanes, clock-aware path, bands, calibration
 assets/js/ledger.js            records every forecast, settles it, explains why it did or did not
+assets/js/trail.js             the remembered line: causal replay, live record, scoring
 assets/js/engine.js            reason points (the forecast moved to forecast.js)
 assets/js/chart.js             candles, projection, bands, pattern geometry, overlays, markers
 assets/js/app.js               boot, polling loops, all rendering
+assets/js/profile-app.js       the profile page
+assets/js/hub-app.js           the data hub
 assets/local-config.example.js template for your local key
 
 config/feeds.yml               hand-editable feed list, merged into the index
@@ -760,7 +895,7 @@ scripts/build_universe.py      NSE ticker to company name and aliases
 scripts/fetch_options.py       NIFTY option chain: PCR, max pain, OI walls, IV surface
 scripts/fetch_events.py        NSE trading holidays + scheduled global releases
 scripts/fetch_constituents.py  NIFTY 50 / BANK / NEXT 50 membership, for news relevance
-scripts/selftest.js            99 invariants, no dependencies: node scripts/selftest.js
+scripts/selftest.js            272 checks, no dependencies: node scripts/selftest.js
 scripts/fetch_filings.py       BSE and NSE corporate announcements
 scripts/serve.py               dev server: static files plus the fetch loops
 scripts/publish_live.sh        force-pushes data/ to the live-data branch
@@ -806,7 +941,7 @@ Running locally
 ---------------
 
 ```bash
-node scripts/selftest.js          # 57 invariants, no dependencies, a few seconds
+node scripts/selftest.js          # 272 checks, no dependencies, under a minute
 
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python scripts/feeds_build.py    # writes data/feeds_index.json

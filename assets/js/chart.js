@@ -35,14 +35,22 @@
 
   var chart = null, candleSeries = null;
   var fcSeries = null, lockSeries = null, actualSeries = null;
+  /* The prediction trail (see trail.js) and the miss it made at every bar.
+     trailSeries is the line the model drew `lead` bars earlier, kept after
+     its time has come; errSeries is actual minus that line, on its own scale
+     along the bottom of the chart, so "how close" is a bar height rather than
+     something a reader has to estimate between two thin lines. */
+  var trailSeries = null, errSeries = null;
   var pool = { structure: [], overlay: [] };     // reusable line series
   var priceLines = [];                            // horizontal lines on the candle series
   var state = {
     candles: [], forecast: null, reasons: [], patternMarkers: [],
     structures: [], levels: null, indicators: null,
-    overlays: { ema: true, bands: false, supertrend: false, vwap: false, levels: true, patterns: true, why: true },
+    overlays: { ema: true, bands: false, supertrend: false, vwap: false, levels: true, patterns: true, why: true,
+                trail: true, errors: true },
     tf: C.defaultTimeframe, symbol: C.defaultSymbol,
     lastCandleTime: null, pinned: null, total: 0, locked: null,
+    trail: null, trailByT: {}, candleByT: {}, replay: null,
   };
   var els = {};
 
@@ -89,6 +97,9 @@
          reading the colours too. */
       locked: css('--fc-locked', '#db2777'),
       actual: css('--actual-line', '#111827'),
+      trail: css('--trail', '#6d28d9'),
+      trailLive: css('--trail-live', '#d97706'),
+      errOn: css('--err-on', '#94a3b8'),
       now: css('--now-line', '#94a3b8'),
       bull: css('--pattern-bull', '#0ea5e9'),
       bear: css('--pattern-bear', '#d97706'),
@@ -116,13 +127,43 @@
     return c;
   }
 
+  /* The candles give up the bottom fifth of the plot when the miss ribbon is
+     on, so the two never overlap: a histogram drawn through the candles would
+     be read as volume. */
+  function mainMargins() {
+    return state.overlays.errors && state.trail && state.trail.length
+      ? { top: 0.07, bottom: 0.24 } : { top: 0.08, bottom: 0.12 };
+  }
+
+  /* The time axis was printing UTC. The crosshair label goes through
+     core.fmt and said IST, while the tick marks under it used the library's
+     default: on the 6 Oct 2026 replay of the 5 Oct session the axis read
+     05:00 ... 09:00 for a market that trades 09:15-15:30 in Mumbai. The
+     library still chooses WHERE ticks go on the UTC calendar, which is safe
+     here - a session runs 03:45-10:00 UTC and never crosses UTC midnight, so
+     the day mark still lands on each session's first bar - and only the
+     label is converted. Hourly ticks therefore read 10:30, 11:30 ...: the
+     UTC hour is half past in IST, and that is the true time of those bars. */
+  var MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function two(n) { return n < 10 ? '0' + n : String(n); }
+  function tickMark(t, type) {
+    var sec = typeof t === 'number' ? t : Date.UTC(t.year, t.month - 1, t.day) / 1000;
+    var d = core.fmt.ist(sec);
+    if (type === 0) return String(d.getFullYear());
+    if (type === 1) return MON[d.getMonth()];
+    if (type === 2) return String(d.getDate());
+    if (type === 4) return two(d.getHours()) + ':' + two(d.getMinutes()) + ':' + two(d.getSeconds());
+    return two(d.getHours()) + ':' + two(d.getMinutes());
+  }
+
   function chartOptions() {
     var p = palette();
     return {
       layout: { background: { type: 'solid', color: p.bg }, textColor: p.ink, fontFamily: "Inter, system-ui, sans-serif", fontSize: 11 },
       grid: { vertLines: { color: p.grid }, horzLines: { color: p.grid } },
-      rightPriceScale: { borderColor: p.axis, scaleMargins: { top: 0.12, bottom: 0.14 }, entireTextOnly: true },
-      timeScale: { borderColor: p.axis, timeVisible: true, secondsVisible: false, rightOffset: 2, fixLeftEdge: false, lockVisibleTimeRangeOnResize: true },
+      rightPriceScale: { borderColor: p.axis, scaleMargins: mainMargins(), entireTextOnly: true },
+      timeScale: { borderColor: p.axis, timeVisible: true, secondsVisible: false, rightOffset: 2, fixLeftEdge: false, lockVisibleTimeRangeOnResize: true,
+                   tickMarkFormatter: tickMark },
       crosshair: {
         mode: LightweightCharts.CrosshairMode.Normal,
         vertLine: { color: p.now, width: 1, style: LightweightCharts.LineStyle.Dashed, labelBackgroundColor: p.forecast },
@@ -145,6 +186,8 @@
     els.card = document.getElementById('reason-card');
     els.fcard = document.getElementById('forecast-card');
     els.empty = document.getElementById('chart-empty');
+    els.hud = document.getElementById('chart-hud');
+    els.replayBar = document.getElementById('replay-bar');
 
     if (chart) { chart.remove(); chart = null; }
     chart = LightweightCharts.createChart(container, chartOptions());
@@ -185,12 +228,31 @@
       title: 'Forecast',
     });
 
+    errSeries = chart.addHistogramSeries({
+      priceScaleId: 'trailerr', priceLineVisible: false, lastValueVisible: false,
+      base: 0, color: p.errOn,
+    });
+    chart.priceScale('trailerr').applyOptions({ scaleMargins: { top: 0.83, bottom: 0.01 }, visible: false });
+
     candleSeries = chart.addCandlestickSeries({
       upColor: p.up, downColor: p.down,
       borderUpColor: p.up, borderDownColor: p.down,
       wickUpColor: p.up, wickDownColor: p.down,
       priceLineVisible: true, priceLineWidth: 1, priceLineStyle: LightweightCharts.LineStyle.Dotted,
       lastValueVisible: true,
+    });
+
+    /* The one exception to "guides under the candles". The trail is the line
+       the whole comparison is about, and a one-pixel line under five-minute
+       bodies disappears exactly where price and prediction meet - which is
+       the place it most needs to be seen. One pixel, on top, so the candles
+       still carry the picture. Per-point colour separates the replayed
+       stretch (violet) from what this browser recorded live (amber), because
+       a backtest and a forward record are different evidence. */
+    trailSeries = chart.addLineSeries({
+      color: soften(p.trail, 0.95), lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      title: '',
     });
 
     chart.subscribeCrosshairMove(onCrosshair);
@@ -216,22 +278,28 @@
     fcSeries.applyOptions({ color: soften(p.forecast, 0.6) });
     if (lockSeries) lockSeries.applyOptions({ color: soften(p.locked, 0.55) });
     if (actualSeries) actualSeries.applyOptions({ color: soften(p.actual, 0.45) });
-    drawStructures(); drawOverlays(); drawLevels();
+    drawStructures(); drawOverlays(); drawLevels(); drawTrail();
     applyMarkers();
   }
 
   /* ------------------------------------------------------------------ data */
   function setData(candles, forecast, reasons, tfKey, symbol) {
     if (!chart) return;
+    // A replay owns the chart until it is stopped; the live repaint must not
+    // overwrite the frame it is showing.
+    if (state.replay) return;
     // A card left over from the previous series would describe bars that no
     // longer exist on this one.
     hideForecastCard();
+    if (tfKey !== state.tf || (symbol && symbol !== state.symbol)) state.trail = null;
     state.tf = tfKey;
     if (symbol) state.symbol = symbol;
     state.candles = candles || [];
     state.forecast = forecast || null;
     state.reasons = reasons || [];
     state.lastCandleTime = state.candles.length ? state.candles[state.candles.length - 1].time : null;
+    state.candleByT = {};
+    for (var ci = 0; ci < state.candles.length; ci++) state.candleByT[state.candles[ci].time] = ci;
 
     candleSeries.setData(state.candles);
 
@@ -252,8 +320,10 @@
     drawStructures();
     drawOverlays();
     drawLevels();
+    drawTrail();
     applyMarkers();
     frameView();
+    renderHud(null);
     if (els.empty) els.empty.classList.add('hidden');
     if (els.zone) els.zone.hidden = !(forecast && forecast.path && forecast.path.length);
     if (els.now) els.now.hidden = !state.lastCandleTime;
@@ -311,8 +381,241 @@
     actualSeries.update({ time: slot, value: price });
   }
 
+  /* ===================================================== prediction trail
+
+     `points` is trail.merge() output: one entry per bar, live where this
+     browser recorded one and replayed elsewhere. Only points on a bar that
+     exists are drawn - see indexAtTime() in trail.js for why a point at a
+     time no candle carries would push a gap into the candles. */
+  function setTrail(points, meta) {
+    state.trail = points || null;
+    state.trailMeta = meta || null;
+    state.trailByT = {};
+    (points || []).forEach(function (p) { state.trailByT[p.t] = p; });
+    if (!state.replay) drawTrail();
+    renderHud(null);
+  }
+
+  function trailColour(p, pal) {
+    return p.src === 'live' ? soften(pal.trailLive, 1) : soften(pal.trail, 0.95);
+  }
+  function errColour(p, pal) {
+    if (p.side === 'above') return soften(pal.up, 0.75);
+    if (p.side === 'below') return soften(pal.down, 0.75);
+    return soften(pal.errOn, 0.6);
+  }
+
+  function trailLineData(points, upTo) {
+    var pal = palette(), line = [];
+    for (var i = 0; i < points.length; i++) {
+      var p = points[i];
+      if (upTo != null && p.m > upTo) continue;
+      if (!(p.t in state.candleByT) && !state.replay) continue;
+      line.push({ time: p.t, value: p.p, color: trailColour(p, pal) });
+    }
+    return line;
+  }
+  function trailErrData(points, upTo) {
+    var pal = palette(), bars = [];
+    for (var i = 0; i < points.length; i++) {
+      var p = points[i];
+      if (p.a == null || p.e == null) continue;
+      if (upTo != null && p.t > upTo) continue;
+      if (!(p.t in state.candleByT)) continue;
+      bars.push({ time: p.t, value: p.e, color: errColour(p, pal) });
+    }
+    return bars;
+  }
+
+  function drawTrail() {
+    if (!trailSeries || !errSeries) return;
+    var pts = state.trail || [];
+    var showLine = state.overlays.trail && pts.length;
+    var showErr = state.overlays.errors && pts.length;
+    try { trailSeries.setData(showLine ? trailLineData(pts) : []); } catch (e) { trailSeries.setData([]); }
+    try { errSeries.setData(showErr ? trailErrData(pts) : []); } catch (e) { errSeries.setData([]); }
+    try { chart.priceScale('right').applyOptions({ scaleMargins: mainMargins() }); } catch (e) {}
+  }
+
+  /* ============================================================ the HUD
+     One readout in the corner of the plot that answers, for whatever bar is
+     under the pointer: what traded, what the line said it would be, and by
+     how much it missed. With the pointer off the chart it shows the latest
+     bar, so the panel is never empty. */
+  function hudBarLabel() {
+    var tf = C.timeframes[state.tf];
+    if (!tf) return '';
+    var s = tf.barSec;
+    if (s < 3600) return Math.round(s / 60) + '-min bars';
+    if (s < 86400) return Math.round(s / 3600) + '-hour bars';
+    if (s < 604800) return 'daily bars';
+    if (s < 2419200) return 'weekly bars';
+    return 'monthly bars';
+  }
+
+  function renderHud(time) {
+    if (!els.hud) return;
+    var c = state.candles;
+    if (!c.length) { els.hud.innerHTML = ''; return; }
+    var tf = C.timeframes[state.tf] || { barSec: 300 };
+    var f = state.forecast;
+    var parts = [];
+    var sym = C.symbols[state.symbol] ? C.symbols[state.symbol].label : state.symbol;
+
+    if (time != null && state.lastCandleTime != null && time > state.lastCandleTime && f && f.path) {
+      // The projected half: what the line claims for this bar.
+      var best = null;
+      for (var q = 0; q < f.path.length; q++) {
+        if (!best || Math.abs(f.path[q].time - time) < Math.abs(best.time - time)) best = f.path[q];
+      }
+      var idx = best ? f.path.indexOf(best) : -1;
+      parts.push('<div class="hud-l1"><b>' + esc(sym) + '</b><span class="hud-dim">' + esc(hudBarLabel()) +
+                 ' · forecast for ' + esc(core.fmt.stamp(best ? best.time : time, tf.barSec)) + '</span></div>');
+      if (best) {
+        var lo = f.lower && f.lower[idx], hi = f.upper && f.upper[idx];
+        parts.push('<div class="hud-l2"><span class="hud-k">Model says</span> <b class="num">' + core.fmt.price(best.value) + '</b>' +
+                   (lo && hi ? ' <span class="hud-dim">likely ' + core.fmt.price(lo.value) + ' – ' + core.fmt.price(hi.value) + '</span>' : '') +
+                   ' <span class="num ' + core.fmt.cls(best.value - f.lastClose) + '">' +
+                   core.fmt.pct((best.value - f.lastClose) / f.lastClose * 100) + '</span></div>');
+      }
+      els.hud.innerHTML = parts.join('');
+      return;
+    }
+
+    var i = time != null && (time in state.candleByT) ? state.candleByT[time] : c.length - 1;
+    var b = c[i], prev = i > 0 ? c[i - 1] : null;
+    var chg = prev ? b.close - prev.close : null;
+    parts.push('<div class="hud-l1"><b>' + esc(sym) + '</b><span class="hud-dim">' + esc(hudBarLabel()) + ' · ' +
+               esc(core.fmt.stamp(b.time, tf.barSec < 86400 ? 60 : 86400)) + '</span>' +
+               '<span class="hud-ohlc num">O ' + core.fmt.price(b.open) + ' H ' + core.fmt.price(b.high) +
+               ' L ' + core.fmt.price(b.low) + ' C <b>' + core.fmt.price(b.close) + '</b></span>' +
+               (chg != null ? '<span class="num ' + core.fmt.cls(chg) + '">' + core.fmt.signed(chg) +
+                              ' (' + core.fmt.pct(chg / prev.close * 100) + ')</span>' : '') + '</div>');
+
+    var tp = state.trailByT[b.time];
+    var meta = state.trailMeta || {};
+    if (tp && state.overlays.trail) {
+      var made = core.fmt.stamp(tp.m, tf.barSec < 86400 ? 60 : 86400);
+      var head = '<span class="hud-k">' + (tp.src === 'live' ? 'Recorded live' : 'Replayed') + ', drawn ' +
+                 esc(meta.leadLabel || '') + ' earlier (' + esc(made) + ')</span> <b class="num">' + core.fmt.price(tp.p) + '</b>';
+      var tail;
+      if (tp.a == null) {
+        tail = ' <span class="hud-dim">bar still forming — scored when it closes</span>';
+      } else {
+        var word = tp.side === 'on' ? 'inside its range' : (tp.side === 'above' ? 'price came in ABOVE the line' : 'price came in BELOW the line');
+        tail = ' <span class="hud-dim">actual</span> <b class="num">' + core.fmt.price(tp.a) + '</b> <span class="num ' +
+               (tp.side === 'on' ? 'flat' : (tp.e > 0 ? 'up' : 'down')) + '">' + core.fmt.signed(tp.e) + ' pts (' +
+               core.fmt.pct(tp.ep) + ')</span> <span class="hud-tag ' + tp.side + '">' + word + '</span>';
+      }
+      parts.push('<div class="hud-l2 trail">' + head + tail + '</div>');
+    } else if (meta.summary && state.overlays.trail) {
+      parts.push('<div class="hud-l2 trail"><span class="hud-k">Trail</span> ' + esc(meta.summary) + '</div>');
+    }
+    els.hud.innerHTML = parts.join('');
+  }
+  function esc(x) {
+    return String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  /* ================================================================ replay
+
+     A past session played back bar by bar: the trail line runs `lead` bars
+     ahead of the price - drawn from what the model knew at that moment - and
+     the candles arrive to meet it. Nothing here is recomputed; every number
+     comes from trail.replay(), which only ever saw candles up to the bar
+     each prediction was made on. So what the animation shows is what the
+     model would have shown a person watching that session live, minus the
+     lanes that cannot be replayed.
+
+     While it runs the live repaint is held off (setData returns early) and
+     the overlays are blanked, because EMAs and pattern lines computed on the
+     whole series would be drawing the future onto a frame that is meant to
+     be the past. */
+  function replayStart(cfg) {
+    if (!chart || !cfg || !cfg.candles || !cfg.candles.length) return false;
+    replayStop(true);
+    var R = {
+      candles: cfg.candles, points: cfg.points || [], from: cfg.from, to: cfg.to,
+      at: cfg.from, speedMs: cfg.speedMs || 120, timer: null, onFrame: cfg.onFrame, onEnd: cfg.onEnd,
+      lead: cfg.lead || 1,
+    };
+    state.replay = R;
+    hideCard(); hideForecastCard();
+    beginPool('structure'); endPool('structure');
+    beginPool('overlay'); endPool('overlay');
+    priceLines.forEach(function (pl) { try { candleSeries.removePriceLine(pl); } catch (e) {} });
+    priceLines = [];
+    try { candleSeries.setMarkers([]); } catch (e) {}
+    [fcSeries, lockSeries, actualSeries].forEach(function (x) { if (x) x.setData([]); });
+    if (els.zone) els.zone.hidden = true;
+    if (els.now) els.now.hidden = true;
+
+    // Every bar of the replayed window exists in the full series, so the
+    // candle map is the full one and future trail points land on real bars.
+    state.candleByT = {};
+    for (var i = 0; i < R.candles.length; i++) state.candleByT[R.candles[i].time] = i;
+    candleSeries.setData(R.candles.slice(0, R.from + 1));
+    var upTo = R.candles[R.from].time;
+    trailSeries.setData(trailLineData(R.points, upTo));
+    errSeries.setData(trailErrData(R.points, upTo));
+    chart.priceScale('right').applyOptions({ scaleMargins: { top: 0.07, bottom: 0.24 } });
+    frameReplay();
+    R.timer = setInterval(replayStep, R.speedMs);
+    return true;
+  }
+
+  function frameReplay() {
+    var R = state.replay;
+    if (!R) return;
+    var span = Math.max(60, Math.min(400, (R.to - R.from) + R.lead + 10));
+    var right = R.at + R.lead + 3;
+    try { chart.timeScale().setVisibleLogicalRange({ from: right - span, to: right }); } catch (e) {}
+  }
+
+  function replayStep() {
+    var R = state.replay;
+    if (!R) return;
+    if (R.at >= R.to) { replayStop(false); return; }
+    R.at++;
+    var bar = R.candles[R.at];
+    candleSeries.update(bar);
+    var pal = palette();
+    // The prediction made on this bar, landing `lead` bars ahead.
+    for (var i = 0; i < R.points.length; i++) {
+      var p = R.points[i];
+      if (p.m === bar.time) {
+        try { trailSeries.update({ time: p.t, value: p.p, color: trailColour(p, pal) }); } catch (e) {}
+      }
+      if (p.t === bar.time && p.a != null) {
+        try { errSeries.update({ time: p.t, value: p.e, color: errColour(p, pal) }); } catch (e) {}
+      }
+    }
+    if ((R.at - R.from) % 4 === 0) frameReplay();
+    renderHud(bar.time);
+    if (R.onFrame) R.onFrame(R.at, R);
+  }
+
+  function replaySpeed(ms) {
+    var R = state.replay;
+    if (!R) return;
+    R.speedMs = ms;
+    clearInterval(R.timer);
+    R.timer = setInterval(replayStep, ms);
+  }
+
+  /* Leaving a replay hands the chart back to the live state exactly as it
+     was: the caller repaints through setData, which rebuilds every layer. */
+  function replayStop(silent) {
+    var R = state.replay;
+    if (!R) return;
+    clearInterval(R.timer);
+    state.replay = null;
+    if (!silent && R.onEnd) R.onEnd(R);
+  }
+
   /* Live tick: rewrite the forming candle without touching the rest. */
   function tick(price, whenSec) {
+    if (state.replay) return;
     if (!chart || !state.candles.length || !price) return;
     var tf = C.timeframes[state.tf];
     var now = whenSec || Math.floor(Date.now() / 1000);
@@ -322,6 +625,7 @@
     if (slot > last.time) {
       var fresh = { time: slot, open: price, high: price, low: price, close: price };
       state.candles.push(fresh);
+      state.candleByT[slot] = state.candles.length - 1;
       candleSeries.update(fresh);
       state.lastCandleTime = slot;
     } else {
@@ -332,6 +636,7 @@
     }
     extendActual(price, slot);
     positionOverlays();
+    if (!state.hovering) renderHud(null);
   }
 
   /* ================================================== pattern geometry
@@ -398,7 +703,9 @@
       if (o.ema) {
         line(KT.ind.ema(closes, 20), { color: '#3b82f6', lineWidth: 1, title: '' });
         line(KT.ind.ema(closes, 50), { color: '#f59e0b', lineWidth: 1, title: '' });
-        if (c.length > 220) line(KT.ind.ema(closes, 200), { color: '#a855f7', lineWidth: 1, title: '' });
+        // Slate rather than the purple it used to be: purple is the forecast
+        // family now (the projection and the remembered trail).
+        if (c.length > 220) line(KT.ind.ema(closes, 200), { color: '#64748b', lineWidth: 1, title: '' });
       }
       if (o.bands) {
         var bb = KT.ind.bollinger(c, 20, 2);
@@ -598,8 +905,13 @@
      "what happened" to give, so the card explains why the line sits where it
      does at that minute instead. */
   function onCrosshair(param) {
+    // A replay drives the readout frame by frame; the pointer must not fight it.
+    if (state.replay) return;
+    var over = !!(param && param.point && param.time);
+    state.hovering = over;
+    renderHud(over ? param.time : null);
     if (state.pinned) return;
-    if (!param || !param.point || !param.time) { hideCard(); hideForecastCard(); return; }
+    if (!over) { hideCard(); hideForecastCard(); return; }
 
     if (state.lastCandleTime && param.time > state.lastCandleTime) {
       hideCard();
@@ -747,13 +1059,25 @@
     init: init, setData: setData, tick: tick, retheme: retheme,
     frameView: frameView, showEmpty: showEmpty, refreshMarkers: applyMarkers,
     setEvents: setEvents,
+    setTrail: setTrail, renderHud: renderHud,
+    replayStart: replayStart, replayStop: replayStop, replaySpeed: replaySpeed,
+    isReplaying: function () { return !!state.replay; },
+    resize: function () {
+      var box = document.getElementById('chart');
+      if (chart && box && box.clientWidth) {
+        chart.applyOptions({ width: box.clientWidth, height: box.clientHeight });
+        positionOverlays();
+      }
+    },
     setPatterns: function (m) { state.patternMarkers = m || []; applyMarkers(); },
     setStructures: function (list) { state.structures = list || []; drawStructures(); drawLevels(); applyMarkers(); },
     setLevels: function (lv) { state.levels = lv || null; drawLevels(); },
     setOverlay: function (name, on) {
       if (!(name in state.overlays)) return;
       state.overlays[name] = !!on;
-      drawOverlays(); drawStructures(); drawLevels();
+      if (state.replay) return;
+      drawOverlays(); drawStructures(); drawLevels(); drawTrail();
+      renderHud(null);
     },
     overlays: function () { return state.overlays; },
     getState: function () { return state; },

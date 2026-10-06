@@ -41,11 +41,19 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 it passed a file whose test block referenced an out-of-scope variable, because
 that is a runtime error, not a syntax one.) No dependencies, no build step - it
 loads the real browser modules into a vm context whose global *is* `window` and
-asserts 57 invariants, each of which has been a real bug here: band/outcome
-alignment, lane liveness, effective sample size, the attribution reconstructing
-the drift, the holiday clock, and the variance model degrading rather than
-returning NaN. It runs in a few seconds and catches most regressions before the
-browser is involved.
+asserts 272 checks (6 Oct 2026), each of which has been a real bug here:
+band/outcome alignment, lane liveness, effective sample size, the attribution
+reconstructing the drift, the holiday clock, the variance model degrading
+rather than returning NaN, the trail's no-look-ahead rule and the order book's
+FIFO arithmetic. It runs in under a minute and catches most regressions before
+the browser is involved.
+
+Two of the checks are timings (a warm build inside 60 ms, a cold one inside
+1500 ms). On a 2-vCPU 2.1 GHz container they fail on untouched code too -
+measured 52-55 ms and 1534-1897 ms there for the commit before 6 Oct's work -
+and pass on a desktop (272/272 on the owner's machine). Read a failure there as
+"this box is slow", and do not loosen the thresholds to make a slow container
+green: the tick is one second on the machine the page actually runs on.
 
 The previous set of these lived in a scratch directory and did not survive the
 session, which is why they are in the repo now. A check you cannot re-run is not
@@ -56,7 +64,9 @@ Playwright is the fastest honest check (`.venv/bin/pip install playwright &&
 
 - **Data Lanes panel** — all five should read `live`: Live price, Candles, Fast
   news, Deep news, Model. Any `unavailable` or `idle` is a real failure, not a
-  cosmetic one.
+  cosmetic one. Three rows added 6 Oct 2026 - Global cues + GIFT, Index
+  members, FII/DII + positioning - read `live` from the browser or fall back to
+  the workflow copy; a fallback there is not an outage.
 - **Console and network** — zero `pageerror`, zero HTTP >= 400. A 403 on a feed
   means that publisher stopped serving browsers, not that the code is wrong.
 - **PREV CLOSE** in the stats strip must match NSE's `previousClose` for the
@@ -181,9 +191,12 @@ constantly and the auto-router survives that. With reasoning off it was usable
 ## Load order is a dependency order
 
 `config` → `core` → `indicators` → `levels` → `candles` → `patterns` →
-`structures` → `vol` →
-`forecast` → `ledger` → `learn` → `engine` → `chart` → `app`. The script tags in
-`index.html` are commented with this. Reordering them breaks the page silently.
+`structures` → `orders` → `portfolio` → `data` → `vol` →
+`forecast` → `ledger` → `learn` → `trail` → `engine` → `chart` → `app`. The script
+tags in `index.html` are commented with this. Reordering them breaks the page
+silently. `orders` must precede `portfolio` (the holdings panel reads the order
+book when it exists) and `trail` must follow `forecast` (it reuses `temper`,
+`closeAtTime` and the lane functions rather than copying them).
 
 `forecast.js` owns the model (eight lanes, clock-aware path, bands,
 `calibrate()`). `engine.js` is only reason points — the forecast moved out of it.
@@ -579,6 +592,10 @@ reach it: POST with `{"filter":[{"left":"type","operation":"equal","right":"stoc
 and check for `Access-Control-Allow-Origin` - if it is there, the browser can
 have a 700-stock screener with no workflow in the way.
 
+**Superseded 6 Oct 2026.** Measured from the deployed origin and from an
+unrelated one (example.com): 200 with CORS for a `text/plain` POST, 230-430 ms,
+no key. It is used now - see the next section to the end.
+
 ---
 
 ## The IPO product
@@ -683,6 +700,109 @@ built: the prospectus is a PDF whose structure varies by issuer, and the link
 is published rather than parsed for now. BSE's `IPOTrackerN` gives a whole year
 per call and would extend the history well past what `public-past-issues`
 holds.
+
+---
+
+## The trail, the live lanes, the profile and the data hub
+
+Added 6 Oct 2026, for an investor demo. The brief: show that the line the
+model drew lands near the market, connect every free source that can be
+connected, add a profile page for orders, and gather the "tips" people share.
+
+**The trail is only worth showing if no point on it saw its own future.**
+`trail.js` replays the forecast's technical core (momentum, levels, structure,
+day shape) bar by bar. It precomputes the causal indicator series once
+(`seriesFor`) instead of calling `snapshot()` on every prefix - measured on the
+1,424-bar 5-minute series, 18 ms once against 9.6 ms per prefix, about 14 s for
+all of them - and `selftest.js` asserts
+that the series read at bar *i* equals a snapshot of the first *i* bars, that
+every point was made before the bar it points at, and that a point is
+identical when the series is cut just after its target. If any of those three
+fails, the violet line is a fabrication, whatever it looks like.
+
+**Replayed and live are different claims and are drawn in different colours.**
+The replay cannot include news, global cues, options or the model's vote -
+there is no point-in-time archive of all of them - so violet is the technical
+core only. Amber is `recordLive()`: written from the real forecast the moment
+it is made, keyed `trailLive:SYMBOL:TF:LEAD`, one row per bar slot, **first
+write wins** (asserted). A record that a later tick could improve is not a
+record. Live rows override replayed ones bar by bar, never the reverse.
+
+**Print the flat-line comparison, always.** Fifteen minutes ahead, any line
+that starts at the current price is close, so "average miss 22 points" means
+nothing alone. `stats()` carries the same miss for a no-change line and the
+panel prints the ratio. On the 6 Oct snapshot it is about 1.0: the replayable
+core is no better than flat yet. That number is the honest headline and must
+not be dropped to make the panel look better.
+
+**The trail is drawn above the candles - the one exception to "guides
+underneath".** At 1 px under the candle bodies it disappeared entirely
+(screenshots); it is created after `candleSeries` and kept at 1 px. The miss
+histogram sits on its own price scale (`trailerr`), created before the candles,
+and `mainMargins()` gives it the bottom of the pane only while it is on.
+
+**Replay freezes the live pipeline or the tick overwrites it.** `setData()`
+returns early and `tick()` skips while `isReplaying()`; otherwise the
+one-second price poll repaints the live chart over the replay frame.
+
+**TradingView, the details that bite.** `text/plain` keeps the POST a simple
+request; `application/json` triggers a preflight the screener refuses
+(`selftest.js` greps for it). Hyphenated NSE symbols are underscored
+(`BAJAJ-AUTO` → `NSE:BAJAJ_AUTO`). NSE rows are 15 minutes delayed and say so
+in `update_mode`, which the page prints. `TVC:UKOIL` is not carried;
+`ICEEUR:BRN1!` is. **GIFT Nifty is shown and does not vote**: it is a
+near-month future, so its gap to NIFTY's close is the overnight move plus a
+premium that decays to expiry, and feeding it to the gap model unmeasured is
+the `sgx_nifty` bug again (`selftest.js` greps `forecast.js` for it).
+
+**NSE through r.jina.ai, each read before code was written against it:**
+`snapshot-capital-market-largedeal`, `event-calendar`,
+`live-analysis-oi-spurts-underlyings`, `fiidiiTradeReact`,
+`corporate-sast-reg29`, and `corporates-pit-gg` - plain `corporates-pit` now
+answers empty, which reads as "no insider trades" rather than an error. The
+participant-wise OI file (`nsearchives.../fao_participant_oi_DDMMYYYY.csv`) is
+one per session; the parser reads the date from the file's own header and
+returns null on a refusal page rather than a table of zeros.
+
+**`fetch_global.py` was publishing five-session changes.** Same
+`chartPreviousClose` bug `fetch_market.py` fixed on 18 Sep, in the one file
+that was not fixed: Nikkei +5.89% against +1.05% live, opening call +1.37%
+against +0.47%. `prev_session_close()` reads the daily bars, folded to one per
+exchange-local date. Stooq's fallback is a since-the-open move and is now
+labelled `basis: "open"` rather than passed off as the same quantity.
+
+**The order book is the source of truth for holdings.** `orders.js` keeps
+`orders`, `orderMeta` (per-stock target/stop/notes) and `profile` in
+localStorage; old `holdings` rows are migrated once (`ordersMigrated`).
+`portfolio.js` delegates to it when present, so the terminal's alerts and the
+profile page read one book. Lots match FIFO, a sell before a buy is a short,
+long-term is 365 days or more. All asserted.
+
+**A name several companies answer to is a group, not a stock.** The first run
+over the 19-day archive filed one Bajaj Finance call against eight Bajaj
+companies, and the holdings matcher put a Bajaj Holdings headline on
+BAJAJ-AUTO. Both matchers now keep only aliases with one owner. The press uses
+names the exchange list does not carry ("DMart", "Airtel", "L&T"), so
+`streetcalls.js` has a short `BRANDS` table - which also overrides the
+universe's first-word alias "Sun Pharma" → SPARC.
+
+**Tips: published calls and disclosed trades only.** Trading on unpublished
+price-sensitive information is insider trading under SEBI's PIT Regulations;
+the page collects the legal versions - named broker calls from headlines and
+NSE's SAST/PIT filings - and tracks each call from the price when the page
+first saw it (`streetSeen`). The parser rejects questions ("buy, sell or
+hold?"), buybacks and acquisitions; a wrong call in that list is worse than a
+missing one.
+
+**The data hub checks, it does not describe.** `data.html` fires every source
+on load and shows what answered, how fast, how many rows and how old. A card
+that said "live" from a static list would be the dead-lane bug with a nicer
+border.
+
+**Local runs.** `serve-local.bat` serves the folder on `127.0.0.1:8080`. Every
+live source was checked to answer an unrelated origin, so localhost behaves
+like Pages. localStorage is per origin: orders, the amber record and the
+OpenRouter key on localhost are not the Pages site's.
 
 ---
 

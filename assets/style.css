@@ -1193,3 +1193,163 @@ html, body { max-width: 100%; overflow-x: clip; }
 .cr-text b { color: var(--ink-strong); font-weight: 600; }
 .cr-text .num { font-family: var(--mono); font-weight: 600; }
 @media (max-width: 900px) { .chart-read { padding: 8px 10px; } .cr-text { font-size: 11px; } }
+
+/* ============================================================================
+   6 Oct 2026: a bigger chart, the prediction trail, focus mode and replay.
+
+   The brief was "make the graph bigger with all the details to show". Three
+   things bought the room: the headline stream folds down to its header row
+   by default (one click brings it back, and the choice is remembered), the
+   market-watch column is 24px narrower, and focus mode hands the whole
+   window to the chart. The details came back onto the chart itself as a
+   readout in its corner rather than as more panels around it.
+   ========================================================================== */
+:root {
+  --mw-w: 248px;
+  --trail:      #6d28d9;
+  --trail-live: #d97706;
+  --err-on:     #94a3b8;
+  --hud-bg:     rgba(255, 255, 255, 0.88);
+}
+:root[data-theme="dark"] {
+  --trail:      #a78bfa;
+  --trail-live: #fbbf24;
+  --err-on:     #64748b;
+  --hud-bg:     rgba(20, 22, 26, 0.86);
+}
+@media (max-width: 1280px) { :root { --mw-w: 228px; } }
+
+.chart-stage { min-height: 380px; }
+
+/* legend swatches for the two new series */
+.lg-swatch.trail      { background: var(--trail); height: 2px; }
+.lg-swatch.trail-live { background: var(--trail-live); height: 2px; margin-left: 3px; }
+.lg-swatch.err {
+  width: 12px; height: 9px; border-radius: 1px;
+  background: linear-gradient(90deg, var(--down) 0 33%, var(--err-on) 33% 66%, var(--up) 66% 100%);
+}
+
+/* --------------------------------------------------------- toolbar actions */
+.chart-actions { display: inline-flex; align-items: center; gap: 6px; }
+.trail-pick {
+  display: inline-flex; align-items: center; gap: 5px;
+  font: 600 10px/1 var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted);
+}
+.trail-pick select, .replay-bar select {
+  font: 600 11px/1 var(--sans); padding: 4px 6px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--bg-raised); color: var(--ink-strong);
+}
+#btn-focus[aria-pressed="true"] { background: var(--brand); color: #fff; border-color: var(--brand); }
+
+/* ------------------------------------------------------------------- nav */
+.top-nav { display: inline-flex; gap: 4px; }
+.top-nav .btn { text-decoration: none; }
+.top-nav .btn.is-current { background: var(--brand-soft); color: var(--brand-ink); border-color: transparent; }
+@media (max-width: 1180px) { .top-nav .btn:not(.is-current) { padding: 4px 7px; } }
+@media (max-width: 860px) { .top-nav { display: none; } }
+
+/* ------------------------------------------------------------------- HUD */
+.chart-hud {
+  position: absolute; top: 6px; left: 8px; z-index: 6;
+  max-width: min(760px, calc(100% - 96px));
+  padding: 5px 9px; border-radius: var(--radius);
+  background: var(--hud-bg); border: 1px solid var(--border);
+  font: 400 11px/1.5 var(--sans); color: var(--ink);
+  pointer-events: none; backdrop-filter: blur(2px);
+}
+.chart-hud:empty { display: none; }
+.chart-hud b { color: var(--ink-strong); font-weight: 600; }
+.chart-hud .num { font-family: var(--mono); }
+.hud-l1, .hud-l2 { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.hud-dim { color: var(--ink-muted); }
+.hud-k { color: var(--ink-muted); font-size: 10.5px; }
+.hud-ohlc { color: var(--ink); }
+.hud-l2.trail { border-top: 1px dashed var(--border); margin-top: 3px; padding-top: 3px; }
+.hud-tag {
+  font: 600 9.5px/1 var(--sans); letter-spacing: .05em; text-transform: uppercase;
+  padding: 2px 5px; border-radius: 3px; background: var(--bg-sunken); color: var(--ink-muted);
+}
+.hud-tag.above { background: var(--up-soft); color: var(--up); }
+.hud-tag.below { background: var(--down-soft); color: var(--down); }
+.hud-tag.on    { background: var(--brand-soft); color: var(--brand-ink); }
+
+/* ---------------------------------------------------------------- replay */
+.replay-bar {
+  position: absolute; top: 6px; right: 76px; z-index: 7;
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: var(--radius-lg);
+  background: var(--bg-raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg);
+  font-size: 11px;
+}
+.replay-tag {
+  font: 700 9.5px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase;
+  color: #fff; background: var(--trail); padding: 3px 6px; border-radius: 3px;
+}
+.replay-clock { font-weight: 600; color: var(--ink-strong); min-width: 74px; }
+.replay-progress { width: 110px; height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.replay-fill { height: 100%; width: 0; background: var(--trail); transition: width .12s linear; }
+.replay-score { color: var(--ink-muted); min-width: 120px; }
+body.is-replaying .forecast-zone, body.is-replaying .now-divider { display: none !important; }
+/* The replay bar spans the top of a narrower chart, so the readout moves
+   under it rather than behind it. */
+body.is-replaying .chart-hud { top: 50px; }
+@media (max-width: 900px) {
+  .replay-bar { left: 8px; right: 8px; top: auto; bottom: 34px; flex-wrap: wrap; }
+  body.is-replaying .chart-hud { top: 6px; }
+  .replay-progress { flex: 1 1 80px; }
+}
+
+/* ------------------------------------------------------- news fold-away */
+.news-toggle {
+  width: 22px; height: 22px; display: grid; place-items: center; padding: 0;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg); color: var(--ink-muted); cursor: pointer;
+}
+.news-toggle svg { width: 13px; height: 13px; transition: transform .15s; }
+body.news-collapsed .news-toggle svg { transform: rotate(-90deg); }
+body.news-collapsed .news-list { display: none; }
+body.news-collapsed .news-filters { display: none; }
+.news-console { max-height: 230px; }
+
+/* ----------------------------------------------------------- focus mode
+   The whole window to the chart. The side columns are taken out of the
+   grid rather than hidden inside it, so the chart's ResizeObserver sees the
+   new width and redraws at it. */
+body.chart-focus .workspace { grid-template-columns: minmax(0, 1fr); }
+body.chart-focus .mw-panel,
+body.chart-focus .insight-panel,
+body.chart-focus .news-console { display: none; }
+body.chart-focus .chart-panel { grid-column: 1; }
+@media (max-width: 1080px) {
+  body.chart-focus .workspace { grid-template-rows: minmax(0, 1fr); }
+}
+
+/* ------------------------------------------------------- trail panel */
+#trail-section { background: linear-gradient(180deg, var(--bg-sunken), var(--bg) 70%); }
+.trail-score { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 9px; }
+.ts-big {
+  display: flex; flex-direction: column; gap: 2px; padding: 7px 8px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg);
+  min-width: 0;
+}
+.ts-k { font-size: 9.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-muted); }
+.ts-v { font-size: 16px; font-weight: 700; color: var(--ink-strong); letter-spacing: -.3px; white-space: nowrap; }
+.ts-sub { font-size: 10px; color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trail-split { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--border); }
+.tsp { height: 100%; width: 0; transition: width .4s ease; }
+.tsp.below { background: var(--down); }
+.tsp.on    { background: var(--err-on); }
+.tsp.above { background: var(--up); }
+.trail-split-legend { display: flex; justify-content: space-between; font: 600 10px/1.6 var(--mono); margin: 3px 0 6px; color: var(--ink-muted); }
+
+/* -------------------------------------------- index futures positioning */
+.pos-rows { display: grid; gap: 5px; }
+.pos-row { display: grid; grid-template-columns: 44px 1fr 74px; align-items: center; gap: 6px; font-size: 11px; }
+.pos-row .pos-k { color: var(--ink-muted); font-weight: 600; }
+.pos-bar { position: relative; height: 8px; border-radius: 4px; background: var(--down-soft); overflow: hidden; }
+.pos-bar > span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--up); border-radius: 4px 0 0 4px; }
+.pos-row .pos-v { text-align: right; font-family: var(--mono); font-weight: 600; color: var(--ink-strong); }
+.pos-row .pos-v small { color: var(--ink-muted); font-weight: 500; }
+.section-actions { display: inline-flex; gap: 4px; }
+.section-actions .btn { text-decoration: none; }
+.notice a { color: inherit; font-weight: 600; }

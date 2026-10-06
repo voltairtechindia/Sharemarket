@@ -708,7 +708,381 @@
     return Math.max(0, Math.round((d.getTime() - Date.now()) / 86400000));
   }
 
+  /* ===================================================== TradingView lanes
+
+     One POST, no key, CORS-clean from a real page origin (measured 6 Oct
+     2026, 230-430 ms). Content-Type text/plain keeps it a "simple" request,
+     so there is no preflight for the screener to refuse. Every caller below
+     resolves null on failure rather than rejecting: the lane it feeds keeps
+     its workflow copy, which is what the page ran on before. */
+  function tvScan(market, body, timeout) {
+    var to = withTimeout(timeout || 9000);
+    return fetch(C.endpoints.tvScan(market), {
+      method: 'POST', signal: to.signal, cache: 'no-store',
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+      body: JSON.stringify(body),
+    }).then(function (r) {
+      to.done();
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (j) {
+      if (!j || !j.data) throw new Error(j && j.error ? String(j.error) : 'empty scan');
+      mark('tradingview', true, market + ': ' + j.data.length + ' rows');
+      return j;
+    }).catch(function (e) {
+      to.done();
+      mark('tradingview', false, String(e.message || e));
+      throw e;
+    });
+  }
+
+  function rowsOf(j, cols) {
+    return (j.data || []).map(function (x) {
+      var o = { tv: x.s };
+      cols.forEach(function (c, i) { o[c] = x.d ? x.d[i] : null; });
+      return o;
+    });
+  }
+
+  /* The overnight cues, live. The global lane and the opening-gap model read
+     `changePct` against the previous close, and that is what the screener's
+     `change` is - which matters, because the workflow copy was not:
+     fetch_global.py took Yahoo's chartPreviousClose on a 5-day range, the
+     close before the RANGE, so every cue it published was a five-session
+     move. Measured 6 Oct 2026: Nikkei +5.89% in the file against +1.05% on
+     the day, Hang Seng -1.47% against +1.00%. That one field was pushing the
+     opening call to +1.37%. */
+  function getLiveGlobal() {
+    var want = C.tvGlobal || [];
+    var tickers = [];
+    want.forEach(function (w) { w.tv.forEach(function (t) { if (tickers.indexOf(t) === -1) tickers.push(t); }); });
+    var cols = ['close', 'change', 'update_mode', 'description', 'currency'];
+    return tvScan('global', { columns: cols, symbols: { tickers: tickers } }).then(function (j) {
+      var by = {};
+      rowsOf(j, cols).forEach(function (r) { by[r.tv] = r; });
+      var items = {};
+      want.forEach(function (w) {
+        for (var i = 0; i < w.tv.length; i++) {
+          var r = by[w.tv[i]];
+          if (!r || r.close == null || r.change == null || !isFinite(r.change)) continue;
+          items[w.key] = {
+            price: r2(r.close), changePct: r3(r.change),
+            prevClose: r2(r.close / (1 + r.change / 100)),
+            currency: r.currency || null, via: 'tradingview', tv: w.tv[i],
+            label: w.label, delay: delayOf(r.update_mode),
+          };
+          break;
+        }
+      });
+      var n = Object.keys(items).length;
+      if (!n) return null;
+      return {
+        origin: 'browser', generated_at: new Date().toISOString(), count: n,
+        sources_alive: n, sources_total: want.length, items: items,
+        source: 'TradingView screener, live from this browser',
+        note: 'changePct is against the previous close, so before the Indian open it is the overnight move.',
+      };
+    }).catch(function () { return null; });
+  }
+
+  // "delayed_streaming_900" is fifteen minutes; "streaming" is live.
+  function delayOf(mode) {
+    var m = /delayed_streaming_(\d+)/.exec(String(mode || ''));
+    return m ? Math.round(+m[1] / 60) : 0;
+  }
+
+  /* Stocks, priced live. The index members in one request - price, change,
+     the technical rating, fundamentals and the analyst consensus target -
+     or any list of symbols the profile holds. NSE rows arrive fifteen
+     minutes delayed and each row says so. */
+  var STOCK_COLS = ['name', 'description', 'close', 'change', 'change_abs', 'high', 'low', 'volume',
+                    'market_cap_basic', 'price_earnings_ttm', 'sector', 'Recommend.All', 'RSI',
+                    'Perf.W', 'Perf.1M', 'Perf.YTD', 'price_52_week_high', 'price_52_week_low',
+                    'recommendation_mark', 'recommendation_total', 'price_target_average',
+                    'price_target_high', 'price_target_low', 'update_mode'];
+
+  /* TradingView writes NSE's hyphen as an underscore - BAJAJ-AUTO is
+     NSE:BAJAJ_AUTO there (measured 6 Oct 2026). NSE symbols never contain an
+     underscore, so the mapping is safe in both directions. */
+  function toTv(sym) { return String(sym).toUpperCase().replace(/-/g, '_'); }
+  function fromTv(sym) { return String(sym || '').replace(/_/g, '-'); }
+
+  function normStock(r) {
+    var sym = fromTv(String(r.tv || '').split(':')[1] || r.name);
+    return {
+      symbol: sym, exchange: String(r.tv || '').split(':')[0], name: r.description || sym,
+      price: r.close, changePct: r.change, change: r.change_abs,
+      dayHigh: r.high, dayLow: r.low, volume: r.volume,
+      marketCapCr: r.market_cap_basic ? r.market_cap_basic / 1e7 : null,
+      pe: r.price_earnings_ttm, sector: r.sector,
+      techRating: r['Recommend.All'], rsi: r.RSI,
+      perfW: r['Perf.W'], perf1M: r['Perf.1M'], perfYtd: r['Perf.YTD'],
+      week52High: r.price_52_week_high, week52Low: r.price_52_week_low,
+      // 1 = strong buy ... 5 = strong sell, across `analysts` covering it.
+      analystMark: r.recommendation_mark, analysts: r.recommendation_total,
+      targetAvg: r.price_target_average, targetHigh: r.price_target_high, targetLow: r.price_target_low,
+      upsidePct: (r.price_target_average && r.close) ? r2((r.price_target_average - r.close) / r.close * 100) : null,
+      delay: delayOf(r.update_mode),
+    };
+  }
+
+  function getIndexMembers(set) {
+    return tvScan('india', {
+      columns: STOCK_COLS, symbols: { symbolset: [set || 'SYML:NSE;NIFTY'] },
+      sort: { sortBy: 'market_cap_basic', sortOrder: 'desc' }, range: [0, 120],
+    }).then(function (j) {
+      var rows = rowsOf(j, STOCK_COLS).map(normStock).filter(function (x) { return x.price != null; });
+      return rows.length ? { origin: 'browser', at: new Date().toISOString(), rows: rows } : null;
+    }).catch(function () { return null; });
+  }
+
+  // symbols: [{ symbol, exchange }] - up to a few hundred in one request.
+  function getStockQuotes(list) {
+    var tickers = (list || []).map(function (x) {
+      return (x.exchange === 'BSE' ? 'BSE:' : 'NSE:') + toTv(x.symbol);
+    });
+    if (!tickers.length) return Promise.resolve({});
+    return tvScan('india', { columns: STOCK_COLS, symbols: { tickers: tickers } }).then(function (j) {
+      var out = {};
+      rowsOf(j, STOCK_COLS).forEach(function (r) {
+        var s = normStock(r);
+        if (s.price != null) out[s.symbol] = s;
+      });
+      return out;
+    }).catch(function () { return {}; });
+  }
+
+  /* ========================================================== NSE extras
+
+     Five more datasets the exchange publishes, read through the same r.jina.ai
+     hop the option chain uses. Each one was read from the deployed origin
+     before this was written (6 Oct 2026). All of them are optional: a
+     throttled proxy resolves null and the panel says which lane is missing
+     rather than drawing zeros. */
+  function nseJSON(url, timeout) {
+    return fetchJSONVia(url, { proxyOnly: true, skipRss2json: true, timeout: timeout || 16000 })
+      .then(function (res) { return res && res.data; });
+  }
+  function numOf(v) {
+    if (v == null || v === '' || v === '-') return null;
+    var n = parseFloat(String(v).replace(/,/g, ''));
+    return isFinite(n) ? n : null;
+  }
+  var MONTHS = { JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5, JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11 };
+  // "06-Oct-2026" or "06-Oct-2026 14:46" -> epoch seconds, read as IST.
+  function nseDate(s) {
+    var m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})(?:[ ,]+(\d{1,2})[:\-](\d{2}))?/.exec(String(s || '').trim());
+    if (!m) return null;
+    var mo = MONTHS[m[2].toUpperCase()];
+    if (mo == null) return null;
+    var ms = Date.UTC(+m[3], mo, +m[1], +(m[4] || 0), +(m[5] || 0)) - 330 * 60000;
+    return Math.floor(ms / 1000);
+  }
+
+  /* Bulk, block and short deals. A bulk deal is a single client trading more
+     than 0.5% of a company's shares in a session; a block deal is a large
+     negotiated trade in the separate block window. Both are public by rule,
+     with the client's name - which is the legitimate version of "who is
+     buying what". */
+  function getLargeDeals() {
+    return nseJSON(C.endpoints.nseLargeDeals).then(function (j) {
+      if (!j) return null;
+      function rows(list, kind) {
+        return (list || []).map(function (r) {
+          var qty = numOf(r.qty), px = numOf(r.watp);
+          return {
+            kind: kind, symbol: r.symbol, name: r.name, client: r.clientName,
+            side: String(r.buySell || '').toUpperCase(), qty: qty, price: px,
+            valueCr: qty != null && px != null ? r2(qty * px / 1e7) : null,
+            date: r.date, ts: nseDate(r.date),
+          };
+        });
+      }
+      var all = rows(j.BULK_DEALS_DATA, 'bulk').concat(rows(j.BLOCK_DEALS_DATA, 'block'))
+        .concat(rows(j.SHORT_DEALS_DATA, 'short'));
+      return { origin: 'browser', at: new Date().toISOString(), asOn: j.as_on_date || null,
+               counts: { bulk: +j.BULK_DEALS || 0, block: +j.BLOCK_DEALS || 0, short: +j.SHORT_DEALS || 0 },
+               rows: all };
+    }).catch(function () { return null; });
+  }
+
+  /* Board meetings and results dates, about five weeks ahead. */
+  function getEventCalendar() {
+    return nseJSON(C.endpoints.nseEventCalendar).then(function (j) {
+      var list = Array.isArray(j) ? j : (j && j.data) || [];
+      if (!list.length) return null;
+      return { origin: 'browser', at: new Date().toISOString(),
+               rows: list.map(function (r) {
+                 return { symbol: r.symbol, company: r.company, purpose: r.purpose, desc: r.bm_desc,
+                          date: r.date, ts: nseDate(r.date),
+                          results: /result/i.test((r.purpose || '') + ' ' + (r.bm_desc || '')) };
+               }).sort(function (a, b) { return (a.ts || 0) - (b.ts || 0); }) };
+    }).catch(function () { return null; });
+  }
+
+  /* Where F&O open interest jumped today: the stocks money is moving into or
+     out of. Change in OI alone does not say long or short; the price move
+     beside it does, so both are kept. */
+  function getOiSpurts() {
+    return nseJSON(C.endpoints.nseOiSpurts).then(function (j) {
+      var list = (j && j.data) || [];
+      if (!list.length) return null;
+      return { origin: 'browser', at: new Date().toISOString(), timestamp: j.timestamp || null,
+               rows: list.map(function (r) {
+                 var chg = numOf(r.changeInOI), prev = numOf(r.prevOI);
+                 return { symbol: r.symbol, latestOI: numOf(r.latestOI), prevOI: prev, changeOI: chg,
+                          changeOIPct: prev ? r2(chg / prev * 100) : null, volume: numOf(r.volume),
+                          underlying: numOf(r.underlyingValue) };
+               }) };
+    }).catch(function () { return null; });
+  }
+
+  /* FII / DII cash, from NSE the same evening it is published. The workflow
+     copy is whatever its last run caught - measured on 6 Oct 2026 it was
+     still carrying the 5 Oct report at 22:00, while this returned 6 Oct. */
+  function getFiiDiiLive() {
+    return nseJSON(C.endpoints.nseFiiDii, 14000).then(function (rows) {
+      if (!Array.isArray(rows) || !rows.length) return null;
+      var out = { origin: 'browser', at: new Date().toISOString() };
+      rows.forEach(function (r) {
+        var cat = String(r.category || '').toUpperCase();
+        var key = /FII|FPI/.test(cat) ? 'fii' : /DII/.test(cat) ? 'dii' : null;
+        var net = numOf(r.netValue);
+        if (!key || net == null) return;
+        out[key] = { netCr: net, buyCr: numOf(r.buyValue), sellCr: numOf(r.sellValue),
+                     date: r.date, via: 'nse-live' };
+      });
+      return out.fii || out.dii ? out : null;
+    }).catch(function () { return null; });
+  }
+
+  /* Takeover-code disclosures (SAST regulation 29): an acquirer crossing 5%,
+     or a promoter moving 2% or more. Filed with the exchange by rule and
+     public with the name - the lawful form of "inside" information, because
+     it has been disclosed. */
+  function getSast(days) {
+    var d1 = new Date(), d0 = new Date(Date.now() - (days || 7) * 86400000);
+    function f(x) { return pad2(x.getDate()) + '-' + pad2(x.getMonth() + 1) + '-' + x.getFullYear(); }
+    return nseJSON(C.endpoints.nseSast(f(d0), f(d1)), 20000).then(function (j) {
+      var list = (j && j.data) || [];
+      if (!list.length) return null;
+      return { origin: 'browser', at: new Date().toISOString(),
+               rows: list.map(function (r) {
+                 var sale = /sale|dispos/i.test(r.acqSaleType || '');
+                 return {
+                   symbol: r.symbol, company: r.company, who: r.acquirerName,
+                   side: sale ? 'SELL' : 'BUY', mode: r.acquisitionMode, promoter: r.promoterType === 'Y',
+                   shares: numOf(sale ? r.noOfShareSale : r.noOfShareAcq),
+                   pct: numOf(sale ? r.totSaleShare : r.totAcqShare), afterPct: numOf(r.totAftShare),
+                   period: r.acquirerDate, ts: nseDate(r.timestamp), filed: r.timestamp,
+                   reg: r.regType, link: r.attachement || null,
+                 };
+               }).sort(function (a, b) { return (b.ts || 0) - (a.ts || 0); }) };
+    }).catch(function () { return null; });
+  }
+
+  /* Insider-trading (PIT) filings: who filed, when, under which regulation,
+     with the exchange's own rendering of the form. `corporates-pit` - the
+     endpoint most libraries still call - returns an empty list now; NSE's
+     page reads `corporates-pit-gg`, found in its network log on 6 Oct 2026.
+     The transaction detail sits in each filing's XBRL, which the proxy
+     flattens, so the panel links the form rather than parsing it. */
+  function getInsiderFilings() {
+    return nseJSON(C.endpoints.nseInsider, 20000).then(function (j) {
+      var list = (j && j.data) || [];
+      if (!list.length) return null;
+      return { origin: 'browser', at: new Date().toISOString(), total: list.length,
+               rows: list.slice(0, 300).map(function (r) {
+                 return { symbol: r.symbol, company: r.companyName, reg: r.regulation,
+                          type: r.typeOfSubmission, filed: r.broadcastDateTime, ts: nseDate(r.broadcastDateTime),
+                          link: r.ixbrl || null };
+               }) };
+    }).catch(function () { return null; });
+  }
+
+  /* Participant-wise open interest: how clients, DIIs, FIIs and proprietary
+     desks are positioned in index futures, published after each session as
+     a CSV. Past files never change, so each one is cached for good once read
+     and only new sessions cost a proxy hop. */
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+  function parseParticipantCsv(text) {
+    var lines = String(text || '').split(/\r?\n/).filter(function (l) { return l.trim(); });
+    var hi = -1;
+    for (var i = 0; i < lines.length; i++) if (/^\s*Client Type/i.test(lines[i])) { hi = i; break; }
+    if (hi < 0) return null;
+    var head = lines[hi].split(',').map(function (h) { return h.trim().toLowerCase(); });
+    function col(name) { return head.indexOf(name); }
+    var cIL = col('future index long'), cIS = col('future index short');
+    var cCL = col('option index call long'), cCS = col('option index call short');
+    var cPL = col('option index put long'), cPS = col('option index put short');
+    var cSL = col('future stock long'), cSS = col('future stock short');
+    if (cIL < 0 || cIS < 0) return null;
+    var m = /as on ([A-Za-z]{3}) (\d{1,2}), (\d{4})/.exec(lines.slice(0, hi).join(' '));
+    var out = { date: m ? m[2] + '-' + m[1] + '-' + m[3] : null, rows: {} };
+    for (var k = hi + 1; k < lines.length; k++) {
+      var c = lines[k].split(',');
+      var who = String(c[0] || '').trim().toUpperCase();
+      if (!who) continue;
+      var L = numOf(c[cIL]), S = numOf(c[cIS]);
+      if (L == null || S == null) continue;
+      out.rows[who] = {
+        futIdxLong: L, futIdxShort: S, futIdxNet: L - S,
+        longPct: (L + S) ? r2(L / (L + S) * 100) : null,
+        callLong: numOf(c[cCL]), callShort: numOf(c[cCS]), putLong: numOf(c[cPL]), putShort: numOf(c[cPS]),
+        futStkLong: numOf(c[cSL]), futStkShort: numOf(c[cSS]),
+      };
+    }
+    return Object.keys(out.rows).length ? out : null;
+  }
+
+  function getParticipantOi(sessions) {
+    var want = sessions || 6, out = [], tries = 0;
+    var day = new Date(Date.now() + (new Date().getTimezoneOffset() + 330) * 60000);   // IST wall clock
+    var cache = core.store.get('partoi', {}) || {};
+    function next() {
+      if (out.length >= want || tries >= want + 8) return Promise.resolve();
+      tries++;
+      var d = new Date(day.getTime());
+      day = new Date(day.getTime() - 86400000);
+      if (d.getDay() === 0 || d.getDay() === 6) return next();
+      var key = pad2(d.getDate()) + pad2(d.getMonth() + 1) + d.getFullYear();
+      if (cache[key]) { out.push(cache[key]); return next(); }
+      /* One hop only. A day with no file (a holiday, or tonight's not out
+         yet) is the normal case here, and falling through to allorigins
+         would spend its full timeout on every one of them. */
+      var hop = C.proxies[0];
+      return fetchText(hop.build(C.endpoints.nseParticipantOi(key)), { headers: hop.headers, timeout: 12000 })
+        .then(function (body) {
+          var parsed = parseParticipantCsv(body);
+          if (parsed) {
+            parsed.key = key;
+            out.push(parsed);
+            cache[key] = parsed;
+          }
+        })
+        .catch(function () { /* no file for that day: a holiday, or not published yet */ })
+        .then(next);
+    }
+    return next().then(function () {
+      // Keep the cache bounded to the last few weeks of sessions.
+      var keys = Object.keys(cache).sort(function (a, b) {
+        return (+a.slice(4) * 10000 + +a.slice(2, 4) * 100 + +a.slice(0, 2)) -
+               (+b.slice(4) * 10000 + +b.slice(2, 4) * 100 + +b.slice(0, 2));
+      });
+      while (keys.length > 25) delete cache[keys.shift()];
+      core.store.set('partoi', cache);
+      out.sort(function (a, b) { return nseDate(a.date) - nseDate(b.date); });
+      return out.length ? { origin: 'browser', at: new Date().toISOString(), sessions: out } : null;
+    });
+  }
+
   KT.data = {
+    tvScan: tvScan, getLiveGlobal: getLiveGlobal, getIndexMembers: getIndexMembers,
+    getStockQuotes: getStockQuotes,
+    getLargeDeals: getLargeDeals, getEventCalendar: getEventCalendar, getOiSpurts: getOiSpurts,
+    getFiiDiiLive: getFiiDiiLive, getSast: getSast, getInsiderFilings: getInsiderFilings,
+    getParticipantOi: getParticipantOi, parseParticipantCsv: parseParticipantCsv, nseDate: nseDate,
     fetchText: fetchText, fetchVia: fetchVia, fetchJSONVia: fetchJSONVia, loadBaked: loadBaked,
     getLongHistory: getLongHistory,
     getOptionChain: getOptionChain, summariseChain: summariseChain,
