@@ -63,9 +63,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 3.13, the version the model was tested on: numpy 2.5 has no wheels for
+      # 3.11, and the first run on 3.11 failed at the install (30 Oct 2026).
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
           cache: pip
 
       # Pinned to the versions the model was tested with (30 Oct 2026).
