@@ -22,9 +22,11 @@
    stock, or for a session the record does not have.
 
    The record also carries what it has learned (learn.adoptShared): the
-   opening-gap gain and the lane weights, fitted from the judged sessions
-   under the same guardrails as the page's own learner (learn.js), and used
-   by the next call this script freezes as well as by every browser.
+   opening-gap gain, the lane weights, and the size and lean of the session's
+   move learned from the gap between each frozen line and the market
+   (learn.closeFitFrom), fitted from the judged sessions under the same
+   guardrails as the page's own learner (learn.js), and used by the next call
+   this script freezes as well as by every browser.
 
    Never throws. A failed run leaves the previous record in place.
    Run:  node scripts/daily_call.js
@@ -139,10 +141,16 @@ function dayKeyMinus(KT, nowSec, days) {
 /* The rows a browser needs in full are the ones still in play. A judged
    session keeps its numbers and its judgement; the cue prices, the lane
    notes and every projected minute were read when it was judged and are not
-   needed again. */
-function compact(r) {
+   needed again. With `sketch`, a five-minute sketch of the line stays, so the
+   chart can still draw what the call said over the session it was about
+   (chart.js drawLocked). */
+function compact(r, sketch) {
   const c = Object.assign({}, r);
+  const full = Array.isArray(r.path) ? r.path : null;
   delete c.path; delete c.pp; delete c.lanes; delete c.openParts; delete c.pmTriedAt; delete c.topHeadline;
+  if (sketch && full && full.length > 5) {
+    c.path = full.filter((p, i) => (i + 1) % 5 === 0 || i === full.length - 1).map(p => ({ time: p.time, value: round(p.value, 2) }));
+  }
   if (c.ctx) c.ctx = { at: c.ctx.at || null, fp: c.ctx.fp || null };
   if (c.postmortem) {
     const p = Object.assign({}, c.postmortem);
@@ -207,10 +215,11 @@ function statsOf(KT, rows) {
   const judged = judgedRows(rows).filter(r => r.outcome && r.outcome.closeActual > 0 && r.anchorPrice > 0);
   const out = { sessions: judged.length, direction: { n: 0, right: 0 }, alwaysUp: { n: 0, up: 0 },
                 calibration: [], bands: { inside68: { n: 0, k: 0 }, inside95: { n: 0, k: 0 } },
-                open: { n: 0, biasPct: null, maePct: null }, lanes: [] };
+                open: { n: 0, biasPct: null, maePct: null },
+                close: { n: 0, biasPct: null, maePct: null, maePts: null }, lanes: [] };
   const buckets = [[0, 45, 'down'], [45, 55, 'no lean'], [55, 65, 'up'], [65, 101, 'up, strongly']]
     .map(b => ({ from: b[0], to: Math.min(b[1], 100), label: b[2], n: 0, up: 0 }));
-  let openSum = 0, openAbs = 0;
+  let openSum = 0, openAbs = 0, closeSum = 0, closeAbs = 0, closeAbsPts = 0;
   judged.forEach(r => {
     const move = (r.outcome.closeActual - r.anchorPrice) / r.anchorPrice * 100;
     const dir = KT.ledger.callDirOf(r);
@@ -232,6 +241,14 @@ function statsOf(KT, rows) {
       const e = (opened - r.openPrice) / r.anchorPrice * 100;
       out.open.n++; openSum += e; openAbs += Math.abs(e);
     }
+    // Where it closed against where the line said it would: the gap the
+    // learner works on (learn.closeFitFrom).
+    const said = typeof r.target === 'number' ? r.target : null;
+    if (said > 0) {
+      const ePts = r.outcome.closeActual - said;
+      out.close.n++; closeSum += ePts / r.anchorPrice * 100;
+      closeAbs += Math.abs(ePts) / r.anchorPrice * 100; closeAbsPts += Math.abs(ePts);
+    }
   });
   const d = out.direction;
   d.rate = d.n ? round(d.right / d.n * 100, 1) : null; d.ci = wilson(d.right, d.n);
@@ -239,6 +256,10 @@ function statsOf(KT, rows) {
   out.calibration = buckets.map(b => ({ from: b.from, to: b.to, label: b.label, n: b.n,
                                         upRate: b.n ? round(b.up / b.n * 100, 1) : null }));
   if (out.open.n) { out.open.biasPct = round(openSum / out.open.n, 3); out.open.maePct = round(openAbs / out.open.n, 3); }
+  if (out.close.n) {
+    out.close.biasPct = round(closeSum / out.close.n, 3); out.close.maePct = round(closeAbs / out.close.n, 3);
+    out.close.maePts = round(closeAbsPts / out.close.n, 1);
+  }
   out.lanes = KT.postmortem.laneRecord(judged).map(l => ({ id: l.id, label: l.label, right: l.right, n: l.n, rate: l.rate, ci: l.ci }));
   return out;
 }
@@ -322,6 +343,8 @@ function main() {
   const flows = readJSON('data/flows.json', null);
   const options = readJSON('data/options.json', null);
   const quote = readJSON('data/quote.json', null);
+  // The crowd's mood (scripts/fetch_social.py), read per symbol by the crowd lane.
+  const social = readJSON('data/social.json', null);
   const vixQ = quote && quote.quotes && quote.quotes.INDIAVIX;
   const vix = vixQ && vixQ.price > 0 ? vixQ.price : null;
   if (F.setFocus) F.setFocus(null);
@@ -351,6 +374,7 @@ function main() {
           gapScale: null, indicators: ind, levels: lv, structures: KT.structures.detect(candles),
           structureStats: KT.structures.outcomes(candles), global: global, flows: flows, options: options,
           vix: vix, conformal: null, modelVote: null,
+          social: F.socialFor ? F.socialFor(social, sym) : null,
         });
         snap = KT.postmortem.snapshot({ symbol: sym, timeframe: '1S', forecast: f, indicators: ind,
                                         global: global, vix: vix, flows: flows });
@@ -400,7 +424,9 @@ function main() {
         // Too old for the minute bars still on file: it will never be scored.
         if (r.session < activeFrom && !r.outcome) r.expired = true;
         const done = r.postmortem || r.session < activeFrom;
-        return rankOf[r.session] >= FULL_PATH_SESSIONS && done && !r.compact ? compact(r) : r;
+        const sketch = rankOf[r.session] < BOTH_STAGES_SESSIONS;
+        if (r.compact && !sketch && (r.path || r.pp)) { r = Object.assign({}, r); delete r.path; delete r.pp; }
+        return rankOf[r.session] >= FULL_PATH_SESSIONS && done && !r.compact ? compact(r, sketch) : r;
       });
       const latest = rows.filter(r => r.timeframe === '1S')[0] || null;
       rec.symbols[sym] = {
@@ -426,6 +452,7 @@ function main() {
     const nifty = rowsOf(rec, 'NIFTY');
     core.store.set('fcLocks', JSON.parse(JSON.stringify(nifty)));
     const open = KT.learn.openGainFrom('NIFTY');
+    const close = KT.learn.closeFitFrom ? KT.learn.closeFitFrom('NIFTY') : { gain: 1, bias: 0, n: 0 };
     const stats = rec.symbols.NIFTY && rec.symbols.NIFTY.stats;
     const judged = judgedRows(nifty).filter(r => r.postmortem);
     const newest = judged.length ? judged[0].session : null;
@@ -433,6 +460,10 @@ function main() {
     const fit = fitWeights(KT, prev, (stats && stats.lanes) || [], newest);
     const history = (prev && Array.isArray(prev.history) ? prev.history : []).slice(-59);
     if (fit.moved.length) history.push({ at: nowMs, session: newest, moved: fit.moved });
+    if (close.n >= (KT.learn.MIN_CLOSE_SAMPLE || 10) &&
+        (!prev || prev.closeGain !== close.gain || (prev.closeBias || 0) !== close.bias)) {
+      history.push({ at: nowMs, session: newest, closeGain: close.gain, closeBias: close.bias, closeSamples: close.n });
+    }
     rec.learned = {
       updatedAt: nowMs, fittedOn: 'NIFTY',
       fittedThrough: fit.stepped ? newest : (prev && prev.fittedThrough) || null,
@@ -441,7 +472,11 @@ function main() {
       held: fit.held.slice(0, 12),
       history: history,
       openGain: open.gain, openSamples: open.n, openRaw: open.raw != null ? open.raw : null,
+      closeGain: close.gain, closeBias: close.bias, closeSamples: close.n,
+      closeRaw: close.raw != null ? close.raw : null, closeLean: close.lean != null ? close.lean : null,
+      closeT: close.t != null ? close.t : null,
       minSample: KT.learn.MIN_SAMPLE, minOpenSample: KT.learn.MIN_OPEN_SAMPLE,
+      minCloseSample: KT.learn.MIN_CLOSE_SAMPLE || null, minBiasSample: KT.learn.MIN_BIAS_SAMPLE || null,
     };
   } catch (e) {
     run.notes.push('learning step failed: ' + String(e && e.message || e).slice(0, 200));

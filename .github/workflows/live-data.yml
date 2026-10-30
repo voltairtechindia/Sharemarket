@@ -77,10 +77,12 @@ jobs:
       # would be a thing somebody has to redo forever.
       #
       # A name leaves this list only when the file is genuinely wanted again.
+      # data/social.json left it on 30 Oct 2026: it is the crowd lane's file
+      # now (scripts/fetch_social.py), read by the forecast and the AI desk.
       - name: Drop retired lanes the seed brought back
         run: |
           rm -f data/market.json data/predictions.json data/live_impact.json \
-                data/social.json data/rss_config.json
+                data/rss_config.json
           echo "retired lanes pruned"
 
       - name: Rebuild feed index if config changed
@@ -140,8 +142,20 @@ jobs:
         run: python scripts/fetch_filings.py
         continue-on-error: true
 
+      # Wide: every priority 1 and 2 feed and a third of the long tail. GitHub
+      # starts this about once every two and a half hours, so the old
+      # five-minute rotation left most feeds unread for a day (30 Oct 2026).
+      # The minute lane below stays on priority 1.
       - name: Fetch and score news
-        run: python scripts/fetch_news.py
+        run: python scripts/fetch_news.py --wide
+        continue-on-error: true
+
+      # The crowd's mood, for the forecast's crowd lane and the AI desk:
+      # Tickertape's mood index, the StockTwits streams for NIFTY and BANK
+      # NIFTY, and the subreddits in config/feeds.yml, tried without a key
+      # and left out when Reddit refuses.
+      - name: Fetch the crowd's mood
+        run: python scripts/fetch_social.py
         continue-on-error: true
 
       # The news lane is the heaviest in the forecast (0.24) and has never been

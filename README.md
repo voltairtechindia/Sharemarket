@@ -363,6 +363,11 @@ Forgetting the record is in Settings, two clicks away from the panel that scores
 it, and it asks first. The whole value of a frozen call is that a bad morning
 cannot be deleted on the morning it happens.
 
+A frozen line no longer disappears when its session ends. Every finished
+session on the chart keeps its line, drawn over its own candles, ending in a
+dot that says what it called and where the session closed, green when it was
+right and red when it was wrong.
+
 ### How it learns
 
 Once there are settled calls, two numbers move on their own: the eight lane
@@ -392,6 +397,17 @@ not something to put one keystroke away from the model's parameters.
 
 Every step is kept, with the sample it was taken on, so "the model learned" is
 checkable rather than decorative.
+
+Since 30 Oct 2026 two more numbers move, both learned from the gap between each
+frozen line and where the market went: the size of the session's move (a line
+that keeps calling twice the move the market makes is drawn at about half) and,
+once it is clearly there, a small lean the line keeps missing by. Same
+discipline: a minimum sample, shrinkage toward no change, hard caps, and every
+call carries the correction it was drawn with, so the next fit never learns from
+its own correction. Every call and its judgement is also appended to the
+`training-log` branch, which keeps the whole record (every input, the line, the
+gap every fifteen minutes, why it missed) long after the page's own file has
+trimmed it.
 
 ### Where it goes, by the clock
 

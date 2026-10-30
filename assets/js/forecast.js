@@ -775,6 +775,94 @@
     };
   }
 
+  /* ==================================================== the crowd
+
+     What the crowd thinks, as a lane (30 Oct 2026). The AI desk's sentiment
+     analyst has read it since the morning; the arithmetic line did not, so
+     the mood of the market never reached the line on the chart.
+
+     Two readings, both free and keyless, from the workflow
+     (scripts/fetch_social.py, data/social.json) or, fresher, from the
+     browser through the proxy chain (data.getSentiment):
+
+       Tickertape's Market Mood Index   0 to 100 for the Indian market
+       StockTwits                       the symbol's own stream, with the
+                                        bullish or bearish tag each author set
+
+     Read the other way at the extremes and not at all in the middle. A
+     crowd at extreme greed or extreme fear has usually already acted, and
+     that is the standard use of both gauges; Tickertape describes its own
+     index that way. In the middle the mood index is mostly momentum and
+     breadth, which other lanes already count, so it votes zero there rather
+     than counting them twice. StockTwits needs eight tagged posts and a
+     stream at least three to one, and its vote shrinks with a thin sample.
+
+     A small weight (CONFIG crowd), measured like every other lane: the
+     learner raises it only if the record says it pointed the right way. A
+     reading older than a day and a half goes dark. */
+  var CROWD_MAX_AGE_SEC = 36 * 3600;
+
+  function crowdLane(sent, nowMs) {
+    var dark = function (why) { return { score: 0, hasData: false, note: why }; };
+    if (!sent || (!sent.mood && !sent.crowd && !sent.reddit)) return dark('no crowd reading');
+    var nowSec = (nowMs || Date.now()) / 1000;
+    var parts = [], notes = [];
+    var m = sent.mood;
+    var mAt = m && (m.at || sent.at);
+    if (m && isFinite(m.now) && (!mAt || nowSec - mAt <= CROWD_MAX_AGE_SEC)) {
+      var v = m.now;
+      var ms = v >= 70 ? -Math.min(1, (v - 70) / 20) : v <= 30 ? Math.min(1, (30 - v) / 20) : 0;
+      parts.push({ id: 'mood', score: r3(ms * 0.6) });
+      notes.push('mood index ' + (Math.round(v * 10) / 10) + (m.zone ? ' (' + m.zone + ')' : '') +
+                 (isFinite(m.day) ? ', ' + (Math.round(m.day * 10) / 10) + ' a day before' : ''));
+    }
+    var c = sent.crowd;
+    var cAt = c && (c.to || sent.at);
+    if (c && isFinite(c.bull) && isFinite(c.bear) && (!cAt || nowSec - cAt <= CROWD_MAX_AGE_SEC)) {
+      var tagged = c.bull + c.bear;
+      if (tagged >= 8) {
+        var lop = (c.bull / tagged - 0.5) * 2;               // -1 all bearish .. +1 all bullish
+        var cs = Math.abs(lop) >= 0.5 ? -lop * tagged / (tagged + 20) : 0;
+        parts.push({ id: 'stocktwits', score: r3(cs * 0.4) });
+      }
+      notes.push(c.bull + ' bullish and ' + c.bear + ' bearish of ' + (c.n || tagged) + ' StockTwits posts');
+    }
+    /* Reddit, when the workflow got through (it answers 403 to most cloud
+       addresses): post titles scored with the news word list, same rule as
+       StockTwits, a smaller share because a title is a weaker tag than the
+       author's own. */
+    var rd = sent.reddit;
+    if (rd && rd.ok && isFinite(rd.bull) && isFinite(rd.bear) && (!sent.at || nowSec - sent.at <= CROWD_MAX_AGE_SEC)) {
+      var rt = rd.bull + rd.bear;
+      if (rt >= 10) {
+        var rl = (rd.bull / rt - 0.5) * 2;
+        var rs = Math.abs(rl) >= 0.5 ? -rl * rt / (rt + 20) : 0;
+        parts.push({ id: 'reddit', score: r3(rs * 0.3) });
+      }
+      notes.push('Reddit ' + rd.bull + ' bullish and ' + rd.bear + ' bearish of ' + (rd.n || rt) + ' posts');
+    }
+    if (!parts.length) return dark(notes.length ? notes.join('; ') + ', too few tagged posts' : 'crowd reading too old');
+    var score = core.clamp(parts.reduce(function (t, p) { return t + p.score; }, 0), -1, 1);
+    return {
+      score: r3(score), hasData: true, parts: parts,
+      note: notes.join('; ') + (score === 0 ? '; no extreme, so no vote' : score > 0 ? '; read as too gloomy' : '; read as too eager'),
+    };
+  }
+
+  /* data/social.json, as one symbol's reading in the shape the browser's
+     own fetch returns ({ at, mood, crowd }), so the lane reads one shape
+     whichever side fetched it. */
+  function socialFor(payload, symbol) {
+    if (!payload || typeof payload !== 'object') return null;
+    var at = payload.generated_at ? Math.floor(Date.parse(payload.generated_at) / 1000) : null;
+    var sym = payload.symbols && payload.symbols[symbol];
+    var mood = payload.mood && isFinite(payload.mood.now) ? payload.mood : null;
+    var crowd = sym && sym.crowd && isFinite(sym.crowd.bull) ? sym.crowd : null;
+    var reddit = payload.reddit && payload.reddit.ok ? payload.reddit : null;
+    if (!mood && !crowd && !reddit) return null;
+    return { at: at, mood: mood, crowd: crowd, reddit: reddit, source: 'workflow' };
+  }
+
   /* ==================================================== the price model
 
      Kronos, a model trained on candles (scripts/kronos_forecast.py, twice a
@@ -1413,6 +1501,7 @@
     var opts = optionsLane(ctx.options, lastClose, Date.now());
     var mdl = modelLane(ctx.modelVote, Date.now());
     var krn = kronosLane(candles, tfKey, lastClose, ctx.symbol);
+    var crowd = crowdLane(ctx.social, Date.now());
     var hst = null;      // needs the horizon's end time; filled in once the path exists
 
     /* ------------------------------------------------------ opening gap
@@ -1469,6 +1558,7 @@
       { id: 'options', label: 'Options positioning', score: opts.score, weight: W.options, note: opts.note, hasData: opts.hasData },
       { id: 'model', label: 'Model read', score: mdl.score, weight: W.model, note: mdl.note, hasData: mdl.hasData },
       { id: 'kronos', label: krn.models === 2 ? 'Price models' : 'Price model', score: krn.score, weight: W.kronos || 0, note: krn.note, hasData: krn.hasData && !!W.kronos },
+      { id: 'crowd', label: 'Crowd mood', score: crowd.score, weight: W.crowd || 0, note: crowd.note, hasData: crowd.hasData && !!W.crowd },
     ];
     /* The twenty-year model's question is the next session's close, so its
        lane needs the horizon's end before the path is drawn: the path's
@@ -1537,12 +1627,25 @@
                     lvl.score * W.levels + flow.score * W.flow +
                     opts.score * W.options + mdl.score * W.model +
                     (krn.hasData && W.kronos ? krn.score * W.kronos : 0) +
+                    (crowd.hasData && W.crowd ? crowd.score * W.crowd : 0) +
                     (hst && hst.hasData ? hst.score * W.history : 0)) / wsum;
     var structPart = (struct.score * W.structure) / wsum;
 
     var horizonSigma = sigmaBlend * Math.sqrt(bars);
     var scale = horizonSigma * 1.1 * persistence;
     var capPct = C.forecast.maxDriftPctPerBar * bars;
+
+    /* What the record has learned from the gap between its frozen lines and
+       the market (learn.closeTerms, 30 Oct 2026): how much bigger or smaller
+       the session's move should be drawn, and a lean the line keeps missing
+       by. Intraday views only, because it is fitted on session calls, and
+       the lean is scaled to the share of a session the horizon covers (an
+       hour ahead gets a sixth of it). Nothing at all until the record has
+       its minimum of judged sessions. */
+    var learned = tf.barSec < 86400 && KT.learn && KT.learn.closeTerms ? KT.learn.closeTerms() : null;
+    if (learned && isFinite(learned.gain) && learned.gain > 0) scale *= learned.gain;
+    var leanPct = learned && isFinite(learned.bias)
+      ? learned.bias * Math.min(1, bars * tf.barSec / 22500) : 0;
 
     /* Adaptive conformal inference over what the ledger has actually settled.
        Inert until there are rows, and it says so rather than pretending. */
@@ -1583,15 +1686,16 @@
             shapeAt = (sv - s0) * 0.35 * core.clamp(shape.sessions / 15, 0.15, 1);
           }
         }
+        var leanAt = leanPct * frac;
         return {
-          total: newsAt + evenAt + structAt + shapeAt,
+          total: newsAt + evenAt + structAt + shapeAt + leanAt,
           /* The three timing groups and the clock term, plus how far each
              timing curve has travelled by this bar. That second part is what
              makes the hover worth reading: the same lane mix produces a
              different push at 10:30 and at 15:15, and nothing on the page
              showed that before. */
           parts: {
-            news: newsAt, even: evenAt, struct: structAt, shape: shapeAt,
+            news: newsAt, even: evenAt, struct: structAt, shape: shapeAt, lean: leanAt,
             newsDecay: newsDecay, evenRamp: frac, structRamp: structRamp,
           },
         };
@@ -1614,7 +1718,7 @@
        its own version of this is how build() and calibrate() drifted apart. */
     var GROUP_OF = { news: 'news', global: 'news', structure: 'struct',
                      seasonal: 'even', momentum: 'even', levels: 'even', flow: 'even',
-                     options: 'even', model: 'even', kronos: 'even', history: 'even' };
+                     options: 'even', model: 'even', kronos: 'even', history: 'even', crowd: 'even' };
     var attribution = drawn.detail.map(function (d) {
       var curve = { news: d.parts.newsDecay, even: d.parts.evenRamp,
                     struct: d.parts.structRamp, shape: 1 };
@@ -1633,6 +1737,7 @@
         cappedPct: d.cappedPct, temperPct: d.temperPct,
         sdPct: d.sdPct, profileMult: d.profileMult, pUp: d.pUp,
         shapePct: r3(d.parts.shape),
+        leanPct: r3(d.parts.lean || 0),
         lanes: laneParts,
       };
     });
@@ -1869,6 +1974,12 @@
          description of a reprice that already happened, so showing it then
          would be an answer to a question the clock has closed. */
       modelRead: mdl.hasData ? { score: r3(mdl.score), why: mdl.why, model: mdl.model } : null,
+      crowd: crowd.hasData ? { score: crowd.score, note: crowd.note, parts: crowd.parts } : null,
+      /* The size and lean the record has learned, as applied to this line,
+         so a frozen call carries what it was made with (ledger row
+         `learned`) and the next fit can divide it back out. */
+      learned: learned ? { gain: learned.gain, bias: learned.bias, n: learned.n, source: learned.source,
+                           leanPct: r3(leanPct) } : null,
       open: {
         applies: gapApplies,
         hasData: open.hasData,
@@ -2355,5 +2466,6 @@
     setFocus: setFocus,
     setKronos: setKronos, setChronos: setChronos, kronosLane: kronosLane,
     setHistory: setHistory, historyLane: historyLane, historyTrust: historyTrust,
+    crowdLane: crowdLane, socialFor: socialFor,
   };
 })(window.KT);

@@ -27,7 +27,7 @@ If nothing reads it, wire it or do not write it.
 ## Verify like this
 
 1. `node scripts/selftest.js`: loads the real modules into a vm whose global
-   is `window`; 452 checks (30 Oct 2026), each a real bug once, including
+   is `window`; 498 checks (30 Oct 2026), each a real bug once, including
    `scripts/selftest_calls.js` (the call, the verdict, the record, and the
    workflow's `daily_call.js` replayed over an evening, a morning and an
    evening on a scratch copy of the data). It also checks that every id
@@ -73,10 +73,9 @@ scripts load the same files in Node through `scripts/ktvm.js`.
   **Never commit a key.** The repo and the site are public.
 - Send `reasoning: { enabled: false }`; reject completions under the minimum
   length; filter guard/safety/moderation ids. `openrouter/free` stays default.
-- Budget: 50 requests a day on the free tier, counted in `data.aiBudget()`.
-  The AI desk spends 6 a run, 7 with the sentiment analyst (14 at most, with
-  retries). With the desk on
-  (`C.ui.desk`) the single-call vote and narrative do not run.
+- Budget: 50 requests a day on the free tier (`data.aiBudget()`). The desk
+  spends 6 a run, 7 with the sentiment analyst (14 at most, with retries); with
+  it on (`C.ui.desk`) the single-call vote and narrative do not run.
 - The AI never sees the engine's verdict, only votes, and is settled and
   scored like every lane. It never writes a price.
 - Public copy never names the vendor or the model ("the AI"), and never says
@@ -85,25 +84,29 @@ scripts load the same files in Node through `scripts/ktvm.js`.
 ## Endpoints
 
 Dead ones and their replacements: `docs/engineering-notes.md`, "Endpoints".
-Alive from a browser (measured 29 Oct 2026 from the Pages origin):
-TradingView screener POST (`text/plain`, no preflight) for any NSE stock and
-the extra columns `beta_1_year`, `earnings_release_next_date`, `industry`,
-`open`; Yahoo chart through `r.jina.ai` for `SYM.NS` (1m, 5d); OpenRouter
-models list. Yahoo direct is CORS-blocked. NSE needs the proxy. Through
-`r.jina.ai` (30 Oct 2026): Tickertape's mood index and StockTwits
-(`NIFTY50.NSE`, `SYMBOL.NSE`; none for SENSEX). Reddit answers 403.
+Alive from the Pages origin (29-30 Oct 2026): TradingView screener POST
+(`text/plain`, no preflight) for any NSE stock plus `beta_1_year`,
+`earnings_release_next_date`, `industry`, `open`; OpenRouter models list;
+through `r.jina.ai`, Yahoo chart (`SYM.NS`, 1m, 5d), NSE, Tickertape's mood
+index and StockTwits (`NIFTY50.NSE`, `SYMBOL.NSE`; none for SENSEX). Yahoo
+direct is CORS-blocked. Reddit answers 403 to every proxy; `fetch_social.py`
+tries it keyless from Actions and drops it when refused.
 
 ## Workflows
 
-- `live-data.yml`: asks for every 5 minutes, gets about one run per 2.5 hours.
-  Force-pushes `data/` to the orphan `live-data` branch.
+- `live-data.yml`: asks for every 5 minutes, gets about one run per 2.5 hours;
+  force-pushes `data/` to the orphan `live-data` branch. A wide news sweep
+  (`fetch_news.py --wide`), the crowd's `data/social.json` (`fetch_social.py`).
+  `config/feeds.yml` is read whole (`feeds_build.py yaml_lanes`; `reddit:` by
+  `fetch_social.py`).
 - `snapshot.yml`: copies `live-data` to `main` four times a day.
 - `kronos.yml`: the price models (Kronos, Chronos-Bolt) to
   `data/kronos.json` and `data/chronos.json`.
-- `history.yml`: twice a weekday, refreshes the tape, fits the
-  twenty-year model (`data/history_model.json`, `data/study.json`), then
-  `daily_call.js` judges the session that closed and freezes the next call
-  (`data/calls.json`, the record every browser shows).
+- `history.yml`: twice a weekday: the tape, the twenty-year model
+  (`data/history_model.json`, `data/study.json`), `daily_call.js` (judges the
+  closed session, freezes the next: `data/calls.json`), then `training_log.sh`
+  appends every call and judgement to the `training-log` branch. Where the
+  calls go wrong: `git fetch origin training-log`, read its `summary.md`.
 - Both share `live-data`'s concurrency group and publish through
   `publish_live.sh`. Added 30 Oct 2026; their first runs are the check.
 
@@ -118,7 +121,8 @@ dashes in product copy.
 
 ## Git
 
-`main` only. The owner commits and pushes from Windows. Working tree may be
+`main` only (`live-data` and `training-log` are written by the workflows,
+never by hand). The owner commits and pushes from Windows. Working tree may be
 CRLF, index LF: commit with `git -c core.autocrlf=input`. Never commit
 `assets/local-config.js` or `.venv/`. Another agent may edit this repo at the
 same time: check `git status` and mtimes before reverting anything.

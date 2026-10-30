@@ -100,6 +100,7 @@
           loadKronos(),
           loadHistory(),
           loadCalls(true),
+          loadSocial(),
           // The universe is what turns "RELIANCE" into "Reliance Industries"
           // for headline matching, so it has to land before the first scan.
           data.loadBaked(C.baked.universe).then(function (u) {
@@ -194,6 +195,40 @@
       if (S.booted) recompute();
       return true;
     }).catch(noop);
+  }
+
+  /* The crowd's mood (forecast.crowdLane): the workflow's reading
+     (scripts/fetch_social.py) for every symbol it covers, and this
+     browser's own, fetched through the proxy chain every fifteen minutes
+     for the symbol on screen (data.getSentiment). Whichever is newer is
+     the one the lane reads. */
+  function loadSocial() {
+    if (!C.baked.social) return Promise.resolve(false);
+    return data.loadBaked(C.baked.social).then(function (s) { S.social = s && typeof s === 'object' ? s : null; }).catch(noop);
+  }
+  var CROWD_EVERY_MS = 15 * 60000;
+  S.crowdLive = {};
+  function refreshCrowd() {
+    var sym = S.symbol;
+    if (!data.getSentiment || document.hidden) return Promise.resolve(false);
+    var have = S.crowdLive[sym];
+    if (have && Date.now() - have.fetchedAt < CROWD_EVERY_MS) return Promise.resolve(false);
+    S.crowdLive[sym] = { fetchedAt: Date.now(), value: have ? have.value : null };
+    return data.getSentiment(sym).then(function (v) {
+      if (v) S.crowdLive[sym] = { fetchedAt: Date.now(), value: v };
+      if (v && S.booted && sym === S.symbol) recompute();
+      return !!v;
+    }).catch(function () { return false; });
+  }
+  function crowdFor(sym) {
+    var live = S.crowdLive[sym] && S.crowdLive[sym].value;
+    var file = KT.forecast.socialFor ? KT.forecast.socialFor(S.social, sym) : null;
+    if (live && (!file || (live.at || 0) >= (file.at || 0))) {
+      // The live read has no Reddit; the workflow's may.
+      return file && file.reddit ? { at: live.at, mood: live.mood || file.mood, crowd: live.crowd || file.crowd,
+                                     reddit: file.reddit, source: 'browser' } : live;
+    }
+    return file;
   }
 
   function note(message) {
@@ -660,6 +695,7 @@
       loadKronos(),
       loadHistory(),
       loadCalls(),
+      loadSocial(),
       data.loadBaked(C.baked.stocks).then(function (q) {
         KT.portfolio.setQuotes(q);
         // The live screener copy is fresher than the workflow's; re-apply it
@@ -747,6 +783,7 @@
       /* The model's own vote, if it has one that is still fresh. modelLane()
          drops it past twenty minutes rather than voting on stale headlines. */
       modelVote: S.modelVote || null,
+      social: crowdFor(S.symbol),
     });
     S.reasons = engine.buildReasons(S.candles, news, S.timeframe);
 
@@ -772,6 +809,11 @@
       S.forecast.locked = tfDef.barSec === 60 ? S.call.locked : onGrid(S.call.locked, tfDef.barSec);
       S.lockScore = S.call.score;
     }
+    /* The frozen calls of the finished sessions on screen stay drawn over
+       their own candles (30 Oct 2026): a line that vanished at the close took
+       with it the one comparison the page is for, where it said price would
+       go against where it went. */
+    S.forecast.lockedPast = tfDef && tfDef.barSec <= 300 ? pastCalls(S.symbol, S.candles, S.call && S.call.locked, tfDef.barSec) : [];
 
     /* The live trail. Written before the chart draws, for the same reason the
        lock is: a point recorded after the repaint shows up a repaint late.
@@ -902,6 +944,23 @@
     };
   }
 
+  /* One frozen call a finished session, for the sessions these candles cover:
+     the record's where it has one, this browser's otherwise (panels.js
+     sessionRows ranks them). */
+  function pastCalls(symbol, candles, current, barSec) {
+    if (!KT.panels || !KT.panels.sessionRows || !candles || candles.length < 2) return [];
+    var first = candles[0].time, last = candles[candles.length - 1].time;
+    var out = [];
+    KT.panels.sessionRows(symbol).forEach(function (r) {
+      if (!r || !r.path || r.path.length < 2) return;
+      if (current && r.session === current.session) return;
+      var a = r.path[0].time, b = r.path[r.path.length - 1].time;
+      if (b < first || a > last) return;
+      out.push(barSec === 60 ? r : onGrid(r, barSec));
+    });
+    return out;
+  }
+
   /* The session call is a one-minute path. On the 5-minute view it is drawn
      on that view's bars, or the chart would gain four extra time slots
      between every pair of candles. */
@@ -911,6 +970,19 @@
     for (var i = 0; i < path.length; i++) {
       var t = path[i].time;
       if (Math.floor(t / barSec) * barSec === t) out.push(path[i]);
+    }
+    /* A path stamped off the minute (a bar's trade second, 09:17:14) has no
+       point on the grid at all and used to come out as one dot (three of one
+       browser's sessions, seen live 30 Oct 2026). Each bar then takes the
+       last point inside it. */
+    if (out.length < 2 && path.length >= 2) {
+      out = [];
+      var byBar = {};
+      for (var j = 0; j < path.length; j++) {
+        var b = Math.floor(path[j].time / barSec) * barSec;
+        if (!(b in byBar)) { byBar[b] = out.length; out.push({ time: b, value: path[j].value }); }
+        else out[byBar[b]] = { time: b, value: path[j].value };
+      }
     }
     var lastPt = path[path.length - 1];
     if (!out.length || out[out.length - 1].time !== lastPt.time) {
@@ -1572,6 +1644,8 @@
       if (m.live || !S.indexLive || Date.now() - Date.parse(S.indexLive.at) > 900000) refreshIndexLive();
     }, 120000);
     S.timers.fiiDii = setInterval(refreshFiiDiiLive, 1200000);
+    setTimeout(refreshCrowd, 9000);
+    S.timers.crowd = setInterval(refreshCrowd, 60000);
     S.timers.partOi = setInterval(refreshPartOi, 10800000);
     // Holdings outside the workflow universe are priced on their own slower
     // timer, because each one costs a trip through the shared public proxy.

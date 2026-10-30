@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -125,18 +126,114 @@ def parse_time(entry):
     return datetime.now(timezone.utc)
 
 
-def pick_feeds(feeds, cycle):
-    """Priority 1 every cycle, 2 every 3rd, 3 every 10th."""
+def pick_feeds(feeds, cycle, wide=False):
+    """Priority 1 every cycle, 2 every 3rd, 3 every 10th.
+
+    `wide` (30 Oct 2026): every priority 1 and 2 feed and a third of the long
+    tail, chosen by the cycle. The rotation above assumed a run every five
+    minutes; GitHub starts the workflow about once every two and a half hours,
+    so most feeds went unread for most of a day and the frozen call was made
+    from the 54 feeds of priority 1. The scheduled runs sweep wide; the minute
+    lane between them stays on priority 1.
+    """
     out = []
-    for f in feeds:
+    for i, f in enumerate(feeds):
         p = f.get("priority", 3)
-        if p <= 1 or (p == 2 and cycle % 3 == 0) or (p == 3 and cycle % 10 == 0):
+        if wide:
+            if p <= 2 or i % 3 == cycle % 3:
+                out.append(f)
+        elif p <= 1 or (p == 2 and cycle % 3 == 0) or (p == 3 and cycle % 10 == 0):
             out.append(f)
     return out
 
 
+# Google News answers a burst of a few hundred searches from one address with
+# "unusual traffic". Six at a time spreads a wide sweep over a minute or so.
+GNEWS_GATE = threading.Semaphore(6)
+# A wide sweep stops starting new requests after this long, so a slow source
+# can never push the run past the step's own timeout and lose every headline
+# it had already fetched.
+WIDE_BUDGET_SEC = 150
+DEADLINE = [None]
+
+
 def fetch_one(feed, session):
+    if "news.google.com" in feed.get("url", ""):
+        with GNEWS_GATE:
+            return _fetch_one(feed, session)
+    return _fetch_one(feed, session)
+
+
+class _Entry(dict):
+    """A parsed item that reads like a feedparser entry (getattr by name)."""
+    __getattr__ = dict.get
+
+
+TG_WRAP_RX = re.compile(r'<div class="tgme_widget_message_wrap.*?(?=<div class="tgme_widget_message_wrap|\Z)', re.S)
+TG_TEXT_RX = re.compile(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', re.S)
+TG_TIME_RX = re.compile(r'<time[^>]*datetime="([^"]+)"')
+TG_LINK_RX = re.compile(r'<a class="tgme_widget_message_date"[^>]*href="([^"]+)"')
+
+
+def parse_telegram(page):
+    """A public channel's web preview (t.me/s/<channel>) as feed entries,
+    newest first: the message text, its time and its link."""
+    import html as _html
+    out = []
+    for block in TG_WRAP_RX.findall(page or ""):
+        m = TG_TEXT_RX.search(block)
+        if not m:
+            continue
+        text = re.sub(r"<br\s*/?>", " ", m.group(1))
+        text = norm(_html.unescape(re.sub(r"<[^>]+>", " ", text)))
+        if len(text) < 18:
+            continue
+        t = TG_TIME_RX.search(block)
+        when = None
+        if t:
+            try:
+                when = datetime.fromisoformat(t.group(1).replace("Z", "+00:00")).astimezone(timezone.utc).timetuple()
+            except ValueError:
+                when = None
+        link = TG_LINK_RX.search(block)
+        first = re.split(r"(?<=[.!?])\s+", text)[0]
+        out.append(_Entry(title=(first if len(first) >= 18 else text)[:200], summary=text[:400],
+                          link=link.group(1) if link else "", published_parsed=when))
+    return list(reversed(out))[:25]
+
+
+def parse_gdelt(payload):
+    """GDELT's article list (api.gdeltproject.org, free, no key) as entries."""
+    out = []
+    for a in (payload or {}).get("articles") or []:
+        title = norm(a.get("title"))
+        if len(title) < 18:
+            continue
+        when = None
+        try:
+            when = datetime.strptime(a.get("seendate", ""), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).timetuple()
+        except ValueError:
+            when = None
+        out.append(_Entry(title=title, summary=(a.get("domain") or ""), link=a.get("url") or "",
+                          published_parsed=when, source_domain=a.get("domain")))
+    return out[:40]
+
+
+def _fetch_one(feed, session):
     url = feed["url"]
+    if DEADLINE[0] and time.time() > DEADLINE[0]:
+        return feed, [], "skipped: time budget"
+    lane = feed.get("lane")
+    if lane in ("telegram", "gdelt"):
+        try:
+            r = session.get(url, headers={"User-Agent": UA, "Accept": "text/html,application/json,*/*"},
+                            timeout=FEED_TIMEOUT)
+            if r.status_code != 200:
+                return feed, [], f"HTTP {r.status_code}"
+            entries = parse_telegram(r.text) if lane == "telegram" else parse_gdelt(r.json())
+            return (feed, entries, "") if entries else (feed, [], "no entries")
+        except Exception as exc:  # noqa: BLE001
+            return feed, [], type(exc).__name__
     try:
         r = session.get(
             url,
@@ -171,24 +268,32 @@ def main():
     feeds = json.loads(index_path.read_text(encoding="utf-8"))["feeds"]
 
     cycle = int(time.time() // 300)  # one cycle per 5 minutes
-    due = pick_feeds(feeds, cycle)
-    print(f"cycle {cycle}: polling {len(due)} of {len(feeds)} feeds")
+    wide = "--wide" in sys.argv
+    if wide:
+        DEADLINE[0] = time.time() + WIDE_BUDGET_SEC
+    due = pick_feeds(feeds, cycle, wide)
+    print(f"cycle {cycle}: polling {len(due)} of {len(feeds)} feeds" + (" (wide sweep)" if wide else ""))
 
     session = requests.Session()
-    results, health = [], []
+    results, health, skipped = [], [], 0
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
         futures = [pool.submit(fetch_one, f, session) for f in due]
         for fut in as_completed(futures):
             feed, entries, err = fut.result()
+            if err.startswith("skipped"):
+                skipped += 1          # not read this run, which says nothing about the feed
+                continue
             health.append(
                 {"id": feed["id"], "name": feed["name"], "lane": feed["lane"],
                  "ok": not err, "n": len(entries), "err": err}
             )
             for e in entries:
                 results.append((feed, e))
+    due = [f for f in due if any(h["id"] == f["id"] for h in health)] if skipped else due
 
     alive = sum(1 for h in health if h["ok"])
-    print(f"  {alive}/{len(due)} feeds alive, {len(results)} raw entries")
+    print(f"  {alive}/{len(due)} feeds alive, {len(results)} raw entries" +
+          (f", {skipped} left for the next run (time budget)" if skipped else ""))
 
     # ---------------------------------------------------------------- filter
     existing = load_existing()
@@ -221,7 +326,7 @@ def main():
                 "headline": title,
                 "industry": sector,
                 "impact_tag": tag,
-                "source": feed["name"],
+                "source": (e.source_domain + " via GDELT") if getattr(e, "source_domain", None) else feed["name"],
                 "tags": feed.get("tags", []),
                 "timestamp": ts.astimezone(IST).strftime("%Y-%m-%d %H:%M:%S"),
                 "priority": {1: "high", 2: "medium", 3: "low"}.get(feed.get("priority", 3), "low"),

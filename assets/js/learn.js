@@ -8,8 +8,10 @@
 
    What it changes, and what it is not allowed to change:
 
-     changes   the eight lane weights, and one scalar gain on the opening-gap
-               betas. Two knobs, both bounded, both auditable.
+     changes   the lane weights, one scalar gain on the opening-gap betas,
+               and (30 Oct 2026) the size of the session's move and a small
+               lean, both learned from the gap between the frozen line and
+               the market. All bounded, all auditable.
      never     any price, any band, any probability, any narrative fact. The
                model stays deterministic arithmetic over the lanes; learning
                only moves how much each lane is listened to.
@@ -61,6 +63,10 @@
   var FLOOR = 0.02;         // no lane is ever silenced
   var MIN_OPEN_SAMPLE = 10; // settled opens before the gap gain may move
   var MAX_GAIN = 1.6, MIN_GAIN = 0.4;
+  /* The gap between the line and the market (closeFitFrom). */
+  var MIN_CLOSE_SAMPLE = 10;  // judged sessions before the move's size may change
+  var MIN_BIAS_SAMPLE = 20;   // and before a lean is even considered
+  var MAX_BIAS_PCT = 0.25;    // the most a learned lean adds to a session, in %
   var UPDATE_EVERY_MS = 3600000;   // at most hourly; the evidence is daily
   /* A step needs fresh evidence: this many settled calls since the last
      step, or a tenth of the sample, whichever is larger. Without it the same
@@ -69,7 +75,8 @@
 
   function blank() {
     return { version: VERSION, weights: null, openGain: 1, updatedAt: 0,
-             samples: 0, openSamples: 0, history: [], proposal: null };
+             samples: 0, openSamples: 0, closeGain: 1, closeBias: 0, closeSamples: 0,
+             history: [], proposal: null };
   }
 
   function load() {
@@ -112,11 +119,14 @@
       });
       normalise(w);
     }
-    var g = Number(fit.openGain);
+    var g = Number(fit.openGain), cg = Number(fit.closeGain), cb = Number(fit.closeBias);
     shared = {
       weights: w,
       openGain: isFinite(g) ? core.clamp(g, MIN_GAIN, MAX_GAIN) : 1,
       openSamples: +fit.openSamples || 0,
+      closeGain: isFinite(cg) ? core.clamp(cg, MIN_GAIN, MAX_GAIN) : 1,
+      closeBias: isFinite(cb) ? core.clamp(cb, -MAX_BIAS_PCT, MAX_BIAS_PCT) : 0,
+      closeSamples: +fit.closeSamples || 0,
       samples: +fit.samples || 0,
       updatedAt: fit.updatedAt || 0,
       history: Array.isArray(fit.history) ? fit.history.slice(-60) : [],
@@ -158,6 +168,21 @@
     Object.keys(base).forEach(function (k) { out[k] = base[k] * gain; });
     out.fitted = true;
     return out;
+  }
+
+  /* The size of the session's move and the lean, as the forecast applies
+     them (forecast.build): the record's fit where it has the larger sample,
+     this browser's otherwise, nothing until MIN_CLOSE_SAMPLE judged sessions
+     exist. */
+  function closeTerms() {
+    var st = state(), fit = null;
+    if (shared && shared.closeSamples >= MIN_CLOSE_SAMPLE && shared.closeSamples >= (st.closeSamples || 0)) {
+      fit = { gain: shared.closeGain, bias: shared.closeBias || 0, n: shared.closeSamples, source: 'record' };
+    } else if ((st.closeSamples || 0) >= MIN_CLOSE_SAMPLE) {
+      fit = { gain: st.closeGain || 1, bias: st.closeBias || 0, n: st.closeSamples, source: 'browser' };
+    }
+    if (!fit || (fit.gain === 1 && !fit.bias)) return null;
+    return fit;
   }
 
   /* ------------------------------------------------------------ updating
@@ -217,26 +242,32 @@
     normalise(next);
 
     var open = openGainFrom(symbol);
+    var close = closeFitFrom(symbol);
+    var closeSame = close.gain === (st.closeGain || 1) && close.bias === (st.closeBias || 0);
+    st.closeSamples = close.n;
 
-    if (!moved.length && open.gain === st.openGain) {
+    if (!moved.length && open.gain === st.openGain && closeSame) {
       st.updatedAt = Date.now();
       st.samples = agg.n || 0;
       save(st); invalidate();
-      return { moved: [], held: held, agg: agg, open: open, state: st };
+      return { moved: [], held: held, agg: agg, open: open, close: close, state: st };
     }
 
-    st.weights = next;
+    if (moved.length) st.weights = next;
     st.openGain = open.gain;
     st.openSamples = open.n;
+    st.closeGain = close.gain;
+    st.closeBias = close.bias;
     st.samples = agg.n || 0;
     st.stepSamples = agg.n || 0;
     st.updatedAt = Date.now();
     st.history.push({ at: Date.now(), symbol: symbol, timeframe: timeframe,
                       moved: moved, openGain: open.gain, openSamples: open.n,
+                      closeGain: close.gain, closeBias: close.bias, closeSamples: close.n,
                       sample: agg.n || 0 });
     if (st.history.length > 60) st.history = st.history.slice(-60);
     save(st); invalidate();
-    return { moved: moved, held: held, agg: agg, open: open, state: st };
+    return { moved: moved, held: held, agg: agg, open: open, close: close, state: st };
   }
 
   /* One number: are the gaps we call too big or too small, on average.
@@ -273,6 +304,75 @@
     var gain = core.clamp(1 + (raw - 1) * w, MIN_GAIN, MAX_GAIN);
     return { gain: Math.round(gain * 1000) / 1000, n: n, raw: Math.round(raw * 1000) / 1000 };
   }
+
+  /* The gap between the frozen line and the market, learned (30 Oct 2026).
+
+     For every judged session call: how far the line said the session would
+     travel from its open to its close, against how far it did. Two numbers
+     come out of that record.
+
+       gain   the least-squares slope of what the session did on what the
+              line said, through zero: the one number that, multiplied into
+              the line's drift, would have put its closes nearest the market.
+              A line that keeps calling moves twice the size the market makes
+              gets about 0.5. One whose leans carry no information gets close
+              to nothing, which is the honest answer, and is held at MIN_GAIN
+              rather than allowed to turn the line round. Shrunk toward 1 while
+              the sample is thin, like the gap gain.
+       lean   what is left once the size is right: the average distance the
+              close landed above or below the line. Kept only when it is
+              there over at least MIN_BIAS_SAMPLE sessions and two standard
+              errors clear of zero, then shrunk and capped at MAX_BIAS_PCT a
+              session. A model that is simply wrong in both directions has no
+              lean, and gets none.
+
+     Every call carries the gain and lean it was made with (the ledger row's
+     `learned`), and they are divided back out here, so a fit is always
+     measured against the model's own line, never against its last
+     correction: the correction cannot feed on itself. */
+  function closeFitFrom(symbol) {
+    var none = function (n) { return { gain: 1, bias: 0, n: n || 0 }; };
+    if (!KT.ledger || !KT.ledger.locks) return none(0);
+    var rank = function (x) { return (x.timeframe === '1S' ? 2 : 0) + (x.stage === 'open' ? 1 : 0); };
+    var by = {};
+    KT.ledger.locks(symbol, 400).forEach(function (r) {
+      if (!r || r.timeframe !== '1S') return;
+      var cur = by[r.session];
+      if (!cur || rank(r) > rank(cur)) by[r.session] = r;
+    });
+    var xs = [], ys = [];
+    Object.keys(by).sort().reverse().slice(0, 60).forEach(function (k) {
+      var r = by[k], p = r.postmortem;
+      if (!p || !p.said || !p.did || !(r.anchorPrice > 0)) return;
+      var opened = num(p.said.open) != null ? p.said.open : num(r.openPrice);
+      if (opened == null || num(p.said.target) == null || num(p.did.open) == null || num(p.did.close) == null) return;
+      var said = (p.said.target - opened) / r.anchorPrice * 100;
+      var did = (p.did.close - p.did.open) / r.anchorPrice * 100;
+      var L = r.learned || {};
+      var g = num(L.g) != null && L.g > 0 ? L.g : 1, b = num(L.b) != null ? L.b : 0;
+      xs.push((said - b) / g); ys.push(did);
+    });
+    var n = xs.length;
+    if (n < MIN_CLOSE_SAMPLE) return none(n);
+    var sxy = 0, sxx = 0;
+    for (var i = 0; i < n; i++) { sxy += xs[i] * ys[i]; sxx += xs[i] * xs[i]; }
+    if (!(sxx > 0)) return none(n);
+    var raw = sxy / sxx;
+    var w = n / (n + MIN_CLOSE_SAMPLE);
+    var gain = core.clamp(1 + (raw - 1) * w, MIN_GAIN, MAX_GAIN);
+    var res = ys.map(function (y, j) { return y - gain * xs[j]; });
+    var mean = res.reduce(function (s, x) { return s + x; }, 0) / n;
+    var sd = Math.sqrt(res.reduce(function (s, x) { return s + (x - mean) * (x - mean); }, 0) / Math.max(1, n - 1));
+    var t = sd > 0 ? mean / (sd / Math.sqrt(n)) : 0;
+    var lean = 0;
+    if (n >= MIN_BIAS_SAMPLE && Math.abs(t) >= 2) {
+      lean = core.clamp(mean * n / (n + MIN_BIAS_SAMPLE), -MAX_BIAS_PCT, MAX_BIAS_PCT);
+    }
+    return { gain: Math.round(gain * 1000) / 1000, bias: Math.round(lean * 1000) / 1000, n: n,
+             raw: Math.round(raw * 1000) / 1000, lean: Math.round(mean * 1000) / 1000,
+             t: Math.round(t * 100) / 100 };
+  }
+  function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
 
   /* ----------------------------------------------------------- proposals
 
@@ -350,12 +450,18 @@
     var st = state();
     var rec = shared && shared.weights ? shared : null;
     var openRec = shared && shared.openSamples >= MIN_OPEN_SAMPLE && shared.openSamples >= (st.openSamples || 0);
+    var closeRec = shared && shared.closeSamples >= (st.closeSamples || 0) && shared.closeSamples > 0;
     return {
       fitted: !!(rec || st.weights),
       source: rec ? 'record' : st.weights ? 'browser' : 'config',
       samples: rec ? rec.samples : st.samples,
       openSamples: openRec ? shared.openSamples : st.openSamples,
       openGain: openRec ? shared.openGain : st.openGain,
+      closeSamples: closeRec ? shared.closeSamples : (st.closeSamples || 0),
+      closeGain: closeRec ? shared.closeGain : (st.closeGain || 1),
+      closeBias: closeRec ? shared.closeBias : (st.closeBias || 0),
+      closeSource: closeRec ? 'record' : 'browser',
+      minCloseSample: MIN_CLOSE_SAMPLE,
       updatedAt: rec ? rec.updatedAt : st.updatedAt,
       steps: rec ? rec.history.length : st.history.length,
       recordSamples: shared ? shared.samples : 0,
@@ -385,11 +491,12 @@
   }
 
   KT.learn = {
-    weights: weights, openBetas: openBetas, update: update,
+    weights: weights, openBetas: openBetas, closeTerms: closeTerms, update: update,
     propose: propose, accept: accept, reject: reject, proposal: proposal,
     history: history, summary: summary, reset: reset,
-    openGainFrom: openGainFrom, adoptShared: adoptShared,
+    openGainFrom: openGainFrom, closeFitFrom: closeFitFrom, adoptShared: adoptShared,
     MIN_SAMPLE: MIN_SAMPLE, MAX_STEP: MAX_STEP, FLOOR: FLOOR,
     MIN_OPEN_SAMPLE: MIN_OPEN_SAMPLE, MIN_GAIN: MIN_GAIN, MAX_GAIN: MAX_GAIN,
+    MIN_CLOSE_SAMPLE: MIN_CLOSE_SAMPLE, MIN_BIAS_SAMPLE: MIN_BIAS_SAMPLE, MAX_BIAS_PCT: MAX_BIAS_PCT,
   };
 })(window.KT);

@@ -20,6 +20,13 @@
      a replayed week      the workflow script itself, run three times on a
                           scratch copy of the data with a test clock: freeze,
                           freeze again before the open, judge after the close
+     the crowd            the mood of the market reaches the line, read the
+                          other way only at the extremes
+     the gap              the size and lean learned from line against market,
+                          measured against the model's own line, never its
+                          last correction
+     the training log     every call and judgement appended once, with the
+                          gap every fifteen minutes
    ========================================================================== */
 'use strict';
 const fs = require('fs');
@@ -58,13 +65,13 @@ const days = [];
 minutes.forEach(c => { const k = istKey(c.time); if (days.indexOf(k) === -1) days.push(k); });
 const lastDay = days[days.length - 1], prevDay = days[days.length - 2];
 function upTo(key) { return minutes.filter(c => istKey(c.time) <= key).map(c => Object.assign({}, c)); }
-function sessionCall(KT, candles) {
-  return KT.engine.buildForecast({
+function sessionCall(KT, candles, extra) {
+  return KT.engine.buildForecast(Object.assign({
     symbol: 'NIFTY', candles: candles, news: [], seasonality: null, timeframe: '1S', livePrice: null,
     indicators: KT.ind.snapshot(candles), levels: KT.levels.build(candles),
     structures: KT.structures.detect(candles), structureStats: null,
     global: null, flows: null, options: null, vix: null, conformal: null, modelVote: null,
-  });
+  }, extra || {}));
 }
 // The weekday after a key, for clocks set "the next morning".
 function nextDay(key) {
@@ -298,7 +305,7 @@ section('DESK - the sentiment analyst');
   const ST = { messages: [
     { body: 'Nifty holding 22900, looks strong into expiry', created_at: nowIso, entities: { sentiment: { basic: 'Bullish' } } },
     { body: 'Join our Telegram for free tips https://t.me/x', created_at: nowIso, entities: {} },
-    { body: 'Breadth is weak under the surface', created_at: nowIso, entities: { sentiment: { basic: 'Bearish' } } },
+    { body: 'Breadth is weak under the surface &amp; banks lag', created_at: nowIso, entities: { sentiment: { basic: 'Bearish' } } },
   ] };
   const KT = load(['config', 'core', 'indicators', 'levels', 'candles', 'patterns', 'structures', 'data', 'analogs', 'vol', 'forecast',
                    'postmortem', 'ledger', 'learn', 'trail', 'evidence', 'engine', 'streetcalls', 'stocks', 'lessons', 'desk'], {
@@ -316,7 +323,7 @@ section('DESK - the sentiment analyst');
        calls.every(u => /^https:\/\/r\.jina\.ai\//.test(u)), calls.length + ' requests');
     ok('the gauge is read on its own scale', x.mood.zone === 'extreme greed' && x.mood.day === 61.2 && x.mood.month === 35.5);
     ok('promotions are dropped before the analyst sees the stream', x.crowd.n === 2 && x.crowd.promo === 1 && x.crowd.bull === 1 && x.crowd.bear === 1 &&
-       !x.crowd.items.some(i => /telegram/i.test(i.text)));
+       !x.crowd.items.some(i => /telegram/i.test(i.text)) && x.crowd.items.some(i => /surface & banks/.test(i.text)));
     const n0 = calls.length;
     return KT.data.getSentiment('NIFTY').then(y => ok('and kept for ten minutes', y === x && calls.length === n0));
   }).then(() => KT.data.getSentiment('SENSEX')).then(z => {
@@ -349,6 +356,13 @@ section('DAILY CALL - pieces');
                         postmortem: { reasons: [{ kind: 'open', w: 1, text: 'x'.repeat(400) }], lanes: { right: [{ id: 'a', label: 'A', c: 0.1 }], wrong: [] } } });
   ok('a judged row keeps its judgement and drops its minute path', !c.path && !c.lanes && c.ctx.fp && !c.ctx.cues &&
      c.postmortem.reasons[0].text.length === 220 && c.postmortem.lanes.right[0].id === 'a' && c.compact);
+  const minutesPath = []; for (let i = 0; i < 375; i++) minutesPath.push({ time: 1000020 + i * 60, value: 25000 + i });
+  const sk = D.compact({ id: 'z', path: minutesPath, learned: { g: 0.8, b: 0 } }, true);
+  ok('a recent judged row keeps a five-minute sketch of its line, for the chart', sk.path && sk.path.length === 75 &&
+     sk.path[1].time - sk.path[0].time === 300 && sk.path[74].time === minutesPath[374].time, sk.path && String(sk.path.length));
+  ok('the sketch packs like a minute path, and an old row keeps none', D.packPath(sk).pp && D.packPath(sk).pp.dt === 300 &&
+     !D.compact({ id: 'z', path: minutesPath }, false).path);
+  ok('a compacted row keeps the learned size and lean it was drawn with', sk.learned && sk.learned.g === 0.8);
   const KT = kt(null);
   ok('one row a session: the pre-open call beats the day before', D.judgedRows([
     { session: 'd1', stage: 'advance', timeframe: '1S', id: 'a' }, { session: 'd1', stage: 'open', timeframe: '1S', id: 'o' },
@@ -369,6 +383,118 @@ section('DAILY CALL - pieces');
   ok('a tape that stops before the close is caught', gap && /before the close/.test(gap), String(gap));
   const stale = D.tapeGap(kt(lastDay + 'T16:40:00'), upTo(prevDay), Math.floor(at(lastDay + 'T16:40:00') / 1000));
   ok('a tape a session behind is caught', stale && /has traded since/.test(stale), String(stale));
+}
+
+/* ======================================================================= */
+section('CROWD - the mood of the market as a lane');
+{
+  const iso = lastDay + 'T11:00:00';
+  const KT = kt(iso);
+  const F = KT.forecast, nowMs = at(iso), nowSec = Math.floor(nowMs / 1000);
+  const W = KT.CONFIG.forecast.weights;
+  const sum = Object.keys(W).reduce((t, k) => t + W[k], 0);
+  ok('the crowd has a weight, and the weights still sum to one', W.crowd > 0 && Math.abs(sum - 1) < 1e-9, sum.toFixed(6));
+  const mood = v => ({ at: nowSec, mood: { now: v, zone: 'z', at: nowSec } });
+  ok('extreme greed is read the other way', F.crowdLane(mood(85), nowMs).score < 0, String(F.crowdLane(mood(85), nowMs).score));
+  ok('extreme fear is read the other way', F.crowdLane(mood(15), nowMs).score > 0);
+  const mid = F.crowdLane(mood(55), nowMs);
+  ok('the middle is read but votes nothing', mid.hasData && mid.score === 0, mid.note);
+  ok('a reading a day and a half old goes dark', !F.crowdLane({ at: nowSec - 40 * 3600, mood: { now: 90, at: nowSec - 40 * 3600 } }, nowMs).hasData);
+  const st = (b, r) => ({ at: nowSec, crowd: { bull: b, bear: r, n: b + r, to: nowSec } });
+  ok('a stream three to one bullish leans the other way', F.crowdLane(st(24, 6), nowMs).score < 0);
+  ok('a balanced stream votes nothing', F.crowdLane(st(15, 13), nowMs).score === 0);
+  ok('seven tagged posts are too few to vote', !F.crowdLane(st(6, 1), nowMs).hasData);
+  ok('Reddit counts when the workflow got through', F.crowdLane({ at: nowSec, reddit: { ok: true, bull: 18, bear: 2, n: 30 } }, nowMs).score < 0);
+  const file = { generated_at: new Date(nowMs).toISOString(), mood: { now: 82, zone: 'extreme greed', at: nowSec },
+                 symbols: { NIFTY: { crowd: { bull: 20, bear: 2, n: 22, to: nowSec } } }, reddit: { ok: false, why: 'HTTP 403' } };
+  const sN = F.socialFor(file, 'NIFTY'), sS = F.socialFor(file, 'SENSEX');
+  ok('the workflow file reads per symbol, SENSEX on the mood alone', sN && sN.mood && sN.crowd && !sN.reddit && sS && sS.mood && !sS.crowd);
+  const tape = upTo(prevDay);
+  const without = sessionCall(KT, tape), withC = sessionCall(KT, tape, { social: sN });
+  const laneOf = (f, id) => f.lanes.filter(l => l.id === id)[0];
+  ok('the crowd is a lane of the line when it is read', laneOf(withC, 'crowd').hasData && laneOf(withC, 'crowd').score < 0 && withC.crowd,
+     laneOf(withC, 'crowd').note);
+  ok('and dark, with its weight passed on, when it is not', !laneOf(without, 'crowd').hasData && !without.crowd);
+  ok('it moves the line', withC.target !== without.target, without.target + ' -> ' + withC.target);
+}
+
+/* ======================================================================= */
+section('LEARN - the gap between the line and the market');
+{
+  const KT = kt(lastDay + 'T17:00:00');
+  const L = KT.learn;
+  const day = i => '2026-0' + (7 + Math.floor(i / 28)) + '-' + String(1 + (i % 28)).padStart(2, '0');
+  // A judged session call: the line said `said`% from its open to its close,
+  // the session did `did`%.
+  const row = (i, said, did, learned) => ({
+    id: 'NIFTY:' + day(i) + ':1S:open:wf', symbol: 'NIFTY', session: day(i), stage: 'open', timeframe: '1S',
+    lockedAt: 1000 + i, anchorPrice: 25000, openPrice: 25000, target: 25000 * (1 + said / 100),
+    path: [{ time: 100 + i, value: 25000 }], learned: learned || null,
+    outcome: { closeActual: 25000 * (1 + did / 100) },
+    postmortem: { said: { open: 25000, target: 25000 * (1 + said / 100) },
+                  did: { open: 25000, close: 25000 * (1 + did / 100), pct: did }, verdict: 'right', errPct: did - said },
+  });
+  const set = rows => KT.core.store.set('fcLocks', rows);
+  const alt = i => (i % 2 ? 1 : -1) * (0.3 + (i % 5) * 0.05);
+  set(Array.from({ length: 12 }, (_, i) => row(i, alt(i), alt(i) / 2)));
+  const twice = L.closeFitFrom('NIFTY');
+  ok('a line that keeps calling twice the move is drawn smaller', twice.n === 12 && twice.raw === 0.5 && twice.gain < 1 && twice.gain > 0.5,
+     JSON.stringify(twice));
+  set(Array.from({ length: 12 }, (_, i) => row(i, alt(i) * 0.5, alt(i) / 2, { g: 0.5, b: 0 })));
+  const again = L.closeFitFrom('NIFTY');
+  ok('a line already drawn at half size fits the same, so a correction never feeds on itself', again.raw === twice.raw && again.gain === twice.gain,
+     JSON.stringify(again));
+  set(Array.from({ length: 9 }, (_, i) => row(i, alt(i), alt(i) / 2)));
+  ok('nine sessions are too few to move anything', L.closeFitFrom('NIFTY').gain === 1 && L.closeFitFrom('NIFTY').n === 9);
+  set(Array.from({ length: 24 }, (_, i) => row(i, alt(i), alt(i) + 0.2 + (i % 3 - 1) * 0.02)));
+  const lean = L.closeFitFrom('NIFTY');
+  ok('a close that keeps landing above the line earns a small lean up', lean.bias > 0 && lean.bias <= L.MAX_BIAS_PCT && lean.t >= 2,
+     JSON.stringify(lean));
+  set(Array.from({ length: 24 }, (_, i) => row(i, alt(i), alt(i) + (i % 2 ? 0.2 : -0.2))));
+  ok('a miss that goes both ways earns no lean', L.closeFitFrom('NIFTY').bias === 0);
+  set([]);
+
+  const tape = upTo(prevDay);
+  const plain = sessionCall(KT, tape);
+  L.adoptShared({ closeGain: 0.6, closeBias: 0, closeSamples: 14 });
+  const terms = L.closeTerms();
+  const sized = sessionCall(KT, tape);
+  const laneSum = f => f.attribution[f.attribution.length - 1].lanes.reduce((t, l) => t + l.pct, 0);
+  const ratio = laneSum(sized) / laneSum(plain);
+  ok('the record\'s fit resizes the line\'s drift', terms && terms.source === 'record' && Math.abs(ratio - 0.6) < 0.02 &&
+     sized.learned && sized.learned.gain === 0.6, 'ratio ' + ratio.toFixed(3));
+  const KT2 = kt(prevDay + 'T16:40:00');
+  KT2.learn.adoptShared({ closeGain: 0.6, closeBias: 0.05, closeSamples: 14 });
+  const frozen = KT2.ledger.lock(sessionCall(KT2, tape), { symbol: 'NIFTY', source: 'workflow', preOpenFrom: 480 });
+  ok('a frozen call carries the size and lean it was drawn with', frozen && frozen.learned && frozen.learned.g === 0.6 &&
+     frozen.learned.b === 0.05, frozen ? JSON.stringify(frozen.learned) : 'nothing frozen');
+  L.adoptShared({ closeGain: 1, closeBias: 0, closeSamples: 3 });
+  ok('below the minimum sample the record changes nothing', L.closeTerms() === null);
+}
+
+/* ======================================================================= */
+section('DESK - its own record in the final prompt');
+{
+  const KT = load(['config', 'core', 'indicators', 'levels', 'candles', 'patterns', 'structures', 'data', 'analogs', 'vol', 'forecast',
+                   'postmortem', 'ledger', 'learn', 'trail', 'evidence', 'engine', 'streetcalls', 'stocks', 'lessons', 'desk'], { quiet: true });
+  KT.core.setLexicon({ bullish: {}, bearish: {}, impact_high: [], impact_medium: [], relevance: [], noise: [], sector_map: {} });
+  const mk = (d, said, did, verdict, why) => ({
+    id: 'NIFTY:' + d + ':1S:open:wf', symbol: 'NIFTY', session: d, stage: 'open', timeframe: '1S', lockedAt: Date.parse(d),
+    anchorPrice: 25000, path: [{ time: 1, value: 25000 }],
+    postmortem: { verdict: verdict, callDir: said > 0 ? 1 : -1, said: { target: 25000 + said, pUpClose: said > 0 ? 60 : 40 },
+                  did: { close: 25000 + did, pct: did / 250 }, errPts: did - said, errPct: (did - said) / 250,
+                  reasons: why ? [{ kind: 'open', text: why }] : [] },
+  });
+  KT.core.store.set('fcLocks', [mk('2026-10-26', 80, 120, 'right'), mk('2026-10-27', 60, -90, 'wrong', 'Most of the miss was there at the open.'),
+                                 mk('2026-10-28', -50, -20, 'right')]);
+  const txt = KT.desk.recordText('NIFTY');
+  ok('the desk reads where its line went wrong', /Right 2, wrong 1 of the last 3 judged sessions/.test(txt) &&
+     /2026-10-27: said up/.test(txt) && /-150 points from the line/.test(txt) && /at the open/.test(txt), txt.split('\n')[0]);
+  const F = KT.desk.gather({ symbol: 'NIFTY', timeframe: '1S', candles: minutes.slice(-400), quote: {}, indicators: {}, levels: {} }, { news: [] });
+  const pr = KT.desk.prompts.final(F, [], null, '', '', txt);
+  const pq = KT.desk.prompts.quick(F, '', '', txt);
+  ok('and the final prompt carries it, in both modes', /own recent record/.test(pr.user) && /Right 2, wrong 1/.test(pr.user) &&
+     /Right 2, wrong 1/.test(pq.user));
 }
 
 /* ======================================================================= */
@@ -408,6 +534,32 @@ section('DAILY CALL - a replayed evening, morning and evening');
     ok('the record keeps its stats', r.symbols.NIFTY.stats && r.symbols.NIFTY.stats.sessions === 1 &&
        r.symbols.NIFTY.stats.open.n === 1);
     ok('and what it has learned', r.learned && r.learned.fittedThrough === lastDay && r.learned.samples === 1 && r.learned.weights === null);
+    ok('including how far its closes were from the line', r.symbols.NIFTY.stats.close.n === 1 && r.symbols.NIFTY.stats.close.maePts >= 0 &&
+       r.learned.closeSamples === 1 && r.learned.closeGain === 1);
+
+    // The training log, written from the record the way the workflow does.
+    const logDir = path.join(tmp, 'tlog');
+    const runLog = () => execFileSync(process.execPath, [path.join(__dirname, 'training_log.js'), '--out', logDir],
+                                      { env: Object.assign({}, process.env, { KT_DATA_ROOT: tmp }), encoding: 'utf8' });
+    const out1 = runLog();
+    const TL = require('./training_log');
+    const ev = TL.readEvents(logDir);
+    const kinds = k => ev.filter(e => e.event === k);
+    const nRows = Object.keys(r.symbols).reduce((t, k) => t + r.symbols[k].rows.length, 0);
+    ok('the training log takes every call, every judgement and the run', kinds('frozen').length === nRows &&
+       kinds('judged').length >= 2 && kinds('run').length === 1, out1.trim());
+    const jd = kinds('judged').filter(e => e.symbol === 'NIFTY' && e.stage === 'open')[0];
+    ok('a judgement carries the gap between line and market every fifteen minutes', jd && jd.gap && jd.gap.length >= 20 &&
+       jd.gap.every(g => /^\d\d:\d\d$/.test(g[0])) && jd.gap.filter(g => g[2] != null).length >= 20 && typeof jd.errPts === 'number' &&
+       jd.worstGap && typeof jd.worstGap.off === 'number', jd ? jd.gap.length + ' points, widest ' + JSON.stringify(jd.worstGap) : 'none');
+    const fz = jd && kinds('frozen').filter(e => e.id === jd.id)[0];
+    ok('and the frozen call it joins carries every input and its line', fz && fz.lanes.length >= 3 && fz.line.length >= 20 &&
+       fz.call && fz.call.pUpClose != null && fz.context && fz.context.fp);
+    const summary = fs.readFileSync(path.join(logDir, 'summary.md'), 'utf8');
+    ok('the summary reads the record in plain words', /## NIFTY/.test(summary) && /\| Judged sessions \| 1 \|/.test(summary) &&
+       /The last session, newest first/.test(summary) && fs.existsSync(path.join(logDir, 'README.md')));
+    const out2 = runLog();
+    ok('a second run writes nothing twice', TL.readEvents(logDir).length === ev.length && /: 0 new events/.test(out2), out2.trim());
     const before = JSON.stringify(r.symbols);
     runAt(lastDay + 'T17:30:00');
     ok('a second run on the same evening changes nothing', JSON.stringify(rec().symbols) === before);

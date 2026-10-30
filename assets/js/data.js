@@ -637,7 +637,9 @@
           msgs.forEach(function (m) {
             var ts = Math.floor(new Date(m.created_at).getTime() / 1000);
             if (!ts || nowSec - ts > 3 * 86400) return;
-            var body = String(m.body || '').replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim();
+            var body = String(m.body || '').replace(/https?:\/\/\S+/g, '')
+              .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+              .replace(/\s+/g, ' ').trim();
             if (!body || PROMO_RX.test(body)) { promo++; return; }
             var tag = m.entities && m.entities.sentiment && m.entities.sentiment.basic;
             if (tag === 'Bullish') bull++; else if (tag === 'Bearish') bear++;

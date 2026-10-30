@@ -350,12 +350,15 @@
   // The crowd's numbers as the analyst may see them, or null when neither
   // source answered (and the analyst is not asked at all).
   function sentimentOf(x) {
-    if (!x || (!x.mood && !x.crowd)) return null;
-    var c = x.crowd;
+    if (!x || (!x.mood && !x.crowd && !x.reddit)) return null;
+    var c = x.crowd, rd = x.reddit;
     return {
       mood: x.mood && isNum(x.mood.now) ? x.mood : null,
       crowd: c && c.n ? { symbol: c.symbol, n: c.n, bull: c.bull || 0, bear: c.bear || 0, promo: c.promo || 0,
                           from: c.from, to: c.to, items: (c.items || []).slice(0, 10) } : null,
+      // Reddit, when the workflow's fetch got through (scripts/fetch_social.py).
+      reddit: rd && rd.ok && rd.posts && rd.posts.length
+        ? { n: rd.n || rd.posts.length, bull: rd.bull || 0, bear: rd.bear || 0, subs: rd.subs || [], posts: rd.posts.slice(0, 8) } : null,
     };
   }
 
@@ -547,7 +550,7 @@
       var span = isNum(c.to) && isNum(c.from) ? Math.max(1, Math.round((c.to - c.from) / 3600)) : null;
       L.push('StockTwits stream for ' + c.symbol + ': ' + c.n + ' messages' + (span ? ' over the last ' + span + ' hours' : '') +
              '; authors tagged ' + c.bull + ' bullish and ' + c.bear + ' bearish' +
-             (c.promo ? '; ' + c.promo + ' promotional posts left out' : '') + '. Newest first:');
+             (c.promo ? '; ' + c.promo + ' promotional post' + (c.promo === 1 ? '' : 's') + ' left out' : '') + '. Newest first:');
       c.items.forEach(function (it, i) {
         var age = Math.max(0, Date.now() / 1000 - it.ts);
         var ageTxt = age < 3600 ? Math.round(age / 60) + 'm' : age < 86400 ? Math.round(age / 3600) + 'h' : Math.round(age / 86400) + 'd';
@@ -555,6 +558,16 @@
       });
     } else {
       L.push(F.kind === 'index' && F.symbol === 'SENSEX' ? 'StockTwits has no SENSEX stream.' : 'The StockTwits stream did not answer.');
+    }
+    if (s.reddit) {
+      var rd = s.reddit;
+      L.push('Reddit (' + (rd.subs.length ? rd.subs.map(function (x) { return 'r/' + x; }).join(', ') : 'Indian market subreddits') + '): ' +
+             rd.n + ' recent posts about the market; by the headline word list ' + rd.bull + ' read bullish and ' + rd.bear + ' bearish. Newest first:');
+      rd.posts.forEach(function (it, i) {
+        var age = Math.max(0, Date.now() / 1000 - (it.ts || 0));
+        var ageTxt = age < 3600 ? Math.round(age / 60) + 'm' : age < 86400 ? Math.round(age / 3600) + 'h' : Math.round(age / 86400) + 'd';
+        L.push((i + 1) + '. [' + ageTxt + ' ago, r/' + (it.sub || '?') + '] ' + String(it.title || '').slice(0, 160));
+      });
     }
     return L.join('\n');
   }
@@ -634,16 +647,57 @@
   var NO_ADVICE = 'You never tell anyone to buy, sell, hold, enter or exit a position, and you never mention position size. ' +
                   'You say which way the evidence leans, how strongly, and what would prove the call wrong.';
 
-  function finalPrompt(F, analysts, debate, lessonsTxt, fpWords) {
+  /* The desk's own record, said against did (30 Oct 2026): the last judged
+     session calls for this symbol, each with where the frozen line said the
+     session would close, where it closed and the first reason it missed. The
+     lessons are filed by situation; this is the plain recent record, so the
+     final call is made knowing which way the line has been going wrong. The
+     published record's call where it has the session (ledger.locks). */
+  function recordText(symbol) {
+    if (!KT.ledger || !KT.ledger.locks) return '';
+    var rank = function (x) { return (x.timeframe === '1S' ? 2 : 0) + (x.stage === 'open' ? 1 : 0); };
+    var by = {};
+    KT.ledger.locks(symbol, 400).forEach(function (r) {
+      if (!r || !r.postmortem || !r.postmortem.did) return;
+      var cur = by[r.session];
+      if (!cur || rank(r) > rank(cur)) by[r.session] = r;
+    });
+    var rows = Object.keys(by).sort().reverse().slice(0, 8).map(function (k) { return by[k]; });
+    if (!rows.length) return '';
+    var right = 0, wrong = 0, absErr = 0, net = 0, m = 0;
+    var lines = rows.map(function (r) {
+      var p = r.postmortem;
+      if (p.verdict === 'right') right++; else if (p.verdict === 'wrong') wrong++;
+      if (isNum(p.errPct)) { absErr += Math.abs(p.errPct); net += p.errPct; m++; }
+      var said = p.callDir > 0 ? 'up' : p.callDir < 0 ? 'down' : 'no lean';
+      var odds = p.said && isNum(p.said.pUpClose) ? ' (' + p.said.pUpClose + '% for up)' : '';
+      var why = p.verdict !== 'right' && p.reasons && p.reasons[0] ? ' ' + String(p.reasons[0].text || '').slice(0, 140) : '';
+      var verdict = p.verdict === 'right' ? 'Right.' : p.verdict === 'wrong' ? 'Wrong.' : p.verdict === 'flat' ? 'The market went nowhere.' : 'No lean called.';
+      return '- ' + r.session + ': said ' + said + odds + ', the line ended at ' + px(p.said && p.said.target) +
+             '; it closed at ' + px(p.did.close) + ' (' + pct(p.did.pct) + '), ' +
+             (isNum(p.errPts) ? (p.errPts >= 0 ? '+' : '') + Math.round(p.errPts) + ' points from the line. ' : '') + verdict + why;
+    });
+    var head = 'Right ' + right + ', wrong ' + wrong + ' of the last ' + rows.length + ' judged sessions';
+    if (m) {
+      head += '; the close landed ' + r2(absErr / m) + '% from the line on average, ' +
+              (Math.abs(net / m) < 0.05 ? 'with no lean either way' : (net > 0 ? 'above' : 'below') + ' it by ' + r2(Math.abs(net / m)) + '% net');
+    }
+    return head + '.\n' + lines.join('\n');
+  }
+
+  function finalPrompt(F, analysts, debate, lessonsTxt, fpWords, recordTxt) {
     var deb = debate
       ? 'Debate: bull case: ' + debate.bull + ' Bear case: ' + debate.bear + ' The debate found the ' +
         (debate.stronger === 'even' ? 'two cases even' : debate.stronger + ' case stronger') + (debate.why ? ': ' + debate.why : '.')
       : 'Debate: not available this run.';
     return {
-      system: 'You are the portfolio manager on an Indian equities research desk, and you also run its risk check. You make the desk\'s final directional call from the analyst reports, the debate and the lessons the desk wrote after past calls in similar situations. ' + NO_ADVICE + ' Reply with JSON only.',
+      system: 'You are the portfolio manager on an Indian equities research desk, and you also run its risk check. You make the desk\'s final directional call from the analyst reports, the debate, the desk\'s own recent record and the lessons it wrote after past calls in similar situations. ' + NO_ADVICE + ' Reply with JSON only.',
       user: header(F) + '\n\nAnalyst reports:\n' + reportsText(analysts) + '\n\n' + deb + '\n' + levelsText(F) + '\n\n' +
             'Lessons from past calls in similar situations' + (fpWords ? ' (' + fpWords + ')' : '') + ':\n' +
             (lessonsTxt || 'None yet. This desk has no settled calls in a situation like this one.') + '\n\n' +
+            'The desk\'s own recent record on ' + F.label + ', what its frozen line said against what the market did:\n' +
+            (recordTxt || 'None judged yet.') + '\n' +
+            'Where the record shows the same kind of miss again and again, say so in "why" and let it weigh on the call.\n\n' +
             'Answer with this JSON and nothing else:\n' +
             '{"rating": "strong_up" or "lean_up" or "neutral" or "lean_down" or "strong_down", ' +
             '"score": <number from -1 to 1 that matches the rating>, ' +
@@ -655,7 +709,7 @@
     };
   }
 
-  function quickPrompt(F, lessonsTxt, fpWords) {
+  function quickPrompt(F, lessonsTxt, fpWords, recordTxt) {
     var roles = roleList(F);
     var briefs = roles.map(function (r) { return '## ' + r.label + ' evidence\n' + r.brief; }).join('\n\n');
     var names = roles.map(function (r) { return 'a ' + r.label.toLowerCase(); });
@@ -665,6 +719,8 @@
               NO_ADVICE + ' Reply with JSON only.',
       user: header(F) + '\n\n' + briefs + '\n\nLessons from past calls in similar situations' + (fpWords ? ' (' + fpWords + ')' : '') + ':\n' +
             (lessonsTxt || 'None yet.') + '\n\n' +
+            'The desk\'s own recent record on ' + F.label + ', what its frozen line said against what the market did:\n' +
+            (recordTxt || 'None judged yet.') + '\n\n' +
             'Answer with this JSON and nothing else:\n' +
             '{"analysts": {' + roles.map(function (r, i) { return '"' + r.id + '": <score' + (i ? '' : ' -1 to 1') + '>'; }).join(', ') + '}, ' +
             '"rating": "strong_up" or "lean_up" or "neutral" or "lean_down" or "strong_down", ' +
@@ -924,6 +980,8 @@
     var fpWords = KT.lessons && fp ? KT.lessons.describe(fp) : '';
     var picked = KT.lessons && fp ? KT.lessons.relevant(fp, { k: 4 }) : [];
     var lessonsTxt = KT.lessons ? KT.lessons.forPrompt(picked) : '';
+    var recordTxt = '';
+    try { recordTxt = recordText(F.symbol); } catch (e) { recordTxt = ''; }
     var counter = { n: 0 };
 
     function done(analysts, debate, fin) {
@@ -936,6 +994,7 @@
         fp: fp, fpWords: fpWords,
         analysts: analysts, debate: debate || null, final: fin,
         lessonsUsed: picked.map(function (p) { return p.lesson.id; }),
+        recordUsed: !!recordTxt,
         calls: counter.n, outcome: null,
       };
       var items = loadRuns();
@@ -947,7 +1006,7 @@
     var p;
     if (mode === 'quick') {
       progress({ stage: 'quick', text: 'One-call read' });
-      p = attempt(S, quickPrompt(F, lessonsTxt, fpWords), { maxTokens: 520, temperature: 0.2, purpose: 'desk:quick' },
+      p = attempt(S, quickPrompt(F, lessonsTxt, fpWords, recordTxt), { maxTokens: 520, temperature: 0.2, purpose: 'desk:quick' },
                   function (txt) { return parseQuick(txt, F); }, counter)
         .then(function (q) { return done(q.analysts, null, q.final); });
     } else {
@@ -978,7 +1037,7 @@
           .then(function (debate) {
             progress({ stage: 'final', text: 'Final call and risk check' });
             return wait(gapMs()).then(function () {
-              return attempt(S, finalPrompt(F, analysts, debate, lessonsTxt, fpWords),
+              return attempt(S, finalPrompt(F, analysts, debate, lessonsTxt, fpWords, recordTxt),
                              { maxTokens: 400, temperature: 0.2, purpose: 'desk:final' }, parseFinal, counter);
             })
               .then(function (fin) { return done(analysts, debate, fin); },
@@ -1115,7 +1174,7 @@
              quick: parseQuick, lesson: parseLesson, rating: normRating },
     noAdvice: noAdvice, ruleFinal: ruleFinal, failKind: failKind, failText: failText,
     run: run, busy: busy, latest: latest, runs: runs, clear: clear,
-    voteFor: voteFor, settle: settle, reflect: reflect, record: record,
+    voteFor: voteFor, settle: settle, reflect: reflect, record: record, recordText: recordText,
     budget: budget, canAfford: canAfford,
     shouldAuto: shouldAuto, autoEnabled: autoEnabled, setAuto: setAuto, slotKey: slotKey,
   };

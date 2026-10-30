@@ -26,6 +26,11 @@ name: Twenty-year study and the daily call
 #                               closed, files what it missed, and freezes the
 #                               call for the next one, to data/calls.json. Every
 #                               browser shows that call and that record.
+#   scripts/training_log.sh     appends every call and judgement (inputs, the
+#                               line and the gap to the market every fifteen
+#                               minutes, the reasons it missed) to the
+#                               training-log branch, which keeps its history
+#                               and is never served by the site
 #
 #   11:10 UTC = 16:40 IST, after the close: today's call is judged, the evening
 #                         odds and the call for tomorrow are frozen
@@ -46,6 +51,8 @@ on:
       - "scripts/history_model.py"
       - "scripts/history_study.js"
       - "scripts/daily_call.js"
+      - "scripts/training_log.js"
+      - "scripts/training_log.sh"
       - "scripts/ktvm.js"
       - ".github/workflows/history.yml"
 
@@ -106,7 +113,8 @@ jobs:
           python scripts/fetch_global.py || true
           python scripts/fetch_flows.py || true
           python scripts/fetch_options.py || true
-          timeout 300 python scripts/fetch_news.py || true
+          timeout 300 python scripts/fetch_news.py --wide || true
+          python scripts/fetch_social.py || true
         continue-on-error: true
 
       - name: Fetch twenty years of daily bars
@@ -129,6 +137,12 @@ jobs:
 
       - name: Judge the last session, freeze the next
         run: node scripts/daily_call.js --also /tmp/calls_main.json
+        continue-on-error: true
+
+      # Every call and judgement, appended to the training-log branch
+      # (scripts/training_log.js). Never force-pushed, never served.
+      - name: Append to the training log
+        run: bash scripts/training_log.sh
         continue-on-error: true
 
       - name: Publish to the live branch

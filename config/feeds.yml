@@ -58,22 +58,30 @@ news:
   - { name: "IMF news",              url: "https://www.imf.org/en/News/RSS?Language=ENG" }
   - { name: "OPEC press",            url: "https://www.opec.org/opec_web/en/press_room/28.htm?rss=1" }
   - { name: "EIA today in energy",   url: "https://www.eia.gov/rss/todayinenergy.xml" }
+  # --- added 30 Oct 2026: each index's own headlines, and a second aggregator
+  #     beside Google News, so a throttled Google does not leave the lane dry
+  - { name: "NIFTY 50 headlines",    url: "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5ENSEI&region=IN&lang=en-IN", region: india, priority: 1 }
+  - { name: "SENSEX headlines",      url: "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EBSESN&region=IN&lang=en-IN", region: india, priority: 2 }
+  - { name: "BANK NIFTY headlines",  url: "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5ENSEBANK&region=IN&lang=en-IN", region: india, priority: 2 }
+  - { name: "Bing News Nifty Sensex",url: "https://www.bing.com/news/search?q=nifty+sensex+stock+market&format=rss", region: india, priority: 1 }
+  - { name: "Bing News RBI rupee",   url: "https://www.bing.com/news/search?q=RBI+rupee+bond+yields+India&format=rss", region: india, priority: 2 }
+  - { name: "Bing News FII flows",   url: "https://www.bing.com/news/search?q=FII+FPI+selling+buying+Indian+equities&format=rss", region: india, priority: 2 }
 
 # Google News search feeds. Change the q= value to watch anything you want.
 # This is the most useful lane: it catches wire stories within a minute or two,
 # including reaction pieces to a tweet, usually faster than scraping X itself.
 google_news:
-  - { name: "Nifty / Sensex",   q: "nifty OR sensex OR \"bank nifty\"" }
-  - { name: "RBI policy",       q: "RBI repo rate OR monetary policy India" }
-  - { name: "FII DII flows",    q: "FII DII flows Indian equities" }
-  - { name: "Crude and rupee",  q: "crude oil price OR rupee dollar India" }
-  - { name: "Tariffs / Trump",  q: "Trump tariff India OR trade deal India" }
-  - { name: "US Fed",           q: "Federal Reserve rate decision" }
+  - { name: "Nifty / Sensex",   q: "nifty OR sensex OR \"bank nifty\"", priority: 1 }
+  - { name: "RBI policy",       q: "RBI repo rate OR monetary policy India", priority: 1 }
+  - { name: "FII DII flows",    q: "FII DII flows Indian equities", priority: 1 }
+  - { name: "Crude and rupee",  q: "crude oil price OR rupee dollar India", priority: 1 }
+  - { name: "Tariffs / Trump",  q: "Trump tariff India OR trade deal India", priority: 1 }
+  - { name: "US Fed",           q: "Federal Reserve rate decision", priority: 1 }
   - { name: "Earnings India",   q: "Q results India quarterly earnings Nifty company" }
   - { name: "SEBI",             q: "SEBI regulation markets" }
-  - { name: "Geopolitics Asia", q: "India China OR India Pakistan border tension" }
+  - { name: "Geopolitics Asia", q: "India China OR India Pakistan border tension", priority: 1 }
   # --- added: the lanes that actually move an index intraday -----------------
-  - { name: "Bank Nifty",       q: "Bank Nifty OR HDFC Bank OR ICICI Bank OR SBI share price" }
+  - { name: "Bank Nifty",       q: "Bank Nifty OR HDFC Bank OR ICICI Bank OR SBI share price", priority: 1 }
   - { name: "Nifty IT",         q: "Infosys OR TCS OR Wipro OR HCL Tech results guidance" }
   - { name: "Block deals",      q: "block deal OR bulk deal NSE BSE" }
   - { name: "Index rejig",      q: "Nifty index rebalancing OR MSCI India review" }
@@ -92,8 +100,21 @@ google_news:
 
 google_news_params: "hl=en-IN&gl=IN&ceid=IN:en"
 
+# Read since 30 Oct 2026 (scripts/feeds_build.py yaml_lanes). Before that only
+# the news: list above reached the index, and none of the searches, accounts
+# or channels below were ever polled. priority 1 is read on every sweep,
+# 2 on every scheduled run.
+
+# GDELT's article search (api.gdeltproject.org): free, no key, refreshed every
+# fifteen minutes from news sites worldwide. Keep it to one or two queries:
+# GDELT asks for no more than one request every five seconds.
+gdelt:
+  - { name: "GDELT India markets", q: '(nifty OR sensex OR "bank nifty" OR "dalal street" OR "indian stocks") sourcelang:english', priority: 1 }
+
 # ------------------------------------------------------------------ social
-# Reddit .rss is free, stable, no key. These are the most active Indian FNO subs.
+# Reddit .rss is free and keyless, but it answers 403 to most cloud addresses,
+# the workflow's included. scripts/fetch_social.py tries these once a run for
+# the crowd's mood and leaves Reddit out when it refuses (no key is ever used).
 reddit:
   - { name: "r/IndianStreetBets", url: "https://www.reddit.com/r/IndianStreetBets/new/.rss" }
   - { name: "r/NSEbets",          url: "https://www.reddit.com/r/NSEbets/new/.rss" }

@@ -318,7 +318,7 @@
       state.total = state.candles.length;
     }
 
-    drawLocked(forecast && forecast.locked);
+    drawLocked(forecast && forecast.locked, forecast && forecast.lockedPast);
 
     drawStructures();
     drawOverlays();
@@ -346,32 +346,86 @@
      Both lines are clipped to the locked window. Drawing the actual line
      before the lock existed would make the model look right about a stretch
      it never called. */
-  function drawLocked(locked) {
+  /* `past` (30 Oct 2026): the frozen calls of the sessions already on the
+     chart, so a line does not vanish when its session ends. Each is drawn
+     over its own session with what price did beside it, and labelled at its
+     end with what it said and where the session closed. A past call is drawn
+     only on bars the chart holds, so it can never add a time slot between
+     two sessions. Between two calls the line is broken rather than joined
+     from one session's close to the next one's open: the last point before
+     each new call is drawn transparent. A blank point does not do it,
+     Lightweight Charts 4 joins a line straight across one, and a point's
+     colour paints the segment that leaves it, not the one that arrives
+     (both measured 30 Oct 2026). */
+  function drawLocked(locked, past) {
     if (!lockSeries || !actualSeries) return;
-    if (!locked || !locked.path || !locked.path.length) {
+    var ok = function (L) { return L && L.path && L.path.length; };
+    var calls = (past || []).filter(ok).slice().sort(function (a, b) { return a.path[0].time - b.path[0].time; });
+    state.locked = ok(locked) ? locked : null;
+    if (state.locked) calls.push(locked);
+    state.lockMarks = [];
+    if (!calls.length) {
       lockSeries.setData([]); actualSeries.setData([]);
-      state.locked = null;
       return;
     }
-    state.locked = locked;
+    var said = [], did = [], pal = palette();
+    var lastBar = state.candles.length ? state.candles[state.candles.length - 1].time : -Infinity;
+    calls.forEach(function (L) {
+      var current = L === state.locked;
+      var from = L.anchorTime, to = L.path[L.path.length - 1].time;
+      /* A call whose session is still trading (a browser's own call for
+         today, when the record has none) is drawn whole, like the current
+         one, and gets no "closed" label: on the live page it read "closed
+         23,053" at 13:50 (30 Oct 2026). */
+      var running = !current && to > lastBar;
+      var whole = current || running;
+      var lastSaid = said.length ? said[said.length - 1].time : -Infinity;
+      var lastDid = did.length ? did[did.length - 1].time : -Infinity;
+      var seg = L.path.filter(function (pt) { return pt.time > lastSaid && (whole || pt.time in state.candleByT); })
+        .map(function (pt) { return { time: pt.time, value: pt.value }; });
+      if (!seg.length) return;
+      // The call starts from the close it was made against.
+      if (whole && from < seg[0].time && from > lastSaid) seg.unshift({ time: from, value: L.anchorPrice });
+      if (said.length) cutAfter(said);
+      said = said.concat(seg);
 
-    var from = locked.anchorTime, to = locked.path[locked.path.length - 1].time;
-    var seed = { time: from, value: locked.anchorPrice };
+      var real = [];
+      for (var i = 0; i < state.candles.length; i++) {
+        var b = state.candles[i];
+        if (b.time < from || b.time > to || b.time <= lastDid) continue;
+        real.push({ time: b.time, value: b.close });
+      }
+      if (whole && real.length && real[0].time > from && from > lastDid) real.unshift({ time: from, value: L.anchorPrice });
+      var close = real.length ? real[real.length - 1].value : null;
+      if (real.length && did.length) cutAfter(did);
+      did = did.concat(real);
 
-    // A point whose time is not strictly increasing makes Lightweight Charts
-    // throw and take the whole repaint with it, so the seed is dropped rather
-    // than prepended when the path already starts at the anchor.
-    var pathData = locked.path[0].time <= from ? locked.path.slice() : [seed].concat(locked.path);
-    lockSeries.setData(pathData);
+      // What it said against where the session closed, at the end of a call
+      // whose session is over.
+      if (!whole && close != null && real.length) {
+        var end = L.path[L.path.length - 1];
+        var dir = L.end && typeof L.end.pUpClose === 'number'
+          ? (L.end.pUpClose >= 55 ? 1 : L.end.pUpClose <= 45 ? -1 : 0)
+          : (end.value > L.anchorPrice ? 1 : end.value < L.anchorPrice ? -1 : 0);
+        var moved = close - L.anchorPrice;
+        var right = dir === 0 || Math.abs(moved) / L.anchorPrice < 0.0002 ? null : (moved > 0) === (dir > 0);
+        state.lockMarks.push({
+          time: real[real.length - 1].time, position: 'aboveBar', shape: 'circle', size: 0.6,
+          color: right === true ? pal.up : right === false ? pal.down : pal.now,
+          text: 'said ' + fmtPx(end.value) + ', closed ' + fmtPx(close),
+        });
+      }
+    });
+    try { lockSeries.setData(said); } catch (e) { lockSeries.setData([]); }
+    try { actualSeries.setData(did); } catch (e) { actualSeries.setData([]); }
+  }
 
-    var real = [];
-    for (var i = 0; i < state.candles.length; i++) {
-      var b = state.candles[i];
-      if (b.time < from || b.time > to) continue;
-      real.push({ time: b.time, value: b.close });
-    }
-    if (real.length && real[0].time > from) real.unshift(seed);
-    actualSeries.setData(real);
+  // Whole points: "said 22,655, closed 22,937" reads at a glance on a marker.
+  function fmtPx(v) { return Math.round(v).toLocaleString('en-IN'); }
+  // The segment leaving the last point of a list is not drawn.
+  function cutAfter(list) {
+    var p = list[list.length - 1];
+    list[list.length - 1] = { time: p.time, value: p.value, color: 'rgba(0,0,0,0)' };
   }
 
   /* The actual line has to grow with the tape or it stops being the actual
@@ -814,9 +868,15 @@
         });
       });
     }
-    markers = markers.concat(trades).concat(pats).concat(cps);
+    /* The checkpoints sit on the forecast line itself (30 Oct 2026). Set on
+       the candles they had no bar to sit on, so every one of them stacked on
+       the last candle at NOW and read as if it were about the present. */
+    markers = markers.concat(trades).concat(pats);
     markers.sort(function (a, b) { return a.time - b.time; });
     try { candleSeries.setMarkers(markers); } catch (e) {}
+    try { if (fcSeries) fcSeries.setMarkers(cps.sort(function (a, b) { return a.time - b.time; })); } catch (e) {}
+    // What each finished session's frozen call said, against where it closed.
+    try { if (lockSeries) lockSeries.setMarkers((state.lockMarks || []).slice().sort(function (a, b) { return a.time - b.time; })); } catch (e) {}
   }
 
   /* -------------------------------------------------------------- framing

@@ -12,7 +12,7 @@ October 2026 sit inside it, in the right-hand column:
 | --- | --- | --- |
 | Next session | `assets/js/panels.js` `renderCall` | the frozen call: lean and odds, where it opens, the likely closing range, what makes it right, support and resistance, and the other readers (AI desk, 20-year model, price models) |
 | Said vs did | `panels.js` `renderJudge` | the last judged session in full (what it did not know, what it filed for next time) and one row per session |
-| AI desk | `panels.js` `renderDesk`, `assets/js/desk.js` | four analysts (five with the crowd's mood when it answers), a debate and a final call; needs an OpenRouter key |
+| AI desk | `panels.js` `renderDesk`, `assets/js/desk.js` | four analysts (five with the crowd's mood when it answers), a debate and a final call made knowing its own recent record; needs an OpenRouter key |
 | What it has learned | `panels.js` `renderLearned` | lessons, which inputs pointed the right way, the twenty-year record, the learned weights |
 
 `classic.html` redirects to `index.html`. The search box above the market
@@ -20,6 +20,13 @@ watch finds any NSE stock (`panels.js`, `assets/js/stocks.js`).
 
 The chart puts NOW in the middle (`C.ui.centreNow`, `chart.js frameView`):
 the past and the earlier forecast on the left, the forecast on the right.
+
+Every frozen line stays on the chart (`app.js pastCalls`, `chart.js
+drawLocked`, 30 Oct 2026). Each finished session's call is drawn over its own
+candles with what price did beside it, and ends in a dot that reads "said
+22,655, closed 22,937": green when the call was right, red when it was wrong.
+The record keeps a five-minute sketch of each line for its last 20 sessions,
+so the lines are there in every browser, not only in the one that froze them.
 
 ## The session call
 
@@ -85,7 +92,7 @@ with times on them, never a claimed cause:
 
 ## What it learns from each miss
 
-Three things, all bounded, all visible on the page:
+Four things, all bounded, all visible on the page:
 
 1. **Lessons** (`assets/js/lessons.js`). Each judged session files one
    lesson under the situation the call was made in (trend, news tone, FII,
@@ -101,10 +108,55 @@ Three things, all bounded, all visible on the page:
    on average, one gain scales every overnight cue, from at least 10 judged
    opens, shrunk toward 1 while the sample is thin.
 
+4. **The size of the session's move, and a lean** (`learn.closeFitFrom`,
+   30 Oct 2026), from the gap between each frozen line and the market. For
+   every judged session: how far the line said the session would go from its
+   open to its close, against how far it went. The least-squares gain of one
+   on the other, from at least 10 sessions, shrunk toward 1 and held between
+   0.4 and 1.6, resizes the line's drift: a line that keeps calling twice the
+   move gets about half. What is left, the average distance the close lands
+   above or below the line, becomes a lean only after 20 sessions and only
+   when it is two standard errors clear of zero, capped at 0.25% a session.
+   Each call carries the gain and lean it was drawn with (`learned`) and the
+   fit divides them back out, so a correction never learns from itself.
+
+The AI desk's final call also reads its last eight judged sessions, what the
+line said against what the market did and why it missed, before it answers
+(`desk.recordText`).
+
 Until those samples exist the page says so rather than moving anything. A
 browser's own learner (the fallback where the record has no fit) follows the
 same rule: one step per batch of new settled calls, never one an hour on the
 same evidence.
+
+## The crowd (data/social.json)
+
+`scripts/fetch_social.py`, run by `live-data.yml` and `history.yml`:
+Tickertape's Market Mood Index, the StockTwits streams for NIFTY and BANK
+NIFTY, and the subreddits listed in `config/feeds.yml`, tried without a key
+and left out when Reddit refuses (it does, from most cloud addresses). The
+forecast reads it as the crowd lane (`forecast.crowdLane`, weight 0.04): the
+other way at the extremes (mood index above 70 or below 30, a stream three to
+one either way) and not at all in the middle. A browser also reads the mood
+index and the symbol's stream itself every fifteen minutes and uses whichever
+reading is newer. The learner moves its weight off the record like every
+other input.
+
+## The training log (the training-log branch)
+
+Every frozen call and every judgement, appended by `scripts/training_log.sh`
+right after `daily_call.js`, to the `training-log` branch, which keeps its
+history and is never served by the site:
+
+- `log/YYYY-MM.jsonl`: events `frozen`, `judged` and `run`, joined by id.
+  The line and the gap between line and market every fifteen minutes, every
+  input's push and note, the cue prices, the situation, the verdict, the
+  reasons it missed, the lesson, and what the record had learned at each run.
+- `summary.md`: the record in plain words and tables, rewritten every run.
+- `README.md`: the schema.
+
+To study where it goes wrong: `git fetch origin training-log`, then read
+`summary.md` on that branch.
 
 ## Twenty years (data/history_model.json, data/study.json)
 
@@ -134,11 +186,17 @@ averages the two into one lane and says so when they point opposite ways.
 
 - `node scripts/selftest.js`: the page as a whole
 - `node scripts/selftest_calls.js`: the call, the verdict, the record and
-  the learning, including a replayed evening, morning and evening of the
-  workflow script on a scratch copy of the data
+  the learning (lane weights, the gap gains, the crowd lane, the desk's own
+  record), including a replayed evening, morning and evening of the workflow
+  script on a scratch copy of the data and the training log written from it,
+  twice, with nothing written twice
 - `python scripts/history_model.py --selfcheck`: the leak check
 
 ## Not yet proven live
 
 Until their workflows have run on GitHub: the record itself, the twenty-year
 model's real numbers, and both price models. Their first runs are the check.
+Added later on 30 Oct 2026 and also waiting on a run: `data/social.json`
+(whether Tickertape, StockTwits and Reddit answer GitHub's addresses), the
+Telegram, X-mirror, GDELT, Bing and Yahoo feeds, and the first push to
+`training-log`. The gap gains need 10 judged sessions before they move.

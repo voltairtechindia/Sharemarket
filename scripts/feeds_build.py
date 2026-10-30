@@ -309,17 +309,22 @@ TAG_HINTS = [
 ]
 
 
-def from_yaml():
-    """Read the `news:` list out of config/feeds.yml, if it is readable.
+def load_yaml():
+    """config/feeds.yml, or {} when it cannot be read.
 
     A broken or missing YAML file must not take the index down with it - the
     baseline list above is still a working universe on its own - so every
     failure here is reported and swallowed."""
     try:
-        cfg = load_cfg("feeds.yml") or {}
+        return load_cfg("feeds.yml") or {}
     except Exception as exc:  # noqa: BLE001
         print(f"  config/feeds.yml unreadable ({exc!r}), using the baseline only")
-        return []
+        return {}
+
+
+def from_yaml(cfg=None):
+    """The `news:` list out of config/feeds.yml."""
+    cfg = load_yaml() if cfg is None else cfg
     out = []
     for row in (cfg.get("news") or []):
         if not isinstance(row, dict):
@@ -329,10 +334,74 @@ def from_yaml():
         if not name or not url.startswith("http"):
             continue
         low = name.lower()
-        region = "world" if any(h in low for h in WORLD_HINTS) else "india"
+        region = row.get("region") or ("world" if any(h in low for h in WORLD_HINTS) else "india")
         tags = sorted({tag for key, tag in TAG_HINTS if key in low}) or ["wire"]
         out.append((name, url, region, tags, row.get("priority", 2)))
     print(f"  config/feeds.yml contributed {len(out)} entries")
+    return out
+
+
+# Searches about the overnight world, read from the US edition of Google News
+# (the same split as GLOBAL_QUERIES).
+WORLD_QUERY_HINTS = ("us cpi", "pce", "nonfarm", "jobless", "federal reserve", "china", "pboc")
+
+
+def yaml_lanes(cfg):
+    """The rest of config/feeds.yml, which nothing read until 30 Oct 2026.
+
+    The file has carried Google News searches, X accounts and Telegram
+    channels since September, and the index was built from its `news:` list
+    alone, so none of them ever reached the news lane. Now:
+
+      google_news   one Google News search feed per query, priority from the
+                    row (default 2: read by every scheduled run's wide sweep)
+      x_handles     each account's RSS through the first x_mirrors host. The
+                    mirrors come and go (the file says so); a dead one is a
+                    dead feed in feed_health, nothing worse
+      telegram      each channel's public web preview, t.me/s/<channel>,
+                    parsed by fetch_news.py (lane "telegram")
+      gdelt         GDELT's article search, free and keyless, refreshed every
+                    fifteen minutes from news sites worldwide (lane "gdelt")
+
+    The `reddit:` list is read by scripts/fetch_social.py, for the crowd's
+    mood rather than the news lane: a subreddit is opinion, not reporting.
+    """
+    out = []
+    for row in (cfg.get("google_news") or []):
+        if not isinstance(row, dict) or not (row.get("q") or "").strip():
+            continue
+        q = row["q"].strip()
+        name = (row.get("name") or q).strip()
+        world = any(h in q.lower() for h in WORLD_QUERY_HINTS) and "india" not in q.lower()
+        low = (name + " " + q).lower()
+        tags = sorted({tag for key, tag in TAG_HINTS if key in low}) or ["wire"]
+        out.append(("gy_" + slug(name), name, gn(q, "us" if world else "in"), "gnews",
+                    "world" if world else "india", tags, int(row.get("priority", 2))))
+    mirrors = [m.rstrip("/") for m in (cfg.get("x_mirrors") or []) if isinstance(m, str) and m.startswith("http")]
+    if mirrors:
+        for handle in (cfg.get("x_handles") or []):
+            handle = str(handle or "").strip().lstrip("@")
+            if not re.match(r"^[A-Za-z0-9_]{1,30}$", handle):
+                continue
+            region = "world" if handle.lower() in ("realdonaldtrump", "federalreserve", "potus") else "india"
+            out.append(("x_" + slug(handle), "@" + handle, f"{mirrors[0]}/{handle}/rss", "x", region, ["social", "policy"], 2))
+    from urllib.parse import quote
+    for row in (cfg.get("gdelt") or []):
+        if not isinstance(row, dict) or not (row.get("q") or "").strip():
+            continue
+        url = ("https://api.gdeltproject.org/api/v2/doc/doc?query=" + quote(row["q"].strip()) +
+               "&mode=ArtList&format=json&maxrecords=75&timespan=6h&sort=DateDesc")
+        name = (row.get("name") or "GDELT").strip()
+        out.append(("gd_" + slug(name), name, url, "gdelt", row.get("region") or "india", ["wire"], int(row.get("priority", 1))))
+    for ch in (cfg.get("telegram") or []):
+        ch = str(ch or "").strip().lstrip("@")
+        if not re.match(r"^[A-Za-z0-9_]{3,64}$", ch):
+            continue
+        out.append(("tg_" + slug(ch), "Telegram " + ch, f"https://t.me/s/{ch}", "telegram", "india", ["social", "markets"], 2))
+    kinds = {}
+    for row in out:
+        kinds[row[3]] = kinds.get(row[3], 0) + 1
+    print(f"  config/feeds.yml searches and channels: {kinds or 'none'}")
     return out
 
 
@@ -364,8 +433,11 @@ def build():
     # that appears in both keeps the baseline's priority and tags rather than
     # being counted twice. This is what makes "add your own feed" mean editing
     # one YAML file instead of editing Python.
-    for name, url, region, tags, pri in from_yaml():
+    cfg = load_yaml()
+    for name, url, region, tags, pri in from_yaml(cfg):
         add("y_" + slug(name), name, url, "direct", region, tags, pri)
+    for fid, name, url, lane, region, tags, pri in yaml_lanes(cfg):
+        add(fid, name, url, lane, region, tags, pri)
 
     for q, tags, pri in INDEX_QUERIES:
         add("gi_" + slug(q), q, gn(q), "gnews", "india", tags, pri)
@@ -390,10 +462,8 @@ def build():
     payload = {
         "generated_at": now_iso(),
         "count": len(feeds),
-        "by_lane": {
-            "direct": sum(1 for f in feeds if f["lane"] == "direct"),
-            "gnews": sum(1 for f in feeds if f["lane"] == "gnews"),
-        },
+        "by_lane": {lane: sum(1 for f in feeds if f["lane"] == lane)
+                    for lane in sorted({f["lane"] for f in feeds})},
         "by_region": {
             "india": sum(1 for f in feeds if f["region"] == "india"),
             "world": sum(1 for f in feeds if f["region"] == "world"),

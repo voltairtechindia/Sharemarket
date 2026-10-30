@@ -333,6 +333,7 @@ KT.CONFIG = {
     study:       'data/study.json',
     calls:       'data/calls.json',
     chronos:     'data/chronos.json',
+    social:      'data/social.json',
     lexicon:     'config/lexicon.json',
     auth:        'config/auth.json',
     /* The session view asks Yahoo for exactly what the hourly view asks for -
@@ -347,7 +348,8 @@ KT.CONFIG = {
      remote lane is alive - these are the ones that change every minute. */
   liveFiles: ['data/news.json', 'data/quote.json', 'data/global.json', 'data/flows.json',
               'data/news_rollup.json', 'data/filings.json', 'data/stocks.json',
-              'data/kronos.json', 'data/chronos.json', 'data/history_model.json', 'data/calls.json'],
+              'data/kronos.json', 'data/chronos.json', 'data/history_model.json', 'data/calls.json',
+              'data/social.json'],
 
   /* ------------------------------------------------------------- forecasting
      Weights sum to 1. They decide how much each lane moves the needle.       */
@@ -356,25 +358,25 @@ KT.CONFIG = {
        reported, so a missing feed shifts weight to the rest instead of quietly
        dragging the bias toward zero.
 
-       Eight lanes. Every weight here is a judgement, not a measurement - none
+       Twelve lanes now (eight when this was written). Every weight here is a judgement, not a measurement - none
        of them has been fitted, because until the ledger has settled rows there
        is nothing to fit against. When options joined, the seven existing
        weights were scaled by 0.9 rather than re-argued, so their relative
        order is unchanged and the new lane paid for itself out of all of them
        equally. That is the least opinionated way to make room. */
     weights: {
-      news: 0.1756,     // the loudest short-horizon input, and the fastest to decay
-      momentum: 0.1464, // trend, RSI, MACD, supertrend, scaled by ADX
-      global: 0.1170,   // overnight futures, Asia, crude, dollar, rupee, US 10y
-      structure: 0.0950,// measured moves from triangles, flags, double tops
-      seasonal: 0.0878, // month, weekday and expiry-week effects
-      levels: 0.0585,   // how much room there is before the next wall
-      flow: 0.0512,     // breadth, FII and DII when the workflow has them
+      news: 0.1686,     // the loudest short-horizon input, and the fastest to decay
+      momentum: 0.1405, // trend, RSI, MACD, supertrend, scaled by ADX
+      global: 0.1123,   // overnight futures, Asia, crude, dollar, rupee, US 10y
+      structure: 0.0912,// measured moves from triangles, flags, double tops
+      seasonal: 0.0843, // month, weekday and expiry-week effects
+      levels: 0.0562,   // how much room there is before the next wall
+      flow: 0.0492,     // breadth, FII and DII when the workflow has them
       /* The only forward-looking lane: PCR on today's open interest, the OI
          walls and max pain. Deliberately modest - the direction convention it
          uses is standard practice rather than something measured here, and it
          arrives through the workflow so it is hours old by construction. */
-      options: 0.0813,
+      options: 0.0780,
       /* The language model's own read, added 20 Sep 2026. It is a lane and
          nothing more: a number between -1 and +1, weighted, renormalised and
          scored in the ledger exactly like the other eight. It cannot write a
@@ -393,7 +395,7 @@ KT.CONFIG = {
          than re-argued, so their relative order is unchanged and the new lane
          paid for itself out of all of them equally. Same move as when options
          joined at 0.9; it is the least opinionated way to make room. */
-      model: 0.0707,
+      model: 0.0679,
       /* The price model, added 29 Oct 2026: Kronos, a model trained on
          candles from forty-five exchanges, asked for many paths from the last
          close (scripts/kronos_forecast.py, twice a weekday). Like the model
@@ -402,7 +404,7 @@ KT.CONFIG = {
          only off settled calls. Every other weight was scaled by 0.94 to make
          room, the same least-opinionated move as when options and the model
          joined. */
-      kronos: 0.0565,
+      kronos: 0.0542,
       /* The twenty-year model, added 30 Oct 2026: a factor model trained
          walk-forward on every session since 2007 (scripts/history_model.py),
          asked one question, whether the next session closes higher. A lane
@@ -411,7 +413,15 @@ KT.CONFIG = {
          out-of-sample record has not beaten the simplest baselines
          (forecast.historyLane). Every other weight was scaled by 0.94 to make
          room, the same move as when options, the model and Kronos joined. */
-      history: 0.0600,
+      history: 0.0576,
+      /* The crowd's mood, added 30 Oct 2026: Tickertape's Market Mood Index
+         and the symbol's StockTwits stream (forecast.crowdLane), read the
+         other way at the extremes and not at all in the middle. The smallest
+         weight here, because the evidence for a one-session effect is the
+         thinnest; the learner moves it off the record like any other. Every
+         other weight was scaled by 0.96 to make room, the same move as when
+         the last four lanes joined. */
+      crowd: 0.0400,
     },
     maxDriftPctPerBar: 0.06,   // cap so the projection never runs away
     coneVolMultiplier: 1.15,   // widen the likely-range band a touch

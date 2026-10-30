@@ -570,7 +570,14 @@
     var prep = Promise.all([
       KT.app.isStockView() ? companyExtras(S.symbol) : Promise.resolve({}),
       KT.data.getSentiment ? withinMs(KT.data.getSentiment(S.symbol), 9000) : Promise.resolve(null),
-    ]).then(function (r) { var x = r[0] || {}; x.sentiment = r[1] || null; return x; });
+    ]).then(function (r) {
+      var x = r[0] || {}, live = r[1] || null;
+      // The workflow's reading (data/social.json) when the live one does not
+      // answer, and its Reddit sample either way: the browser cannot reach Reddit.
+      var file = KT.forecast.socialFor ? KT.forecast.socialFor(S.social, symbolAtStart) : null;
+      x.sentiment = live ? (file && file.reddit ? { at: live.at, mood: live.mood, crowd: live.crowd, reddit: file.reddit } : live) : file;
+      return x;
+    });
     return prep.then(function (extras) {
       if (extras && extras.fundamentals) lastFund[symbolAtStart] = extras.fundamentals;
       return KT.desk.run(S, {
@@ -705,8 +712,27 @@
         bits.push('Opening gaps are called ' + (sum.openGain > 1 ? 'larger' : 'smaller') + ' than the starting model would, ×' +
                   sum.openGain.toFixed(2) + ', from ' + sum.openSamples + ' opens.');
       }
+      /* The gap between the frozen line and the market (learn.closeFitFrom):
+         whether the moves it draws are too big or too small, and any lean it
+         keeps missing by. Says how far off it is until there is a sample. */
+      var minClose = sum.minCloseSample || 10;
+      if ((sum.closeSamples || 0) < minClose) {
+        bits.push('The gap between each frozen line and where the market went is being measured: ' +
+                  (sum.closeSamples || 0) + ' of ' + minClose + ' judged sessions before it may resize the line.');
+      } else if (isNum(sum.closeGain)) {
+        var g = sum.closeGain, b = sum.closeBias || 0;
+        bits.push('From the gap between its lines and the market over ' + sum.closeSamples + ' sessions, the session move is now drawn ' +
+                  (Math.abs(g - 1) < 0.005 ? 'at the starting size' : '×' + g.toFixed(2) + (g < 1 ? ' (it was calling moves too big)' : ' (it was calling moves too small)')) +
+                  (b ? ', and the close is nudged ' + (b > 0 ? 'up' : 'down') + ' ' + Math.abs(b).toFixed(2) + '% for a lean it kept missing by' : '') + '.');
+      }
       // Whether its odds have meant what they said, from the published record.
       var st = S.record && S.record.symbols && S.record.symbols[S.symbol] && S.record.symbols[S.symbol].stats;
+      if (st && st.close && st.close.n >= 3 && isNum(st.close.maePts)) {
+        bits.push('Its frozen closes have been ' + Math.round(st.close.maePts) + ' points off on average over ' + st.close.n +
+                  ' sessions' + (isNum(st.close.biasPct) && Math.abs(st.close.biasPct) >= 0.05
+                    ? ', and on average the market closed ' + Math.abs(st.close.biasPct).toFixed(2) + '% ' +
+                      (st.close.biasPct > 0 ? 'above' : 'below') + ' the line' : '') + '.');
+      }
       var cal = st && st.calibration ? st.calibration.filter(function (b) { return b.n >= 5 && b.label !== 'no lean'; }) : [];
       if (cal.length) {
         bits.push('When it gave ' + cal.map(function (b) {

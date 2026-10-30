@@ -673,6 +673,10 @@
           headline: String(f.topNews.headline || '').slice(0, 180),
           source: f.topNews.source, ts: f.topNews.ts,
         } : null,
+        /* The learned size and lean this line was drawn with (forecast
+           `learned`), so the next fit can divide them back out
+           (learn.closeFitFrom) instead of learning from its own correction. */
+        learned: f.learned ? { g: f.learned.gain, b: f.learned.leanPct } : null,
       };
       rows.push(row);
       lockSave(rows);

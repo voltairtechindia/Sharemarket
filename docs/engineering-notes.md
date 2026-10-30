@@ -904,6 +904,62 @@ twenty-year model) and `kronos.yml` (both price models). Their first runs are
 the verification. Measured in the cloud on synthetic data: the model run takes
 about 100 s for three indices, the study about 11 s, the call about 3 s.
 
+## The line that stays, the gap it learns from, the crowd (30 Oct 2026, later)
+
+- **The frozen line vanished at the close.** The chart drew only the current
+  session's call, so the one comparison the page exists for, where it said
+  price would go against where it went, was gone when the session ended.
+  `app.js pastCalls` hands every finished session on screen to
+  `chart.drawLocked`, which draws each over its own candles and ends it with
+  "said X, closed Y". The record keeps a five-minute sketch of each line for
+  20 sessions (`daily_call.js compact(r, sketch)`), about 24 KB a symbol.
+- **Lightweight Charts 4 joins a line across a blank point.** The first try
+  broke the line between sessions with a whitespace point and the chart drew
+  a straight join from one session's close to the next one's line. A point's
+  `color` paints the segment that leaves it, so the last point before each new
+  call is transparent (measured on a test page, 30 Oct 2026).
+- **Checkpoint markers stacked at NOW.** They were set on the candle series,
+  which has no bar at a future time, so every one drew on the last candle.
+  They sit on the forecast series now.
+- **Nothing learned from the size of the miss.** The learner moved lane
+  weights and the opening-gap gain; the gap between line and market over the
+  session taught nothing. `learn.closeFitFrom` fits the move's size and a lean
+  from the judged record, `forecast.build` applies them to intraday views, and
+  each frozen row carries `learned: {g, b}` so the next fit divides them back
+  out. Tested: a line calling twice the move fits a raw slope of 0.5; the same
+  record drawn at half size fits the same; a steady miss earns a capped lean;
+  a miss both ways earns none.
+- **config/feeds.yml was read in part.** `feeds_build.py` read its `news:`
+  list and nothing else, so the file's 32 Google News searches, 8 X accounts
+  and 2 Telegram channels never reached the index. `yaml_lanes` reads them now
+  (Telegram through the t.me/s preview, parsed in `fetch_news.py`; X through
+  the first `x_mirrors` host), with GDELT's free article search, Bing News
+  searches and Yahoo's per-index headlines added. The `reddit:` list feeds
+  `fetch_social.py`, for the crowd's mood, not the news lane.
+- **The news rotation assumed a five-minute cron.** Priority 2 was polled one
+  run in three and priority 3 one in ten; at a run every two and a half hours
+  most feeds went unread for a day and the frozen call saw only the priority-1
+  feeds. Scheduled runs sweep wide now (`fetch_news.py --wide`: priority 1
+  and 2 and a third of the rest, Google News six at a time, a 150 s budget so
+  the step's own timeout never loses the headlines already read).
+- **The crowd as a lane.** `forecast.crowdLane`, weight 0.04, every other
+  weight scaled by 0.96: contrarian at the extremes only.
+- **The training log.** `scripts/training_log.js` on its own branch (see
+  `docs/calls.md`). The self-test replays a week, writes the log twice and
+  checks that nothing is written twice.
+
+- **Found on the live origin, before the push.** A browser's own call for
+  today, when the record had none, read "closed 23,053" at 13:50: a call whose
+  session is still trading is now drawn whole, with no "closed" label. Three
+  older calls stamped off the minute came out as one dot each on the 5-minute
+  view; `app.js onGrid` now takes the last point in each bar when no point
+  sits on the grid. The crowd lane read the mood index (50, fear) and 28
+  StockTwits posts through the proxy chain and voted nothing, as it should in
+  the middle. Zero page errors.
+
+Waiting on their first run in Actions: `fetch_social.py` from GitHub's
+addresses, the new feeds, and the first push to `training-log`.
+
 ---
 
 ## Style
