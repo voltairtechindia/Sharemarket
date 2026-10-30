@@ -76,6 +76,22 @@ KT.CONFIG = {
   },
   defaultTimeframe: '1D',
 
+  /* ------------------------------------------------------------ the page
+     centreNow    NOW sits in the middle of the chart: as much history on the
+                  left as forecast on the right, so the line the forecast
+                  drew earlier and where price went sit beside where it says
+                  price goes next, at the same scale (chart.js frameView)
+     minSideBars  the least either half may show, per timeframe, so a short
+                  afternoon horizon does not zoom into a handful of bars
+     desk         the AI desk is on the page: it supplies the model lane's
+                  vote, and the single-call vote and narrative stay off
+                  (app.js aiReserved)                                          */
+  ui: {
+    centreNow: true,
+    minSideBars: { '1S': 60, '1H': 60, '1D': 36, '1M': 20, '1Y': 26, 'ALL': 8 },
+    desk: true,
+  },
+
   /* ----------------------------------------------------------- market hours
      NSE cash: pre-open 09:00-09:15 IST, regular 09:15-15:30 IST, Mon-Fri.    */
   market: {
@@ -89,6 +105,7 @@ KT.CONFIG = {
   poll: {
     tickMs: 1000,        // chart repaint / live price poll while market is open
     tickMsClosed: 30000, // gentle heartbeat when the market is shut
+    stockQuoteMs: 30000, // a stock's screener price is 15 min delayed; no point polling it every second
     newsMs: 60000,       // fast lane RSS
     bakedMs: 60000,      // re-read the workflow output (raw.githubusercontent, no Pages build)
     /* The live option chain, browser-side through the proxy. Three minutes
@@ -179,6 +196,8 @@ KT.CONFIG = {
       `&expiry=${encodeURIComponent(expiry)}`,
     openrouterModels: 'https://openrouter.ai/api/v1/models',
     openrouterChat: 'https://openrouter.ai/api/v1/chat/completions',
+    // Key metadata (free tier or not). Not a model request; costs no quota.
+    openrouterKey: 'https://openrouter.ai/api/v1/key',
 
     /* TradingView's public screener. Measured 6 Oct 2026 from the deployed
        origin: a plain POST with Content-Type text/plain (a "simple" request,
@@ -309,6 +328,11 @@ KT.CONFIG = {
     stocks:      'data/stocks.json',
     universe:    'data/universe.json',
     ipo:         'data/ipo.json',
+    kronos:      'data/kronos.json',
+    history:     'data/history_model.json',
+    study:       'data/study.json',
+    calls:       'data/calls.json',
+    chronos:     'data/chronos.json',
     lexicon:     'config/lexicon.json',
     auth:        'config/auth.json',
     /* The session view asks Yahoo for exactly what the hourly view asks for -
@@ -322,7 +346,8 @@ KT.CONFIG = {
   /* Files that must never be read from the stale same-origin copy when the
      remote lane is alive - these are the ones that change every minute. */
   liveFiles: ['data/news.json', 'data/quote.json', 'data/global.json', 'data/flows.json',
-              'data/news_rollup.json', 'data/filings.json', 'data/stocks.json'],
+              'data/news_rollup.json', 'data/filings.json', 'data/stocks.json',
+              'data/kronos.json', 'data/chronos.json', 'data/history_model.json', 'data/calls.json'],
 
   /* ------------------------------------------------------------- forecasting
      Weights sum to 1. They decide how much each lane moves the needle.       */
@@ -338,18 +363,18 @@ KT.CONFIG = {
        order is unchanged and the new lane paid for itself out of all of them
        equally. That is the least opinionated way to make room. */
     weights: {
-      news: 0.1987,     // the loudest short-horizon input, and the fastest to decay
-      momentum: 0.1656, // trend, RSI, MACD, supertrend, scaled by ADX
-      global: 0.1325,   // overnight futures, Asia, crude, dollar, rupee, US 10y
-      structure: 0.1076,// measured moves from triangles, flags, double tops
-      seasonal: 0.0994, // month, weekday and expiry-week effects
-      levels: 0.0662,   // how much room there is before the next wall
-      flow: 0.0580,     // breadth, FII and DII when the workflow has them
+      news: 0.1756,     // the loudest short-horizon input, and the fastest to decay
+      momentum: 0.1464, // trend, RSI, MACD, supertrend, scaled by ADX
+      global: 0.1170,   // overnight futures, Asia, crude, dollar, rupee, US 10y
+      structure: 0.0950,// measured moves from triangles, flags, double tops
+      seasonal: 0.0878, // month, weekday and expiry-week effects
+      levels: 0.0585,   // how much room there is before the next wall
+      flow: 0.0512,     // breadth, FII and DII when the workflow has them
       /* The only forward-looking lane: PCR on today's open interest, the OI
          walls and max pain. Deliberately modest - the direction convention it
          uses is standard practice rather than something measured here, and it
          arrives through the workflow so it is hours old by construction. */
-      options: 0.0920,
+      options: 0.0813,
       /* The language model's own read, added 20 Sep 2026. It is a lane and
          nothing more: a number between -1 and +1, weighted, renormalised and
          scored in the ledger exactly like the other eight. It cannot write a
@@ -368,13 +393,37 @@ KT.CONFIG = {
          than re-argued, so their relative order is unchanged and the new lane
          paid for itself out of all of them equally. Same move as when options
          joined at 0.9; it is the least opinionated way to make room. */
-      model: 0.0800,
+      model: 0.0707,
+      /* The price model, added 29 Oct 2026: Kronos, a model trained on
+         candles from forty-five exchanges, asked for many paths from the last
+         close (scripts/kronos_forecast.py, twice a weekday). Like the model
+         lane it is learned rather than checkable arithmetic, so it starts
+         below par and below every arithmetic lane but flows, and earns more
+         only off settled calls. Every other weight was scaled by 0.94 to make
+         room, the same least-opinionated move as when options and the model
+         joined. */
+      kronos: 0.0565,
+      /* The twenty-year model, added 30 Oct 2026: a factor model trained
+         walk-forward on every session since 2007 (scripts/history_model.py),
+         asked one question, whether the next session closes higher. A lane
+         only for a horizon that ends at the next close, below par like the
+         other two learned lanes, and its vote is cut further while its own
+         out-of-sample record has not beaten the simplest baselines
+         (forecast.historyLane). Every other weight was scaled by 0.94 to make
+         room, the same move as when options, the model and Kronos joined. */
+      history: 0.0600,
     },
     maxDriftPctPerBar: 0.06,   // cap so the projection never runs away
     coneVolMultiplier: 1.15,   // widen the likely-range band a touch
     minConfidence: 35,
     maxConfidence: 88,
     calibrateEveryMs: 900000,  // re-score the band against history every 15 min
+    /* How far an overnight gap call usually misses, in percent of the close.
+       The band is drawn from the predicted open, so it carries no doubt about
+       the open itself; "will it close above today's close" has to add this
+       back (forecast.closeOdds). A judgement until the 20-year study
+       publishes the measured figure. */
+    gapSigmaPct: 0.35,
   },
 
   /* ------------------------------------------------------------- holdings
@@ -421,4 +470,13 @@ KT.CONFIG = {
     'liquid/lfm-2.5-2.6b:free',
   ],
   defaultModel: 'openrouter/free',
+
+  /* The AI budget. OpenRouter's free models allow 50 requests a day until
+     the account has bought $10 of credit, then 1,000 (the credit is not
+     drawn down by free models). data.js counts every request against this.
+     classicReserve: the Classic page's narrative and vote stop when fewer
+     than this many are left, so they cannot spend the AI desk's runs.
+     deskReserve: automatic desk runs keep this many back for the stocks
+     someone opens by hand. */
+  ai: { freeDailyLimit: 50, paidDailyLimit: 1000, classicReserve: 20, deskReserve: 8 },
 };

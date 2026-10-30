@@ -46,7 +46,7 @@
   var state = {
     candles: [], forecast: null, reasons: [], patternMarkers: [],
     structures: [], levels: null, indicators: null,
-    overlays: { ema: true, bands: false, supertrend: false, vwap: false, levels: true, patterns: true, why: true,
+    overlays: { ema: !(C.ui && C.ui.emaOff), bands: false, supertrend: false, vwap: false, levels: true, patterns: true, why: true,
                 trail: true, errors: true },
     tf: C.defaultTimeframe, symbol: C.defaultSymbol,
     lastCandleTime: null, pinned: null, total: 0, locked: null,
@@ -115,6 +115,9 @@
      strings a browser hands back from getComputedStyle. Anything else is
      returned untouched, so a future `oklch()` token degrades to a solid line
      rather than to `NaN` and an invisible series. */
+  /* How strongly the forecast is drawn; config.js can ask for it bolder. */
+  function fcAlpha() { return (C.ui && C.ui.forecastAlpha) || 0.6; }
+
   function soften(colour, a) {
     var c = String(colour || '').trim();
     var m = /^#([0-9a-f]{6})$/i.exec(c);
@@ -223,7 +226,7 @@
     });
 
     fcSeries = chart.addLineSeries({
-      color: soften(p.forecast, 0.6), lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid,
+      color: soften(p.forecast, fcAlpha()), lineWidth: (C.ui && C.ui.forecastWidth) || 2, lineStyle: LightweightCharts.LineStyle.Solid,
       priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
       title: 'Forecast',
     });
@@ -250,7 +253,7 @@
        stretch (violet) from what this browser recorded live (amber), because
        a backtest and a forward record are different evidence. */
     trailSeries = chart.addLineSeries({
-      color: soften(p.trail, 0.95), lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,
+      color: soften(p.trail, 0.95), lineWidth: (C.ui && C.ui.trailWidth) || 1, lineStyle: LightweightCharts.LineStyle.Solid,
       priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       title: '',
     });
@@ -275,7 +278,7 @@
     var p = palette();
     chart.applyOptions(chartOptions());
     candleSeries.applyOptions({ upColor: p.up, downColor: p.down, borderUpColor: p.up, borderDownColor: p.down, wickUpColor: p.up, wickDownColor: p.down });
-    fcSeries.applyOptions({ color: soften(p.forecast, 0.6) });
+    fcSeries.applyOptions({ color: soften(p.forecast, fcAlpha()) });
     if (lockSeries) lockSeries.applyOptions({ color: soften(p.locked, 0.55) });
     if (actualSeries) actualSeries.applyOptions({ color: soften(p.actual, 0.45) });
     drawStructures(); drawOverlays(); drawLevels(); drawTrail();
@@ -822,6 +825,23 @@
     if (!chart || !state.total) return;
     var tf = C.timeframes[state.tf];
     var fcBars = state.forecast && state.forecast.path ? state.forecast.path.length : 0;
+    /* NOW in the middle (C.ui.centreNow): as much history on the left as there is
+       forecast on the right, so where the line said price would go and where
+       it went sit beside where it says price goes next, at the same scale.
+       A floor keeps a short afternoon horizon from zooming into a handful of
+       bars; past the end of the forecast the right half is empty time. */
+    var ui = C.ui || {};
+    if (ui.centreNow && fcBars) {
+      var side = Math.max(fcBars, (ui.minSideBars && ui.minSideBars[state.tf]) || 30);
+      var nowIdx = state.candles.length - 1;
+      try {
+        chart.timeScale().setVisibleLogicalRange({ from: nowIdx - side, to: nowIdx + side });
+      } catch (e) {
+        chart.timeScale().fitContent();
+      }
+      positionOverlays();
+      return;
+    }
     var histBars = Math.min(state.candles.length, fcBars ? fcBars * (tf.histPerForecast || 4) : tf.visibleBars);
     var span = histBars + fcBars;
     var to = state.total - 0.5;

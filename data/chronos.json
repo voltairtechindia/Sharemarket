@@ -1,0 +1,1 @@
+{"generated_at": "2026-10-30T00:00:00+00:00", "ok": false, "model": "amazon/chronos-bolt-small", "source": "github.com/amazon-science/chronos-forecasting (Apache 2.0)", "stub": false, "series": {}, "errors": [], "error": "waiting for the first run of .github/workflows/kronos.yml"}

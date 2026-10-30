@@ -1,0 +1,85 @@
+name: Price models (Kronos and Chronos-Bolt)
+
+# Kronos is a model trained on candles from forty-five exchanges
+# (github.com/shiyu-coder/Kronos, MIT). scripts/kronos_forecast.py asks it for
+# sixteen paths per series from the last close and writes their spread to
+# data/kronos.json. Chronos-Bolt (github.com/amazon-science/chronos-forecasting,
+# Apache 2.0) is pretrained on series of every kind; scripts/chronos_forecast.py
+# writes its quantiles for the same series to data/chronos.json. The forecast
+# averages the two into its "price model" lane; either one alone still votes.
+#
+# Twice a weekday, not every few minutes: a CPU run takes minutes, and the
+# model's input (finished bars) only changes at the open and the close.
+#   02:40 UTC = 08:10 IST, before the open, for the session about to start
+#   10:40 UTC = 16:10 IST, after the close, for the next session
+#
+# It publishes through the same script and the same concurrency group as
+# live-data.yml, so the two never force-push the live branch at the same time,
+# and each seeds data/ from the live branch first so neither drops the
+# other's files.
+on:
+  schedule:
+    - cron: "40 2 * * 1-5"
+    - cron: "40 10 * * 1-5"
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/kronos_forecast.py"
+      - "scripts/chronos_forecast.py"
+      - ".github/workflows/kronos.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: live-data
+  cancel-in-progress: false
+
+jobs:
+  kronos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # CPU torch from PyTorch's own index: a fifth of the size of the default
+      # wheel, which bundles CUDA libraries a runner without a GPU never uses.
+      - name: Install torch (CPU) and the model's dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          git clone --depth 1 https://github.com/shiyu-coder/Kronos.git /tmp/kronos
+          grep -v -i -e '^torch' -e '^matplotlib' /tmp/kronos/requirements.txt > /tmp/kronos-req.txt
+          pip install -r /tmp/kronos-req.txt
+          pip install "chronos-forecasting==2.3.2"
+
+      # The model weights are downloaded from Hugging Face on first use and
+      # kept between runs, so most runs skip the download.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-price-models-v1
+          restore-keys: hf-kronos-small-v1
+
+      - name: Seed from the live branch
+        run: |
+          git fetch origin live-data --depth=1 || exit 0
+          git checkout origin/live-data -- data/ 2>/dev/null || true
+
+      - name: Forecast (Kronos)
+        working-directory: scripts
+        run: python kronos_forecast.py --kronos /tmp/kronos --samples 16
+        continue-on-error: true
+
+      - name: Forecast (Chronos-Bolt)
+        working-directory: scripts
+        run: python chronos_forecast.py
+        continue-on-error: true
+
+      - name: Publish to the live branch
+        run: bash scripts/publish_live.sh

@@ -1,0 +1,135 @@
+name: Twenty-year study and the daily call
+
+# Twice a weekday, the part of the terminal that has to happen whether or not
+# anyone has the page open (docs/calls.md).
+# All free on a public repository.
+#
+#   the tape                    the same fetchers live-data.yml runs (minute
+#                               bars, world cues, flows, option chain, news),
+#                               because that workflow arrives about once every
+#                               two and a half hours and this one cannot judge
+#                               a session on a tape that stops at lunchtime
+#   scripts/fetch_history.py    twenty years of daily bars from Yahoo: NIFTY,
+#                               SENSEX, BANK NIFTY, India VIX and the overnight
+#                               world (US, Asia, Europe, crude, the rupee...)
+#   scripts/history_model.py    a factor model trained walk-forward, so every
+#                               year is scored by a model that never saw it;
+#                               writes tomorrow's odds and that record to
+#                               data/history_model.json. Its --selfcheck runs
+#                               first: a planted lead-lag the evening model must
+#                               not see. A leak fails the run instead of
+#                               publishing odds that look brilliant for the
+#                               wrong reason.
+#   scripts/history_study.js    the page's own pattern detectors over the whole
+#                               record, to data/study.json
+#   scripts/daily_call.js       settles and judges the session that just
+#                               closed, files what it missed, and freezes the
+#                               call for the next one, to data/calls.json. Every
+#                               browser shows that call and that record.
+#
+#   11:10 UTC = 16:40 IST, after the close: today's call is judged, the evening
+#                         odds and the call for tomorrow are frozen
+#   02:55 UTC = 08:25 IST, after the US close: the pre-open odds, which know
+#                         the overnight session, and the pre-open call
+#
+# The twenty-year file itself (a few MB) is kept in the Actions cache, not on
+# the live branch, because snapshot.yml copies that branch to main four times
+# a day and main keeps history.
+on:
+  schedule:
+    - cron: "10 11 * * 1-5"
+    - cron: "55 2 * * 1-5"
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/fetch_history.py"
+      - "scripts/history_model.py"
+      - "scripts/history_study.js"
+      - "scripts/daily_call.js"
+      - "scripts/ktvm.js"
+      - ".github/workflows/history.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: live-data
+  cancel-in-progress: false
+
+jobs:
+  study:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # Pinned to the versions the model was tested with (30 Oct 2026).
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install "pandas==3.0.5" "numpy==2.5.3" "lightgbm==4.7.0"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Restore the twenty-year file
+        uses: actions/cache@v4
+        with:
+          path: data/history_daily.json
+          key: history-daily-${{ github.run_id }}
+          restore-keys: history-daily-
+
+      # Main's copy of the call record, kept aside before the seed replaces
+      # it: daily_call.js merges the two, so a push another workflow made
+      # over this one's cannot lose a judged session.
+      - name: Seed from the live branch
+        run: |
+          cp data/calls.json /tmp/calls_main.json 2>/dev/null || true
+          git fetch origin live-data --depth=1 || exit 0
+          git checkout origin/live-data -- data/ 2>/dev/null || true
+
+      # The tape the call is judged on and frozen from. Each step keeps the
+      # last good file when its source does not answer.
+      - name: Refresh the tape
+        run: |
+          python scripts/fetch_market.py || true
+          python scripts/fetch_global.py || true
+          python scripts/fetch_flows.py || true
+          python scripts/fetch_options.py || true
+          timeout 300 python scripts/fetch_news.py || true
+        continue-on-error: true
+
+      - name: Fetch twenty years of daily bars
+        working-directory: scripts
+        run: python fetch_history.py
+        continue-on-error: true
+
+      - name: Leak check on a planted record
+        working-directory: scripts
+        run: python history_model.py --selfcheck
+
+      - name: Fit the model, walk-forward
+        working-directory: scripts
+        run: python history_model.py
+        continue-on-error: true
+
+      - name: Count twenty years of patterns
+        run: node scripts/history_study.js
+        continue-on-error: true
+
+      - name: Judge the last session, freeze the next
+        run: node scripts/daily_call.js --also /tmp/calls_main.json
+        continue-on-error: true
+
+      - name: Publish to the live branch
+        run: |
+          rm -f data/history_daily.json.tmp
+          mkdir -p /tmp/keep && mv data/history_daily.json /tmp/keep/ 2>/dev/null || true
+          bash scripts/publish_live.sh
+          mv /tmp/keep/history_daily.json data/ 2>/dev/null || true

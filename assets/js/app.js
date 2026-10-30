@@ -97,9 +97,18 @@
           data.loadBaked(C.baked.options).then(function (o) { S.options = o; }).catch(noop),
           data.loadBaked(C.baked.events).then(applyEvents).catch(noop),
           data.loadBaked(C.baked.constituents).then(applyConstituents).catch(noop),
+          loadKronos(),
+          loadHistory(),
+          loadCalls(true),
           // The universe is what turns "RELIANCE" into "Reliance Industries"
           // for headline matching, so it has to land before the first scan.
-          data.loadBaked(C.baked.universe).then(function (u) { KT.portfolio.setUniverse(u); fillUniverseList(); }).catch(noop),
+          data.loadBaked(C.baked.universe).then(function (u) {
+            KT.portfolio.setUniverse(u); fillUniverseList();
+            // The any-stock search and the company-news matcher read the
+            // same file. Both modules are absent on the profile and hub pages.
+            if (KT.stocks) KT.stocks.setUniverse(u);
+            if (KT.streetcalls && u) KT.streetcalls.setUniverse(u.symbols || u);
+          }).catch(noop),
           data.loadBaked(C.baked.stocks).then(function (q) { KT.portfolio.setQuotes(q); }).catch(noop),
         ]);
       })
@@ -111,10 +120,81 @@
       .then(startLoops)
       .catch(function (e) {
         chart.showEmpty('Could not load chart data', String(e && e.message || e));
+        loadFailed(S.symbol, e);
+        // The loops still start, so the next candle refresh can recover the
+        // page rather than leaving it dead until a reload.
+        if (!S.timers.tick) startLoops();
       });
   }
 
+  /* The session call card (panels.js) shows the failure, which would
+     otherwise keep saying it is still reading the market. */
+  var loadErrorHooks = [];
+  function loadFailed(sym, e) {
+    for (var i = 0; i < loadErrorHooks.length; i++) {
+      try { loadErrorHooks[i](sym, String(e && e.message || e)); } catch (err) { /* a hook must not throw */ }
+    }
+  }
+
   function noop() {}
+
+  /* The price model's paths (scripts/kronos_forecast.py). Absent until its
+     workflow has run once, which leaves the lane dark with a note. */
+  function loadKronos() {
+    if (!C.baked.kronos || !KT.forecast.setKronos) return Promise.resolve(false);
+    return Promise.all([
+      data.loadBaked(C.baked.kronos).then(function (k) {
+        S.kronos = k;
+        return KT.forecast.setKronos(k);
+      }).catch(noop),
+      // The second price model (scripts/chronos_forecast.py), same lane.
+      C.baked.chronos && KT.forecast.setChronos ? data.loadBaked(C.baked.chronos).then(function (c) {
+        S.chronos = c;
+        return KT.forecast.setChronos(c);
+      }).catch(noop) : null,
+    ]);
+  }
+
+  /* The twenty-year model's odds for the next session and the twenty-year
+     pattern record (scripts/history_model.py, history_study.js). Absent until
+     their workflow has run once: the lane stays dark and the cards say so. */
+  function loadHistory() {
+    if (!C.baked.history || !KT.forecast.setHistory) return Promise.resolve(false);
+    return Promise.all([
+      data.loadBaked(C.baked.history).then(function (h) {
+        S.historyModel = h;
+        return KT.forecast.setHistory(h);
+      }).catch(noop),
+      data.loadBaked(C.baked.study).then(function (st) { S.study = st && st.ok ? st : null; }).catch(noop),
+    ]);
+  }
+
+  /* The workflow's record of session calls (scripts/daily_call.js): the call
+     it froze for each session, the judgement once the session is over, the
+     lessons those judgements filed, and what the record has learned. Where it
+     has a call for a session, that is the call in every browser
+     (ledger.setShared). Read at boot and then every ten minutes: it changes
+     twice a day and is one of the larger files the page reads. */
+  var CALLS_EVERY_MS = 600000;
+  function loadCalls(force) {
+    if (!C.baked.calls || !KT.ledger || !KT.ledger.setShared) return Promise.resolve(false);
+    if (!force && S.callsAt && Date.now() - S.callsAt < CALLS_EVERY_MS) return Promise.resolve(false);
+    S.callsAt = Date.now();
+    return data.loadBaked(C.baked.calls).then(function (rec) {
+      if (!rec || rec.v !== 1 || !rec.symbols) return false;
+      var fresh = !S.record || S.record.generated_at !== rec.generated_at;
+      if (!fresh) return false;
+      S.record = rec;
+      KT.ledger.setShared(rec);
+      if (KT.learn && KT.learn.adoptShared) KT.learn.adoptShared(rec.learned);
+      if (KT.lessons && rec.lessons && rec.lessons.length) {
+        try { KT.lessons.importJson(JSON.stringify({ items: rec.lessons })); } catch (e) { /* the record stands without them */ }
+      }
+      S.call = null;            // the call may now be the record's
+      if (S.booted) recompute();
+      return true;
+    }).catch(noop);
+  }
 
   function note(message) {
     var n = el('key-notice');
@@ -434,6 +514,8 @@
     text('reason-granularity', 'Reason points: ' + C.timeframes[tf].reasonLabel);
     if (chart.isReplaying()) closeReplay();
     S.trailReplay = null; S.trailKey = null;
+    // Same reason as setSymbol: old bars must not be forecast as new ones.
+    S.candles = [];
     fillTrailLeads();
     chart.showEmpty('Loading ' + C.timeframes[tf].label.toLowerCase() + ' candles…', '');
     refreshCandles().then(recompute).catch(function (e) {
@@ -441,28 +523,59 @@
     });
   }
 
-  function setSymbol(sym) {
-    if (!C.symbols[sym] || sym === S.symbol) return;
-    S.symbol = sym;
-    S.lastPrice = null;
+  function showSymbolMeta(sym) {
     var meta = C.symbols[sym];
+    if (!meta) return;
     text('asset-name', meta.label);
-    text('asset-exch', meta.exchange);
+    // A stock's line under the name is the company, which is what a reader
+    // checks first when they typed a ticker from memory.
+    text('asset-exch', meta.stock ? 'NSE' + (meta.name && meta.name !== meta.label ? ' · ' + meta.name : '') : meta.exchange);
     document.querySelectorAll('.tick:not(.is-quote)').forEach(function (t) {
       t.setAttribute('aria-selected', String(t.getAttribute('data-symbol') === sym));
     });
     document.querySelectorAll('#mw-list .mw-item').forEach(function (li) {
       li.setAttribute('aria-selected', String(li.getAttribute('data-symbol') === sym));
     });
+  }
+
+  function setSymbol(sym) {
+    if (!C.symbols[sym] || sym === S.symbol) return;
+    S.symbol = sym;
+    S.lastPrice = null;
+    // The previous symbol's quote must not reach this one's forecast as its
+    // live price; build() would only reject it if the two happened to differ.
+    S.quote = null;
+    /* And the previous symbol's candles must not be forecast under this
+       one's name. Any lane landing while the new series loads (the option
+       chain, the cues, a news sweep) calls recompute(), which would build,
+       record and possibly freeze a call on the old candles with the new
+       symbol on it. With the series empty, recompute() waits. */
+    S.candles = [];
+    var meta = C.symbols[sym];
+    showSymbolMeta(sym);
     chart.showEmpty('Loading ' + meta.label + '…', '');
     if (chart.isReplaying()) closeReplay();
     S.trailReplay = null; S.trailKey = null;
-    refreshAll();
+    /* A stock's candles come through the shared proxy and can fail. Say so
+       and try once more a minute later, rather than leaving "Loading" up. */
+    refreshAll().catch(function (e) {
+      if (S.symbol !== sym) return;
+      chart.showEmpty('Could not load ' + meta.label + ' candles',
+                      String(e && e.message || e) + '. Trying again in a minute.');
+      loadFailed(sym, e);
+      setTimeout(function () {
+        if (S.symbol === sym && !S.candles.length) refreshAll().catch(noop);
+      }, 60000);
+    });
   }
 
   /* ============================================================== REFRESH */
   function refreshCandles() {
-    return data.getCandles(S.symbol, S.timeframe).then(function (res) {
+    var symAt = S.symbol, tfAt = S.timeframe;
+    return data.getCandles(symAt, tfAt).then(function (res) {
+      // Switched while this was in flight: these bars belong to a view that
+      // is no longer on screen, and the request for the new one is running.
+      if (S.symbol !== symAt || S.timeframe !== tfAt) return res;
       S.candles = res.candles;
       // Trust the data over the label. If the provider handed back a coarser
       // granularity than the timeframe asked for, every downstream consumer -
@@ -479,10 +592,18 @@
     });
   }
 
+  function isStockView() { return !!(KT.stocks && KT.stocks.isStock(S.symbol)); }
+
   function refreshQuote() {
     var symbolAtStart = S.symbol;
-    return data.getLiveQuote(S.symbol)
-      .catch(function () { return data.getQuoteFallback(S.symbol); })
+    /* A stock is priced by the screener in one direct request. The index
+       path would go to Moneycontrol (no code for a stock) and then to Yahoo
+       through the shared proxy, every second - which is how a proxy gets
+       rate-limited for every other lane on the page. */
+    var src = isStockView()
+      ? KT.stocks.quote(S.symbol)
+      : data.getLiveQuote(S.symbol).catch(function () { return data.getQuoteFallback(S.symbol); });
+    return src
       .then(function (q) {
         if (symbolAtStart !== S.symbol) return q;
         S.quote = q;
@@ -500,6 +621,8 @@
   function refreshOtherQuotes() {
     Object.keys(C.symbols).forEach(function (k) {
       if (k === S.symbol) return;
+      // Stocks opened earlier stay registered; they are not on the board.
+      if (C.symbols[k].stock) return;
       var p = C.symbols[k].mcId
         ? data.getLiveQuote(k).catch(function () { return data.getQuoteFallback(k); })
         : data.getQuoteFallback(k);
@@ -534,6 +657,9 @@
       data.loadBaked(C.baked.options).then(function (o) { S.options = o; }).catch(noop),
       data.loadBaked(C.baked.events).then(applyEvents).catch(noop),
       data.loadBaked(C.baked.constituents).then(applyConstituents).catch(noop),
+      loadKronos(),
+      loadHistory(),
+      loadCalls(),
       data.loadBaked(C.baked.stocks).then(function (q) {
         KT.portfolio.setQuotes(q);
         // The live screener copy is fresher than the workflow's; re-apply it
@@ -583,19 +709,35 @@
     var vixNext = vixLive || (vixQuote && vixQuote.price) || S.vix || null;
     S.vix = vixNext;
 
+    /* One stock in focus. Its news lane reads the company's headlines
+       and the macro ones, NIFTY's seasonality and option chain stay out, and
+       a fifteen-minute-old screener price is not handed in as the live one.
+       On the index all of this is a no-op. */
+    var stockView = isStockView();
+    var fcNews = news;
+    if (KT.forecast.setFocus) KT.forecast.setFocus(stockView ? KT.stocks.focusFor(S.symbol) : null);
+    if (stockView) fcNews = KT.stocks.forecastNews(S.symbol, news);
+    // The AI desk's vote follows the symbol it was made for. Without
+    // this a NIFTY call would be voting on whichever stock is open.
+    if (C.ui && C.ui.desk && KT.desk) S.modelVote = KT.desk.voteFor(S.symbol);
+    var livePx = S.quote && S.quote.price ? S.quote.price : null;
+    if (stockView && S.quote && S.quote.delayMin) livePx = null;
+
     S.forecast = engine.buildForecast({
+      symbol: S.symbol,
       candles: S.candles,
-      news: news,
-      seasonality: S.seasonality,
+      news: fcNews,
+      seasonality: stockView ? null : S.seasonality,
       timeframe: S.timeframe,
-      livePrice: S.quote && S.quote.price ? S.quote.price : null,
+      livePrice: livePx,
+      gapScale: stockView ? KT.stocks.gapScale(S.symbol) : null,
       indicators: S.indicators,
       levels: S.levels,
       structures: S.structures,
       structureStats: S.structureStats,
       global: S.global,
       flows: S.flows,
-      options: S.options,
+      options: stockView ? null : S.options,
       vix: S.vix,
       /* The band multiplier that the last replay says would have delivered the
          coverage the band claims. Absent on the first load, which is correct -
@@ -618,11 +760,17 @@
     var tfDef = C.timeframes[S.timeframe];
     S.forecast.locked = null;
     S.lockScore = null;
-    if (KT.ledger && KT.ledger.lock && tfDef && tfDef.barSec <= 300) {
-      try {
-        S.forecast.locked = KT.ledger.lock(S.forecast, { symbol: S.symbol });
-        if (S.forecast.locked) S.lockScore = KT.ledger.scoreLock(S.forecast.locked, S.candles);
-      } catch (e) { S.forecast.locked = null; S.lockScore = null; }
+    /* One frozen call a session, whatever the view (29 Oct 2026). Each
+       intraday view used to freeze its own, so the record held a 5-minute
+       call, a 1-minute call and an hourly one for the same day and the
+       "tomorrow" answer depended on which button had been pressed the evening
+       before. The call is now always the session view's, built in the
+       background when another view is on screen (sessionCall), and every
+       intraday view draws that one. */
+    try { sessionCall(news, fcNews, stockView, livePx); } catch (e) { console.warn('session call failed:', e); }
+    if (S.call && S.call.locked && tfDef && tfDef.barSec <= 300) {
+      S.forecast.locked = tfDef.barSec === 60 ? S.call.locked : onGrid(S.call.locked, tfDef.barSec);
+      S.lockScore = S.call.score;
     }
 
     /* The live trail. Written before the chart draws, for the same reason the
@@ -664,6 +812,115 @@
     maybeCalibrate();
     maybeAskModelVote();
     maybeEnrichNarrative();
+    // panels.js draws its cards from the same state, after everything above.
+    for (var hi = 0; hi < recomputeHooks.length; hi++) {
+      try { recomputeHooks[hi](S); } catch (e) { console.warn('recompute hook failed:', e); }
+    }
+  }
+  var recomputeHooks = [];
+
+  /* ============================================================ THE CALL
+
+     The session's frozen call, built from one-minute candles whatever view
+     is on screen. On SESSION and 1H the view already holds those candles;
+     elsewhere they are fetched on their own slow timer (the candle cache
+     answers most of those requests) and the session forecast is rebuilt at
+     most once a minute, because recompute runs on every refresh and a
+     375-minute build costs about 50 ms. */
+  var sess = { sym: null, candles: null, fetchedAt: 0, inflight: false };
+  var SESSION_REBUILD_MS = 60000;
+
+  function maybeFetchSession() {
+    var live = core.marketState().live;
+    var every = live ? 180000 : 900000;
+    if (sess.inflight) return;
+    if (sess.sym === S.symbol && Date.now() - sess.fetchedAt < every) return;
+    var want = S.symbol;
+    sess.inflight = true;
+    data.getCandles(want, '1S').then(function (res) {
+      sess.inflight = false;
+      if (S.symbol !== want || !res || !res.candles || !res.candles.length) return;
+      sess = { sym: want, candles: res.candles, fetchedAt: Date.now(), inflight: false };
+      S.call = null;          // rebuild on the new bars
+      recompute();
+    }).catch(function () { sess.inflight = false; sess.fetchedAt = Date.now(); });
+  }
+
+  function judgeCtx(snap) {
+    var exp = S.options && S.options.expiry && data.nseDate ? data.nseDate(S.options.expiry) : null;
+    return {
+      news: data.getNews(), now: snap, events: S.events,
+      expiry: exp && KT.postmortem ? KT.postmortem.dateKey(exp) : null,
+    };
+  }
+
+  function sessionCall(news, fcNews, stockView, livePx) {
+    if (!KT.ledger || !KT.ledger.lock) return;
+    var minute = S.timeframe === '1S' || S.timeframe === '1H';
+    if (!minute) maybeFetchSession();
+    var candles = minute ? S.candles : (sess.sym === S.symbol ? sess.candles : null);
+    if (!candles || candles.length < 30) {
+      if (S.call && S.call.symbol !== S.symbol) S.call = null;
+      return;
+    }
+    var lastT = candles[candles.length - 1].time;
+    var key = S.symbol + ':' + lastT;
+    var f, ind = S.indicators, lv = S.levels;
+    if (S.timeframe === '1S') {
+      f = S.forecast;
+    } else if (S.call && S.call.key === key && S.call.forecast && Date.now() - S.call.builtAt < SESSION_REBUILD_MS) {
+      f = S.call.forecast; ind = S.call.indicators; lv = S.call.levels;
+    } else {
+      ind = KT.ind.snapshot(candles);
+      lv = KT.levels.build(candles);
+      var st = KT.structures.detect(candles);
+      f = engine.buildForecast({
+        symbol: S.symbol, candles: candles, news: fcNews,
+        seasonality: stockView ? null : S.seasonality, timeframe: '1S', livePrice: livePx,
+        gapScale: stockView ? KT.stocks.gapScale(S.symbol) : null,
+        indicators: ind, levels: lv, structures: st, structureStats: KT.structures.outcomes(candles),
+        global: S.global, flows: S.flows, options: stockView ? null : S.options, vix: S.vix,
+        conformal: null, modelVote: S.modelVote || null,
+      });
+    }
+    if (!f || !f.path || !f.path.length) return;
+    var snap = KT.postmortem ? KT.postmortem.snapshot({
+      symbol: S.symbol, timeframe: '1S', forecast: f, indicators: ind,
+      global: S.global, vix: S.vix, flows: S.flows,
+    }) : null;
+    var locked = null, score = null;
+    try {
+      locked = KT.ledger.lock(f, { symbol: S.symbol, snapshot: snap });
+      if (locked) score = KT.ledger.scoreLock(locked, candles);
+      // Judge any finished session these bars cover, with what is known now.
+      if (KT.ledger.settleLocks) KT.ledger.settleLocks(candles, S.symbol, judgeCtx(snap));
+    } catch (e) { locked = null; score = null; }
+    S.call = {
+      symbol: S.symbol, key: key, forecast: f, indicators: ind, levels: lv, locked: locked, score: score,
+      builtAt: S.call && S.call.key === key && S.call.forecast === f ? S.call.builtAt : Date.now(),
+      candles: candles,
+    };
+  }
+
+  /* The session call is a one-minute path. On the 5-minute view it is drawn
+     on that view's bars, or the chart would gain four extra time slots
+     between every pair of candles. */
+  function onGrid(lockRow, barSec) {
+    var path = lockRow.path, out = [];
+    if (!path || !path.length) return lockRow;
+    for (var i = 0; i < path.length; i++) {
+      var t = path[i].time;
+      if (Math.floor(t / barSec) * barSec === t) out.push(path[i]);
+    }
+    var lastPt = path[path.length - 1];
+    if (!out.length || out[out.length - 1].time !== lastPt.time) {
+      out.push({ time: Math.floor(lastPt.time / barSec) * barSec, value: lastPt.value });
+      if (out.length > 1 && out[out.length - 1].time <= out[out.length - 2].time) out.pop();
+    }
+    var copy = {};
+    Object.keys(lockRow).forEach(function (k) { copy[k] = lockRow[k]; });
+    copy.path = out;
+    return copy;
   }
 
   /* --------------------------------------------------- live market internals
@@ -729,6 +986,7 @@
   function applyConstituents(c) {
     if (!c || !c.members) return;
     S.constituents = c;
+    if (KT.stocks && KT.stocks.setPopular) KT.stocks.setPopular(c);
     try {
       if (KT.forecast.setConstituents(c) && S.booted) recompute();
     } catch (e) { /* a bad list must not take the lane down */ }
@@ -938,7 +1196,10 @@
       KT.ledger.settle(S.candles, S.symbol, S.timeframe);
       // Freeze each finished session's verdict onto its own lock row, so the
       // learner can read Tuesday's result on Friday without Tuesday's candles.
-      if (KT.ledger.settleLocks) KT.ledger.settleLocks(S.candles, S.symbol);
+      if (KT.ledger.settleLocks) {
+        KT.ledger.settleLocks(S.candles, S.symbol,
+                              judgeCtx(KT.postmortem ? KT.postmortem.snapshot(S) : null));
+      }
       maybeSeedLedger();
       maybeLearn();
     } catch (e) { /* a full localStorage must not take the page down */ }
@@ -953,6 +1214,9 @@
   var lastLearnAt = 0;
   function maybeLearn() {
     if (!KT.learn || Date.now() - lastLearnAt < 600000) return;
+    // The weights are the index model's. One stock's record is not evidence
+    // about how much NIFTY's lanes should be listened to.
+    if (isStockView()) return;
     lastLearnAt = Date.now();
     try {
       KT.learn.update(S.symbol, S.timeframe);
@@ -1083,7 +1347,12 @@
                      : 'waiting for the first scored bar',
     });
     renderTrail();
+    // The replay lands after recompute() has drawn; the said-vs-did card reads it.
+    for (var th = 0; th < trailHooks.length; th++) {
+      try { trailHooks[th](S); } catch (e) { console.warn('trail hook failed:', e); }
+    }
   }
+  var trailHooks = [];
 
   function renderTrail() {
     var T = S.trailStats;
@@ -1317,13 +1586,19 @@
     renderClock(ms);
     if (!S.booted) return;
 
+    var stockView = isStockView();
     var wanted = ms.live ? (S.backoff || S.settings.tickMs) : C.poll.tickMsClosed;
+    // The screener's NSE rows are fifteen minutes delayed: a one-second poll
+    // of a number that changes every few seconds fifteen minutes ago is waste.
+    if (stockView) wanted = Math.max(wanted, C.poll.stockQuoteMs || 30000);
     var now = Date.now();
     if (now - lastTickAt < wanted) return;
     lastTickAt = now;
 
     refreshQuote().then(function (q) {
-      if (q && q.price && ms.live) chart.tick(q.price);
+      // A delayed price must not be painted onto the live candle as if it
+      // were this minute's.
+      if (q && q.price && ms.live && !(stockView && q.delayMin)) chart.tick(q.price);
     }).catch(noop);
   }
 
@@ -1433,7 +1708,17 @@
       : tf.barSec < 3600 ? (tf.barSec / 60) + ' minute'
       : tf.barSec < 86400 ? (tf.barSec / 3600) + ' hour'
       : tf.barSec < 604800 ? 'daily' : tf.barSec < 2592000 ? 'weekly' : 'monthly';
-    var shown = Math.min(c.length, f.forecastBars ? f.forecastBars * (tf.histPerForecast || 4) : tf.visibleBars);
+    /* Rounded. The session view's 1.5 ratio against an odd bar count
+       (375 to the bell) made this 562.5, c[1313.5] was undefined, and the
+       whole recompute threw: the session view showed "Could not load chart
+       data" every evening. With NOW framed at the centre (C.ui.centreNow),
+       what is on screen is one forecast's worth of history, with the same
+       floor. */
+    var ui = C.ui || {};
+    var ratio = ui.centreNow ? 1 : (tf.histPerForecast || 4);
+    var floorBars = ui.centreNow && ui.minSideBars ? (ui.minSideBars[S.timeframe] || 0) : 0;
+    var shown = Math.min(c.length, Math.round(f.forecastBars
+      ? Math.max(f.forecastBars * ratio, floorBars) : tf.visibleBars));
     bits.push('<b>' + esc(C.symbols[S.symbol].label) + '</b> on ' + esc(barWord) +
               ' bars, ' + numSpan(fmt.count(shown)) + ' of them on screen');
 
@@ -2141,6 +2426,19 @@
     var horizon = rows.length ? rows[0].horizon : 0;
     text('pattern-horizon', horizon ? 'measured ' + horizon + ' bars ahead' : '');
 
+    /* The same detector over twenty years of daily bars (history_study.js),
+       for the patterns on screen: what a reader should weigh against a
+       record of nine. A daily pattern's record, so it is labelled as one. */
+    var study = S.study && S.study.symbols && S.study.symbols[S.symbol];
+    var long = {};
+    if (study && study.patterns) study.patterns.forEach(function (r) { long[r.key] = r; });
+    function longText(key) {
+      var r = long[key];
+      if (!r) return '';
+      return r.hit5 != null ? '20y daily: ' + r.hit5 + '% of ' + r.n
+                            : '20y daily: up ' + r.up5 + '% of ' + r.n;
+    }
+
     var now = el('pattern-now');
     if (now) {
       if (!P.current.length) {
@@ -2152,9 +2450,10 @@
           var rate = (g.reliable && g.hitRate != null)
             ? g.hitRate + '% of ' + g.n
             : (g.n ? 'only ' + g.n + ' seen' : 'no record');
+          var lt = longText(p.key);
           return '<div class="pattern-live" title="' + esc(p.why) + '">' +
                  '<span class="chip ' + cls + '">' + esc(p.name) + '</span>' +
-                 '<span class="muted">' + rate + '</span></div>';
+                 '<span class="muted">' + rate + (lt ? ' · ' + esc(lt) : '') + '</span></div>';
         }).join('');
       }
     }
@@ -2169,6 +2468,10 @@
     rows.slice(0, 10).forEach(function (g) {
       var tr = document.createElement('tr');
       if (!g.reliable) tr.className = 'thin';
+      var lr = long[g.key];
+      if (lr) tr.title = 'Over twenty years of daily bars: seen ' + lr.n + ' times' +
+        (lr.hit5 != null ? ', went its way ' + lr.hit5 + '% of the time within 5 sessions' + (lr.ci5 ? ' (' + lr.ci5[0] + ' to ' + lr.ci5[1] + '%)' : '')
+                         : ', up ' + lr.up5 + '% of the time 5 sessions later') + '.';
       var rate = g.hitRate != null
         ? g.hitRate + '%'
         : (g.upRate != null ? '\u2191' + g.upRate + '%' : '—');
@@ -2516,10 +2819,11 @@
       ? ' GIFT Nifty now ' + fmt.price(gift.price) + ' (' + fmt.signed(gift.price - o.prevClose) +
         ' pts vs the close, futures premium included).'
       : '';
+    var ls = o.fitted && KT.learn && KT.learn.summary ? KT.learn.summary() : null;
     text('open-basis', o.cues + ' overnight cue' + (o.cues === 1 ? '' : 's') + ' (' + src + '). ' +
       (o.fitted
-        ? 'Weights fitted on this browser’s settled opens.'
-        : 'Weights are judgements, not fits — nothing has been measured against them yet.') + giftTxt);
+        ? 'Gap size tuned on ' + (ls && ls.openSamples ? ls.openSamples + ' ' : '') + 'judged opens.'
+        : 'The cue weights are judgements, not fits: nothing has been measured against them yet.') + giftTxt);
   }
 
   /* ================================================== PREDICTED VS ACTUAL
@@ -3673,8 +3977,18 @@
   var lastVoteAt = 0;
   var VOTE_EVERY_MS = 600000;
 
+  /* The AI budget is shared. The single-call vote and narrative stop while
+     fewer than classicReserve requests are left, and wherever the AI desk is
+     on the page (C.ui.desk) it does both jobs, so these two do not run. */
+  function aiReserved() {
+    if (C.ui && C.ui.desk) return true;
+    var b = KT.data.aiBudget ? KT.data.aiBudget() : null;
+    return !!(b && b.left <= ((C.ai && C.ai.classicReserve) || 20));
+  }
+
   function maybeAskModelVote() {
     if (!S.settings.key || !S.forecast || !KT.data.askModel) return;
+    if (aiReserved()) return;
     if (Date.now() - lastVoteAt < VOTE_EVERY_MS) return;
     lastVoteAt = Date.now();
 
@@ -3762,6 +4076,7 @@
 
   function maybeEnrichNarrative() {
     if (!S.settings.key || !S.forecast) return;
+    if (aiReserved()) return;
     if (Date.now() - S.narrativeAt < 240000) return;
     S.narrativeAt = Date.now();
 
@@ -3798,10 +4113,29 @@
       .then(renderLanes);
   }
 
+  /* Open any symbol: an index key from config.js, or an NSE stock, which is
+     registered on the way in (stocks.js). Before boot it only sets the
+     starting symbol, so a link to #s=RELIANCE loads RELIANCE first rather
+     than NIFTY and then RELIANCE. */
+  function openSymbol(sym) {
+    if (!sym) return false;
+    if (!C.symbols[sym] && KT.stocks) sym = KT.stocks.register(sym) || sym;
+    if (!C.symbols[sym]) return false;
+    if (!S.booted) { S.symbol = sym; showSymbolMeta(sym); return true; }
+    setSymbol(sym);
+    return true;
+  }
+
   KT.app = {
     state: S,
     refreshAll: refreshAll,
     recompute: recompute,
+    openSymbol: openSymbol,
+    setTimeframe: setTimeframe,
+    onRecompute: function (fn) { if (typeof fn === 'function') recomputeHooks.push(fn); },
+    onLoadError: function (fn) { if (typeof fn === 'function') loadErrorHooks.push(fn); },
+    onTrail: function (fn) { if (typeof fn === 'function') trailHooks.push(fn); },
+    isStockView: isStockView,
     onReasonClick: function (r) { if (r && r.url) window.open(r.url, '_blank', 'noopener'); },
   };
 

@@ -548,11 +548,17 @@
   /* Which of the two stages we are entitled to write right now. Null means
      neither - during the session, after the open lock exists, there is nothing
      left to freeze and the honest answer is to leave the record alone. */
-  function stageNow(f) {
+  /* `opts.preOpenFrom` moves the start of the pre-open window (minutes after
+     midnight IST). The browser keeps 09:00; the workflow's morning run
+     (scripts/daily_call.js) freezes from 08:00, once the US session has
+     closed and Asia is trading, because a scheduled run cannot be relied on
+     to land inside a fifteen-minute window. */
+  function stageNow(f, opts) {
     if (!f || !f.path || !f.path.length) return null;
     var now = core.fmt.ist(Math.floor(Date.now() / 1000));
     var mins = now.getHours() * 60 + now.getMinutes();
     var open = C.market.regular.from;
+    var preFrom = opts && isFinite(opts.preOpenFrom) ? Math.min(opts.preOpenFrom, open) : open - 15;
 
     /* Which session is being forecast decides this, not the wall clock alone.
 
@@ -566,14 +572,43 @@
        If the session in the forecast is not today's, nothing about it has
        traded yet whatever the time is, and the call is the day-before one. */
     var target = sessionKeyOf(f);
+    /* A forecast for a session that has already happened is a stale feed,
+       not a call. With yesterday's candles the next session in the path is
+       today's, already traded, and freezing it would put a "forecast" in the
+       record that was written after the fact (seen on a cached copy,
+       29 Oct 2026). */
+    if (target && target < dateKey(now)) return null;
     if (target && target !== dateKey(now)) return 'advance';
 
     // The pre-open window: the auction is running, the cues are in, nothing
     // has traded in the cash market yet.
-    if (mins >= open - 15 && mins < open) return 'open';
+    if (mins >= preFrom && mins < open) return 'open';
     // Anything earlier, on a day the market has not opened yet.
-    if (mins < open - 15) return 'advance';
+    if (mins < preFrom) return 'advance';
     return null;
+  }
+
+  function endOf(f) {
+    var cp = f.checkpoints && f.checkpoints.length ? f.checkpoints[f.checkpoints.length - 1] : null;
+    if (!cp) return null;
+    return {
+      low68: cp.low, high68: cp.high, low95: cp.low95, high95: cp.high95, pUp: cp.pUp, pUpFrom: cp.pUpFrom,
+      // The call, as one number: the odds of closing above the last close.
+      // What the card prints and what the session is judged on (callOf).
+      pUpClose: KT.forecast && KT.forecast.closeOdds ? KT.forecast.closeOdds(f) : null,
+    };
+  }
+
+  /* The direction a frozen call made, one definition for the card, the
+     record and the judgement: up at 55% or more to close above the last
+     close, down at 45% or less, no lean between. Rows frozen before the odds
+     were kept fall back to the sign of the target, with a 0.02% dead zone. */
+  function callDirOf(r) {
+    var p = r && r.end && typeof r.end.pUpClose === 'number' ? r.end.pUpClose : null;
+    if (p != null) return p >= 55 ? 1 : p <= 45 ? -1 : 0;
+    if (!r || !isFinite(r.anchorPrice) || !isFinite(r.target)) return 0;
+    var pct = (r.target - r.anchorPrice) / r.anchorPrice * 100;
+    return Math.abs(pct) < 0.02 ? 0 : pct > 0 ? 1 : -1;
   }
 
   function lock(f, ctx) {
@@ -582,6 +617,12 @@
     var key = sessionKeyOf(f);
     if (!key) return null;
 
+    /* A session the published record has a call for is that call's, for
+       every browser: nothing is frozen here for it. */
+    var rec = sharedCall(symbol, key, f.timeframe);
+    if (rec) return rec;
+
+    var workflow = !!(ctx && ctx.source === 'workflow');
     var rows = lockLoad();
     /* Scoped to the timeframe as well as the session. A 5-minute path and a
        1-minute path are different claims about the same day, and sharing one
@@ -590,7 +631,7 @@
     var mine = rows.filter(function (r) {
       return r.session === key && r.symbol === symbol && r.timeframe === f.timeframe;
     });
-    var stage = stageNow(f);
+    var stage = stageNow(f, ctx && ctx.preOpenFrom != null ? { preOpenFrom: ctx.preOpenFrom } : null);
 
     // Already have this stage, or the clock has closed the window: read, do
     // not write. Never both - a lock that can be rewritten is not a lock.
@@ -598,9 +639,13 @@
     mine.forEach(function (r) { have[r.stage] = true; });
     if (stage && !have[stage]) {
       var row = {
-        id: symbol + ':' + key + ':' + f.timeframe + ':' + stage,
+        /* The workflow's calls carry their own id, so a browser's call for
+           the same session and stage can never be mistaken for the record's
+           (or overwrite it) when the two are merged. */
+        id: symbol + ':' + key + ':' + f.timeframe + ':' + stage + (workflow ? ':wf' : ''),
         symbol: symbol, session: key, stage: stage,
         timeframe: f.timeframe,
+        source: workflow ? 'workflow' : 'browser',
         lockedAt: Date.now(),
         anchorTime: f.path[0].time - (C.timeframes[f.timeframe] ? C.timeframes[f.timeframe].barSec : 60),
         anchorPrice: f.lastClose,
@@ -609,6 +654,14 @@
         openParts: f.open ? (f.open.parts || []).slice(0, 5) : [],
         direction: f.direction, confidence: f.confidence,
         target: f.target, targetPct: f.targetPct,
+        /* The range and the odds it gave itself at the close, so the
+           judgement can say "outside even the wide range" without
+           recomputing anything after the fact. */
+        end: endOf(f),
+        /* What it knew: cue prices, VIX, FII cash, the situation. The
+           post-mortem compares these with the same numbers after the close
+           (postmortem.snapshot). */
+        ctx: (ctx && ctx.snapshot) || null,
         /* Every projected minute. This is the whole point of the row and the
            reason it is capped: 375 points at two numbers each is about 9 KB,
            and forty of those is well inside what localStorage will hold, but
@@ -641,16 +694,35 @@
      scoring them as if they were would silently compare 11:04's forecast with
      11:07's price for the rest of the day. Same rule the replay learned the
      hard way; see closeAtTime() in forecast.js. */
+  /* The bar a point falls in, or null.
+
+     An exact-time join assumed every locked point sits on a bar's own stamp.
+     It does not when the path was built from a bar still forming: the feed
+     stamps that bar with the last trade's second, and the path inherits it.
+     One browser's record had three sessions locked at :14, :23 and :01 past
+     the minute; not one point could ever match, and they read "in progress"
+     for weeks (seen live, 29 Oct 2026). The bar whose span holds the point
+     is the price at that point. A point inside a bar the feed dropped still
+     matches nothing, so a hole drops one comparison and shifts none. */
+  function barAt(candles, span, t) {
+    var lo = 0, hi = candles.length - 1, best = -1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (candles[mid].time <= t) { best = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    return best >= 0 && t < candles[best].time + span ? candles[best] : null;
+  }
+
   function scoreLock(row, candles) {
     if (!row || !row.path || !row.path.length || !candles || candles.length < 2) return null;
-    var byTime = {};
-    for (var i = 0; i < candles.length; i++) byTime[candles[i].time] = candles[i].close;
+    var span = core.deriveBarSec(candles, 60);
 
     var pairs = [], absErr = 0, naive = 0, dirRight = 0, dirCalls = 0, worst = null;
     for (var k = 0; k < row.path.length; k++) {
       var pt = row.path[k];
-      var actual = byTime[pt.time];
-      if (actual == null) continue;
+      var bar = barAt(candles, span, pt.time);
+      if (!bar) continue;
+      var actual = bar.close;
       var err = actual - pt.value;
       absErr += Math.abs(err);
       naive += Math.abs(actual - row.anchorPrice);
@@ -703,45 +775,189 @@
      longer loaded - the page is showing today and the lock is from Tuesday.
      A number that can only be recomputed while the evidence happens to be in
      memory is not a record. */
-  function settleLocks(candles, symbol) {
+  /* `judge` is optional: { news, now, events, expiry } for the post-mortem
+     (postmortem.js). Without it, or without that module, a lock is settled
+     exactly as before and simply carries no written judgement. */
+  var PM_RETRY_MS = 6 * 3600000;
+
+  function settleLocks(candles, symbol, judge) {
     if (!candles || candles.length < 2) return 0;
-    var rows = lockLoad(), changed = 0;
-    var last = candles[candles.length - 1].time;
-    rows.forEach(function (r) {
-      if (r.outcome || !r.path || !r.path.length) return;
-      if (r.symbol !== symbol) return;
-      // Only once the whole locked window is behind us. A partial score
-      // frozen at lunchtime would be a half-day masquerading as a session.
-      if (last < r.path[r.path.length - 1].time) return;
-      var sc = scoreLock(r, candles);
-      if (!sc || !sc.n) return;
-      r.outcome = {
-        n: sc.n, total: sc.total,
-        openPredicted: sc.openPredicted, openActual: sc.openActual, openErr: sc.openErr,
-        mae: sc.mae, maePct: sc.maePct, skill: sc.skill,
-        directionRate: sc.directionRate, directionCalls: sc.directionCalls,
-        closePredicted: sc.nowPredicted, closeActual: sc.nowActual,
-        settledAt: Date.now(),
-      };
-      changed++;
+    var rows = lockLoad(), changed = 0, judged = 0;
+    var first = candles[0].time, last = candles[candles.length - 1].time;
+    /* Where the tape reaches: the end of its last bar, not its stamp. A
+       finished session's minute bars often stop at 15:29 (the 15:30 print is
+       there on the day and gone once the next session trades), and the 15:29
+       bar runs to the bell. Waiting for a 15:30 stamp left whole sessions
+       unsettled until the next one began (seen replaying 27-29 Oct 2026). */
+    var reach = last + core.deriveBarSec(candles, 60);
+
+    /* The record's calls this browser can settle before the workflow does:
+       the verdict is on the page at 15:30 rather than whenever the evening
+       run lands. Worked on a copy, which is kept only if it changed; the
+       record's own version replaces it once it has one (merged()). */
+    var have = {}, copies = [];
+    rows.forEach(function (r) { have[r.id] = true; });
+    shared.forEach(function (r) {
+      if (r.symbol !== symbol || have[r.id] || r.expired || (r.outcome && r.postmortem)) return;
+      if (!r.path || !r.path.length || reach < r.path[r.path.length - 1].time) return;
+      copies.push(JSON.parse(JSON.stringify(r)));
     });
-    if (changed) lockSave(rows);
+
+    /* One lesson a session: when a pre-open call exists, the day-before one
+       is still judged but files nothing, or every session would teach the
+       desk the same thing twice. */
+    var hasOpen = {};
+    merged(symbol).concat(rows, copies).forEach(function (r) {
+      if (r.stage === 'open') hasOpen[laneKey(r)] = true;
+    });
+
+    var settleOne = function (r) {
+      var before = changed + judged;
+      if (!r.path || !r.path.length || r.symbol !== symbol) return false;
+      if (!r.outcome) {
+        // Only once the whole locked window is behind us. A partial score
+        // frozen at lunchtime would be a half-day masquerading as a session.
+        if (reach < r.path[r.path.length - 1].time) return false;
+        var sc = scoreLock(r, candles);
+        if (!sc || !sc.n) return false;
+        /* Frozen once, so frozen on enough of the day: at least half of its
+           points, and a price from its last tenth, which is where the close it
+           is judged by lives. A morning of bars is not a session. */
+        var tailFrom = r.path[Math.floor((r.path.length - 1) * 0.9)].time;
+        if (sc.n < Math.ceil(sc.total * 0.5) || sc.pairs[sc.pairs.length - 1].time < tailFrom) return false;
+        r.outcome = {
+          n: sc.n, total: sc.total,
+          openPredicted: sc.openPredicted, openActual: sc.openActual, openErr: sc.openErr,
+          mae: sc.mae, maePct: sc.maePct, skill: sc.skill,
+          directionRate: sc.directionRate, directionCalls: sc.directionCalls,
+          closePredicted: sc.nowPredicted, closeActual: sc.nowActual,
+          settledAt: Date.now(),
+        };
+        changed++;
+      }
+      /* The written judgement, for a settled session that has none yet and
+         whose day these bars cover: one settled a moment ago, or one settled
+         before postmortem.js existed. Tried at most every six hours, so a
+         session the bars cannot explain is not re-read on every refresh. */
+      if (r.outcome && !r.postmortem && judge && KT.postmortem &&
+          (!r.pmTriedAt || Date.now() - r.pmTriedAt > PM_RETRY_MS) &&
+          first <= r.path[0].time && reach >= r.path[r.path.length - 1].time) {
+        r.pmTriedAt = Date.now();
+        judgeRow(r, candles, judge, !(r.stage === 'advance' && hasOpen[laneKey(r)]));
+        judged++;
+      }
+      return changed + judged > before;
+    };
+    rows.forEach(settleOne);
+    copies.forEach(function (r) { if (settleOne(r)) rows.push(r); });
+    if (changed || judged) lockSave(rows);
     return changed;
   }
 
+  // The same call stream: one symbol, session and view, from one source.
+  function laneKey(r) {
+    return r.symbol + ':' + r.session + ':' + r.timeframe + ':' + (isRecord(r) ? 'wf' : 'br');
+  }
+  function isRecord(r) { return !!(r && (r.source === 'workflow' || r.shared)); }
+
+  function judgeRow(r, candles, judge, fileLesson) {
+    try {
+      r.postmortem = KT.postmortem.build(r, {
+        candles: candles, news: judge.news, now: judge.now, events: judge.events, expiry: judge.expiry,
+      });
+    } catch (e) { r.postmortem = null; }
+    // Filed under the situation the call was made in, for the next one.
+    if (fileLesson !== false && r.postmortem && r.postmortem.lesson && KT.lessons && r.ctx && r.ctx.fp) {
+      try {
+        KT.lessons.add({
+          runId: 'lock:' + r.id, symbol: r.symbol, kind: r.ctx.fp.kind || 'index', source: 'rule',
+          fp: KT.lessons.fingerprint(r.ctx.fp), text: r.postmortem.lesson,
+          outcome: { movePct: r.postmortem.did.pct, right: r.postmortem.right },
+        });
+      } catch (e) { /* a lesson is a bonus; the judgement stands without it */ }
+    }
+  }
+
   function locks(symbol, limit) {
-    return lockLoad().filter(function (r) { return !symbol || r.symbol === symbol; })
+    return merged(symbol)
       .sort(function (a, b) { return b.lockedAt - a.lockedAt; })
       .slice(0, limit || 20);
+  }
+
+  /* ------------------------------------------------------ the shared record
+
+     The workflow freezes a session call for NIFTY and SENSEX every evening
+     and again before the open, judges it after the close and keeps the record
+     (scripts/daily_call.js, data/calls.json). That record is the same for
+     every browser and does not depend on anyone having had the page open the
+     evening before, so where it has a call for a session, that is the call:
+     the browser freezes its own only for sessions the record does not cover
+     (a stock, or a day the workflow did not run). The browser's own calls for
+     a covered session stay in its storage and out of the record it shows. */
+  var shared = [];
+
+  function setShared(payload) {
+    var out = [];
+    var syms = (payload && payload.symbols) || {};
+    Object.keys(syms).forEach(function (s) {
+      var rows = syms[s] && syms[s].rows;
+      if (Object.prototype.toString.call(rows) !== '[object Array]') return;
+      rows.forEach(function (r) {
+        if (!r || !r.id || !r.session || r.symbol !== s || !r.stage || !r.timeframe) return;
+        // The record packs a minute path as a start, a step and the values.
+        if (!r.path && r.pp && r.pp.v && r.pp.v.length && isFinite(r.pp.t0) && r.pp.dt > 0) {
+          r.path = r.pp.v.map(function (v, i) { return { time: r.pp.t0 + i * r.pp.dt, value: v }; });
+          delete r.pp;
+        }
+        r.shared = true;
+        out.push(r);
+      });
+    });
+    shared = out;
+    return out.length;
+  }
+
+  // Which of two copies of one call to show: the one that knows more.
+  function richness(r) { return (r.outcome ? 2 : 0) + (r.postmortem ? 1 : 0); }
+
+  function merged(symbol) {
+    var byId = {}, covered = {};
+    shared.forEach(function (r) {
+      if (symbol && r.symbol !== symbol) return;
+      byId[r.id] = r;
+      covered[r.symbol + ':' + r.session + ':' + r.timeframe] = true;
+    });
+    lockLoad().forEach(function (r) {
+      if (symbol && r.symbol !== symbol) return;
+      var had = byId[r.id];
+      if (had) { if (richness(r) > richness(had)) byId[r.id] = r; return; }
+      if (!isRecord(r) && covered[r.symbol + ':' + r.session + ':' + r.timeframe]) return;
+      byId[r.id] = r;
+    });
+    return Object.keys(byId).map(function (k) { return byId[k]; });
+  }
+
+  // The record's live claim for a session: its latest stage.
+  function sharedCall(symbol, session, timeframe) {
+    var best = null;
+    if (!shared.length) return null;
+    merged(symbol).forEach(function (r) {
+      if (!isRecord(r) || r.session !== session || r.timeframe !== timeframe) return;
+      if (!best || (r.stage === 'open') > (best.stage === 'open') ||
+          ((r.stage === 'open') === (best.stage === 'open') && r.lockedAt > best.lockedAt)) best = r;
+    });
+    return best;
   }
 
   KT.ledger = {
     record: record, settle: settle, explain: explain, aggregate: aggregate,
     missRecord: missRecord, latest: latest, all: all, clear: clear,
     seedFromHistory: seedFromHistory, wilson: wilson, callsNeeded: callsNeeded,
-    lock: lock, scoreLock: scoreLock, locks: locks, sessionKeyOf: sessionKeyOf,
+    lock: lock, scoreLock: scoreLock, locks: locks, sessionKeyOf: sessionKeyOf, callDirOf: callDirOf,
     stageNow: stageNow,
     settleLocks: settleLocks,
+    setShared: setShared, isRecord: isRecord,
+    sharedCount: function () { return shared.length; },
     // app.js points this at the live news array so arrivalsIn() can scan it.
     newsSource: null,
   };

@@ -34,10 +34,15 @@ const ROOT = path.resolve(__dirname, '..');
    one. */
 const MODULES = ['config', 'core', 'indicators', 'levels', 'candles', 'patterns',
                  'structures', 'journal', 'portfolio', 'data', 'analogs',
-                 'vol', 'forecast', 'ledger', 'learn', 'trail', 'evidence', 'ipo',
-                 'orders', 'streetcalls'];
+                 'vol', 'forecast', 'postmortem', 'ledger', 'learn', 'trail', 'evidence', 'ipo',
+                 'orders', 'streetcalls', 'stocks', 'lessons', 'desk'];
 
 let pass = 0, fail = 0;
+/* Checks that need a promise to settle (the desk run, the AI budget) are
+   queued here as functions and run one after another at the end, so two of
+   them can never share the day's budget or the stubbed network at once. */
+const asyncChecks = [];
+let SANDBOX = null;
 function ok(name, cond, detail) {
   if (cond) { pass++; console.log('  PASS  ' + name + (detail ? '   ' + detail : '')); }
   else { fail++; console.log('  FAIL  ' + name + (detail ? '   ' + detail : '')); }
@@ -80,6 +85,10 @@ function loadKT() {
   sb.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
   sb.setTimeout = setTimeout; sb.clearTimeout = clearTimeout;
   sb.fetch = () => Promise.reject(new Error('no network in selftest'));
+  // data.js's request helpers need these two; the page has them for free.
+  sb.AbortController = AbortController;
+  sb.location = { origin: 'http://localhost', hash: '', pathname: '/' };
+  SANDBOX = sb;
   vm.createContext(sb);
   for (const m of MODULES) {
     vm.runInContext(fs.readFileSync(path.join(ROOT, 'assets/js', m + '.js'), 'utf8'),
@@ -105,7 +114,17 @@ const candles = raw.candles.map(r => ({
 const seasonality = readJSON('data/seasonality.json', null);
 const options = readJSON('data/options.json', null);
 const events = readJSON('data/events.json', null);
-const news = (readJSON('data/news.json', {}).news_items || []).slice(0, 300);
+/* The news lane only counts headlines from the last 48 hours of wall-clock
+   time, so a snapshot that is a few days old would make every news check go
+   dark and fail for a reason that has nothing to do with the code. Shift the
+   whole feed so its newest item is ten minutes old; spacing is preserved. */
+function freshen(items) {
+  const ts = items.map(n => n && n.ts).filter(Number.isFinite);
+  if (!ts.length) return items;
+  const shift = (Date.now() / 1000 - 600) - Math.max.apply(null, ts);
+  return items.map(n => (n && Number.isFinite(n.ts) ? Object.assign({}, n, { ts: n.ts + shift }) : n));
+}
+const news = freshen((readJSON('data/news.json', {}).news_items || []).slice(0, 300));
 // The session view runs on 1-minute bars, which is the hourly view's file.
 const minuteRaw = readJSON('data/candles_NIFTY_1H.json', null);
 const minuteCandles = (minuteRaw && minuteRaw.candles ? minuteRaw.candles : []).map(r => ({
@@ -305,7 +324,7 @@ section('NEWS — clustering and relevance');
   }
 
   // the clustering cache must not go stale when relevance changes
-  const news = (readJSON('data/news.json', {}).news_items || []).slice(0, 200);
+  const news = freshen((readJSON('data/news.json', {}).news_items || []).slice(0, 200));
   if (news.length > 50) {
     const before = KT.forecast.newsLane(news);
     const t0 = Date.now();
@@ -326,7 +345,7 @@ section('NEWS — clustering and relevance');
 
     // the whole build, which the page runs once a second
     const ctx = { candles: candles.slice(), timeframe: '1D',
-                  news: (readJSON('data/news.json', {}).news_items || []),
+                  news: freshen(readJSON('data/news.json', {}).news_items || []),
                   seasonality, options, vix: 11.4,
                   levels: KT.levels.build(candles),
                   structures: KT.structures.detect(candles) };
@@ -708,6 +727,35 @@ section('FORECAST — the session view');
   ok('while shut it projects a whole session', shut === 375, `shut -> ${shut}`);
   ok('a fixed bar count would have been wrong at both ends', at0920 !== at1500);
 
+  /* After the bell. A series whose last minute bar is 15:29 (most NSE stocks
+     have no 15:30 print; the index does) read as a session with one minute
+     left, and at 20:00 the page offered RELIANCE "74% by 15:30 today
+     (1 minutes)" (seen live, 29 Oct 2026). */
+  const last1529 = istAt(15, 29, 21), close21 = istAt(15, 30, 21);
+  ok('after the bell a series ending on its 15:29 bar is forecast from the close',
+     KT.forecast.sessionOrigin(last1529, istAt(20, 0, 21)) === close21);
+  ok('before the bell that bar is still the last minute of today',
+     KT.forecast.sessionOrigin(last1529, last1529 + 30) === last1529);
+  {
+    const bars = [];
+    for (let i = 0; i < 375; i++) {
+      const c = 22000 + Math.sin(i / 17) * 40 + i * 0.05;
+      bars.push({ time: istAt(9, 15, 21) + i * 60, open: c, high: c + 3, low: c - 3, close: c, volume: 0 });
+    }
+    const late = KT.forecast.build({ candles: bars.map(b => Object.assign({}, b)), timeframe: '1S', news: [], vix: 12,
+                                     nowSec: istAt(20, 0, 21) });
+    const d0 = late && new Date((late.path[0].time + 19800) * 1000);
+    const d1 = late && new Date((late.path[late.path.length - 1].time + 19800) * 1000);
+    ok('and the forecast is the whole next session, to its close',
+       !!late && late.path.length === 375 && d0.getUTCDate() === 22 && d1.getUTCDate() === 22 &&
+       d1.getUTCHours() * 60 + d1.getUTCMinutes() === 930,
+       late ? late.path.length + ' minutes, ' + d0.toISOString().slice(5, 16) + ' to ' + d1.toISOString().slice(5, 16) : 'null');
+    const lastMin = KT.forecast.build({ candles: bars.map(b => Object.assign({}, b)), timeframe: '1S', news: [], vix: 12,
+                                        nowSec: last1529 + 30 });
+    ok('one minute reads as "1 minute"', !!lastMin && lastMin.horizonLabel === '1 minute',
+       lastMin ? lastMin.horizonLabel : 'null');
+  }
+
   if (minuteCandles.length > 400) {
     const sctx = () => ({
       candles: minuteCandles.slice(), timeframe: '1S', news, seasonality,
@@ -832,6 +880,37 @@ section('LEDGER — the session lock');
     ok('skill is measured against price not moving',
        full && (full.skill === null || full.skill >= 0));
   }
+}
+
+/* The join itself, with no lock() in the way. Three of seventeen sessions on
+   one browser's record were locked at :14, :23 and :01 past the minute and
+   read "in progress" for weeks (seen live, 29 Oct 2026). */
+{
+  const t0 = Math.floor(Date.UTC(2026, 9, 29, 3, 45) / 1000);        // 29 Oct 2026, 09:15 IST
+  const bars = Array.from({ length: 61 }, (_, i) => ({ time: t0 + 60 * i, open: 100, high: 100, low: 100, close: 100 + i / 10 }));
+  const row = { id: 'COVSYM:2026-10-29:1S:advance', symbol: 'COVSYM', session: '2026-10-29', stage: 'advance',
+                timeframe: '1S', lockedAt: Date.now(), anchorPrice: 100, openPrice: 100, openGapPct: null,
+                path: bars.slice(0, 60).map(b => ({ time: b.time + 14, value: 100 })) };
+  const sc = KT.ledger.scoreLock(row, bars);
+  ok('a lock carrying a live bar\u2019s seconds is scored, each point against the bar it falls in',
+     !!sc && sc.n === 60 && sc.pairs[5].actual === bars[5].close, sc ? sc.n + ' of 60 joined' : 'null');
+  const sh = KT.ledger.scoreLock(row, bars.filter((_, i) => i !== 5));
+  ok('a bar the feed dropped still drops its point instead of borrowing a neighbour\u2019s price',
+     !!sh && sh.n === 59 && !sh.pairs.some(pr => pr.time === row.path[5].time));
+  const keep = KT.core.store.get('fcLocks', []);
+  // Each case starts from the same unsettled row, so one cannot pass because
+  // an earlier one already froze it.
+  const settleWith = series => {
+    KT.core.store.set('fcLocks', keep.concat([JSON.parse(JSON.stringify(row))]));
+    return KT.ledger.settleLocks(series, 'COVSYM');
+  };
+  const morning = bars.slice(0, 25).concat(bars.slice(59));
+  const noTail = bars.slice(0, 50).concat([{ time: t0 + 7200, open: 100, high: 100, low: 100, close: 101 }]);
+  ok('a lock is not frozen on a morning of bars', settleWith(morning) === 0);
+  ok('nor without a price from its last tenth, where its close lives', settleWith(noTail) === 0);
+  ok('and is frozen once the day is there',
+     settleWith(bars) === 1 && KT.ledger.locks('COVSYM', 5)[0].outcome.closeActual === bars[59].close);
+  KT.core.store.set('fcLocks', keep);
 }
 
 /* ============================================================ THE LEARNER */
@@ -1046,7 +1125,7 @@ section('FORECAST — the model lane');
      `model ${w.model} against a par share of ${par.toFixed(3)}`);
   ok('and less than every lane whose working is checkable arithmetic',
      ['news', 'momentum', 'global', 'structure', 'seasonal', 'options'].every(k => w[k] > w.model));
-  ok('nine lanes still sum to 1',
+  ok('the lanes still sum to 1',
      Math.abs(Object.keys(w).reduce((a, k) => a + w[k], 0) - 1) < 1e-9);
 
   /* The lane must renormalise away when dark, not drag the bias toward zero.
@@ -1149,8 +1228,11 @@ section('MARKUP — every id the code writes to exists');
      browser's own use - but an id declared and never touched by anything is
      usually a panel somebody forgot to wire, which is this repo's recurring
      bug wearing markup. Reported, not failed. */
+  // panels.js reads the page's own cards, so it counts as a reader here.
+  const pnSrc0 = fs.existsSync(path.join(ROOT, 'assets/js/panels.js'))
+    ? fs.readFileSync(path.join(ROOT, 'assets/js/panels.js'), 'utf8') : '';
   const orphans = [...declared].filter(id =>
-    !used.has(id) && !new RegExp('[\'"#]' + id + '\\b').test(appSrc + chartSrc));
+    !used.has(id) && !new RegExp('[\'"#]' + id + '\\b').test(appSrc + chartSrc + pnSrc0));
   ok('orphan ids are few enough to be deliberate',
      orphans.length < 40, `${orphans.length} declared ids nothing reads`);
 }
@@ -1565,5 +1647,481 @@ section('IPO — the page and the fetcher');
      /fetch_ipo\.py/.test(fs.readFileSync(path.join(ROOT, '.github/workflows/live-data.yml'), 'utf8')));
 }
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+/* ================================================================ V2
+
+   Added 29 Oct 2026 with the forecast-first page. Four things can go wrong
+   here without any error on screen, and each has a check:
+
+     the desk sees the answer   a prompt that carries the engine's verdict
+                                turns the AI lane into an echo
+     a free-tier reply          anything that is not the asked-for JSON must
+                                be refused, not coerced into a vote
+     a stock's news             a headline about Reliance Power must not move
+                                Reliance Industries
+     the page and the code      every id app.js, chart.js and panels.js
+                                writes to exists on the one page */
+section('V2 — the AI desk');
+{
+  const D = KT.desk;
+  // The page waits 800 ms between steps and up to 4 s before a retry; the
+  // behaviour is the same at a fraction of it.
+  KT.CONFIG.ai.deskGapMs = 40;
+  KT.CONFIG.ai.deskRetryWaitMs = 20;
+  const minute = minuteCandles.length > 100 ? minuteCandles : candles;
+  /* A state object shaped like app.js's, with a forecast whose verdict fields
+     carry values nothing else on the page could produce. If any of them
+     reaches a prompt, the desk was shown the answer. */
+  const built = KT.forecast.build({ candles: minute.slice(), timeframe: '1S', news, seasonality, options,
+                                    global: globalCues, vix: 12.3 });
+  const f = Object.assign({}, built, {
+    direction: 'BULLISH', bias: 0.789, confidence: 87, target: 99876.54, targetPct: 4.321,
+    rangeLow: 11111.11, rangeHigh: 22222.22, narrative: 'ZZSECRET NARRATIVE',
+    checkpoints: built.checkpoints.map(c => Object.assign({}, c, { value: 33333.33, pUp: 91, low: 31111.11, high: 35555.55 })),
+    path: built.path.map(p => ({ time: p.time, value: 44444.44 })),
+  });
+  const S = {
+    symbol: 'NIFTY', timeframe: '1S', candles: minute.slice(),
+    quote: { price: minute[minute.length - 1].close, changePct: 0.31, prevClose: minute[minute.length - 2].close },
+    indicators: KT.ind.snapshot(minute), levels: KT.levels.build(minute),
+    structures: KT.structures.detect(minute), structureStats: KT.structures.outcomes(minute),
+    global: globalCues, flows: readJSON('data/flows.json', null), options: options, vix: 12.3,
+    forecast: f, settings: { key: 'test-key', model: 'test/model' },
+  };
+  /* No headlines in this one: a headline is somebody else's text and could
+     contain any word or number, and the leak being tested is in the code. */
+  const F = D.gather(S, { news: [] });
+  const LEAKS = ['BULLISH', 'BEARISH', 'RANGE-BOUND', '99876', '99,876', '11111', '11,111', '22222', '22,222',
+                 '33333', '33,333', '44444', '44,444', 'ZZSECRET', '4.321', '0.789'];
+  const analysts = D.roleList(F).map(r => ({ id: r.id, label: r.label, score: 0.3,
+    why: 'Price is above the 20 EMA and the session is holding its gains.', points: ['RSI 58'] }));
+  const prompts = []
+    .concat(D.roleList(F).map(r => D.prompts.analyst(F, r)))
+    .concat([D.prompts.debate(F, analysts),
+             D.prompts.final(F, analysts, { bull: 'b'.repeat(30), bear: 'c'.repeat(30), stronger: 'bull', why: 'x' }, '', ''),
+             D.prompts.quick(F, '', '')]);
+  const text = prompts.map(p => p.system + '\n' + p.user).join('\n');
+  const leaked = LEAKS.filter(s => text.indexOf(s) !== -1);
+  ok('no desk prompt carries the engine’s verdict', leaked.length === 0,
+     leaked.length ? 'leaked: ' + leaked.join(', ') : prompts.length + ' prompts, ' + text.length + ' chars');
+  ok('and the prompts do carry the evidence',
+     /RSI \d+/.test(text) && /Global cues/.test(text) && /headlines/i.test(text) && /Levels:/.test(text));
+  ok('the horizon is the question: its end time is given, its price is not',
+     F.horizon.endTime === built.path[built.path.length - 1].time && /IST/.test(F.horizon.text));
+  ok('an index desk gets a market internals analyst, a stock desk a company analyst',
+     D.roleList(F).map(r => r.id).join(',') === 'technical,news,macro,internals');
+  ok('the final prompt forbids trade instructions', /never tell anyone to buy, sell/i.test(prompts[5].system));
+
+  /* Parsing. Every shape below has arrived, or its kind has, from the free pool. */
+  const pa = D.parse.analyst;
+  ok('a fenced analyst reply parses',
+     !!pa('```json\n{"score": 0.4, "why": "Breadth is broad and banks lead the advance today.", "points": ["31 of 50 up"]}\n```'));
+  ok('smart quotes and a trailing comma are repaired',
+     !!pa('{“score”: -0.2, “why”: “Crude is up two percent and the rupee is weak.”,}'));
+  ok('a score off the scale is refused, not clamped',
+     pa('{"score": 4, "why": "Everything points up, very strongly so this morning."}') === null);
+  ok('a classifier verdict is not an analyst', pa('User Safety: safe') === null);
+  ok('a one-word reason is not an analysis', pa('{"score": 0.5, "why": "bullish"}') === null);
+
+  const pf = D.parse.final;
+  const fin = pf('{"rating": "Lean Up", "score": -0.4, "confidence": 0.7, "why": "Breadth and the cues agree, but the news is mixed and the open is flat.", "risk": "A break below support.", "watch": "The 11:00 RBI minutes."}');
+  ok('a rating is normalised and wins over a contradicting score',
+     fin && fin.rating === 'lean_up' && fin.score > 0, fin ? fin.rating + ' ' + fin.score : 'null');
+  ok('a 0-1 confidence is read as a percentage', fin && fin.confidence === 70);
+  ok('broker words map onto the five steps',
+     D.parse.rating('Strong Buy') === 'strong_up' && D.parse.rating('underweight') === 'lean_down' &&
+     D.parse.rating('HOLD') === 'neutral' && D.parse.rating('banana') === null);
+  ok('a sentence that tells the reader to trade is dropped',
+     D.noAdvice('Banks led the move. You should buy on dips here. Watch 24,200.') === 'Banks led the move. Watch 24,200.');
+  ok('a broker call reported as news is kept',
+     D.noAdvice('Nomura retains a buy rating on the stock.') === 'Nomura retains a buy rating on the stock.');
+  ok('a decimal point is not the end of a sentence',
+     D.noAdvice('GIFT Nifty +1.17% points to a firm start. You should buy now. PCR 1.12 and max pain 22,900.') ===
+     'GIFT Nifty +1.17% points to a firm start. PCR 1.12 and max pain 22,900.',
+     'the first live run printed "+1. 17%"');
+  const rf = D.ruleFinal(analysts, null);
+  ok('when the final step fails, the analysts’ average stands in, labelled as arithmetic',
+     rf && rf.source === 'rule' && rf.rating === 'lean_up');
+
+  /* A whole run against a scripted model: six requests, in the right order,
+     the vote it hands the forecast, and the budget it spends. */
+  const realAsk = KT.data.askModel;
+  const seen = [];
+  const REPLY = {
+    'desk:technical': '{"score": 0.3, "why": "Price holds above the 20 EMA with RSI at 58.", "points": ["above 20 EMA"]}',
+    'desk:news': '{"score": 0.1, "why": "Headlines are mixed with a mild positive tilt from banks.", "points": []}',
+    'desk:macro': '{"score": -0.1, "why": "Crude is firmer and FII sold in cash yesterday.", "points": []}',
+    'desk:internals': '{"score": 0.4, "why": "Breadth is broad with 34 of 50 members higher.", "points": []}',
+    'desk:debate': '{"bull": "Broad breadth and a firm trend favour a higher close today.", "bear": "Foreign selling and firmer crude can cap the rally into the close.", "stronger": "bull", "why": "Breadth is the stronger evidence."}',
+    'desk:final': '{"rating": "lean_up", "score": 0.32, "confidence": 61, "why": "Three of four analysts lean up and the debate favours the bull case.", "risk": "A break below support at the morning low.", "watch": "Whether banks hold their gains after lunch."}',
+    'desk:reflect': '{"lesson": "When breadth is broad but FII sell, the up lean held into the close."}',
+  };
+  KT.data.askModel = (key, model, system, user, opts) => {
+    seen.push({ purpose: opts && opts.purpose, user, fallback: opts && opts.fallbackModel, override: opts && opts.modelOverride, at: Date.now() });
+    return Promise.resolve(REPLY[opts && opts.purpose] || '{}');
+  };
+  asyncChecks.push(() => { KT.core.store.remove('aiUse'); return D.run(S, { extras: { news } }); });
+  asyncChecks.push(() => Promise.resolve(D.latest('NIFTY')).then(row => {
+    ok('a full desk run makes six requests: four analysts, a debate, a final call',
+       seen.length === 6 && seen.slice(0, 4).every(x => /^desk:(technical|news|macro|internals)$/.test(x.purpose)) &&
+       seen[4].purpose === 'desk:debate' && seen[5].purpose === 'desk:final',
+       seen.map(x => x.purpose).join(' '));
+    const starts = seen.slice(0, 4).map(x => x.at);
+    ok('the four analysts go one after another, not in one burst',
+       starts[3] - starts[0] >= 3 * KT.CONFIG.ai.deskGapMs - 5, (starts[3] - starts[0]) + ' ms first to last');
+    ok('the run is stored with its price, horizon and situation',
+       row && row.final.rating === 'lean_up' && row.price > 0 && row.horizon.endTime && row.fp && row.fp.kind === 'index');
+    const vote = D.voteFor('NIFTY');
+    ok('the vote the forecast reads is the final call’s, with a lifetime',
+       vote && vote.score === 0.32 && vote.ttlMs >= 20 * 60000 && vote.ttlMs <= 3 * 3600000);
+    ok('a vote older than its lifetime is not handed over', D.voteFor('NIFTY', Date.now() + 4 * 3600000) === null);
+    const lane = KT.forecast.modelLane({ score: 0.3, why: 'x', at: Date.now() - 60 * 60000, ttlMs: 3 * 3600000 });
+    ok('the model lane honours a vote’s own lifetime past the old twenty minutes', lane.hasData === true);
+    ok('but never past six hours, whatever the vote claims',
+       KT.forecast.modelLane({ score: 0.3, why: 'x', at: Date.now() - 7 * 3600000, ttlMs: 48 * 3600000 }).hasData === false);
+    ok('a plain vote still goes dark after twenty minutes',
+       KT.forecast.modelLane({ score: 0.3, why: 'x', at: Date.now() - 30 * 60000 }).hasData === false);
+
+    /* Settlement: a run whose horizon has passed is scored against the close
+       at that time, and a lesson is written about it. */
+    const endBar = minute[minute.length - 20];
+    const S2 = Object.assign({}, S, {
+      forecast: Object.assign({}, f, { path: [{ time: minute[minute.length - 60].time, value: 1 }, { time: endBar.time, value: 1 }] }),
+      quote: { price: minute[minute.length - 60].close },
+    });
+    seen.length = 0;
+    return D.run(S2, { mode: 'quick', extras: { news } }).catch(e => ({ err: e }));
+  }).then(q => {
+    ok('an unreadable reply is asked once more, of the free pool itself, then refused, never invented',
+       seen.length === 2 && seen.every(x => x.purpose === 'desk:quick') && !seen[0].override &&
+       seen[1].override === KT.CONFIG.defaultModel && !seen[1].fallback && !!(q && q.err),
+       seen.map(x => x.purpose + (x.override ? ' to ' + x.override : '')).join(', '));
+    return null;
+  }).then(() => {
+    // The quick reply above is '{}' (no script for it), so that run failed and
+    // the full run stays the latest; craft the settled run directly instead.
+    const S3 = Object.assign({}, S, {
+      forecast: Object.assign({}, f, { path: [{ time: minute[minute.length - 30].time, value: 1 }] }),
+      quote: { price: minute[minute.length - 40].close },
+    });
+    REPLY['desk:quick'] = '{"analysts": {"technical": 0.2, "news": 0.1, "macro": 0, "internals": 0.3}, "rating": "lean_up", "score": 0.3, "confidence": 55, "why": "Breadth and trend lean up while news is mixed.", "risk": "Support breaks.", "watch": "Banks."}';
+    seen.length = 0;
+    return D.run(S3, { mode: 'quick', extras: { news } });
+  }).then(row => {
+    ok('a quick read carries all four analyst scores', row && row.analysts.filter(a => !a.failed).length === 4);
+    ok('a quick read that answers is one request', seen.length === 1, seen.length + ' sent');
+    const settled = D.settle('NIFTY', minute, 60);
+    const mine = settled.filter(r => r.id === row.id)[0];
+    const end = minute.filter(c => c.time <= row.horizon.endTime).pop();
+    const move = (end.close - row.price) / row.price * 100;
+    ok('a run past its horizon is settled against the close at that time',
+       mine && Math.abs(mine.outcome.endPrice - Math.round(end.close * 100) / 100) < 0.01 &&
+       Math.abs(mine.outcome.movePct - move) < 0.001,
+       mine ? 'moved ' + mine.outcome.movePct + '%, ' + (mine.outcome.right === null ? 'unscored' : mine.outcome.right ? 'right' : 'wrong') : 'not settled');
+    ok('and never twice', D.settle('NIFTY', minute, 60).filter(r => r.id === row.id).length === 0);
+    return D.reflect(S, mine).then(lesson => {
+      ok('the AI writes the lesson when the budget allows', lesson && lesson.source === 'ai' && /^When /.test(lesson.text));
+      ok('the lesson is filed under the situation it was made in', lesson && lesson.fp && lesson.runId === row.id);
+      return D.reflect(Object.assign({}, S, { settings: { key: '' } }), mine);
+    });
+  }).then(again => {
+    ok('one lesson per run, whoever writes it', again && again.source === 'ai');
+    const rec = D.record('NIFTY');
+    ok('the desk keeps its own record', rec.settled >= 1);
+  }).catch(e => ok('the scripted desk run completed', false, String(e && e.stack || e)))
+    .then(() => { KT.data.askModel = realAsk; }));
+
+  /* The first live run (29 Oct 2026): two of six calls drew 429 from a busy
+     free model and the final call fell back to arithmetic. A step that fails
+     for a passing reason is asked once more, with the free pool behind the
+     chosen model; one that fails twice says why. */
+  asyncChecks.push(() => {
+    const tries = [];
+    let finalTries = 0;
+    KT.core.store.remove('aiUse');
+    KT.data.askModel = (key, model, system, user, opts) => {
+      const pp = opts && opts.purpose;
+      tries.push({ purpose: pp, fallback: opts && opts.fallbackModel });
+      if (pp === 'desk:technical') return Promise.reject(new Error('HTTP 429'));
+      if (pp === 'desk:final' && ++finalTries === 1) return Promise.reject(new Error('HTTP 429'));
+      return Promise.resolve(REPLY[pp] || '{}');
+    };
+    return D.run(S, { extras: { news } }).then(row => {
+      const fin = tries.filter(t => t.purpose === 'desk:final');
+      ok('a busy model is asked once more, the second time with the free pool behind it',
+         fin.length === 2 && !fin[0].fallback && fin[1].fallback === KT.CONFIG.defaultModel,
+         tries.map(t => t.purpose.replace('desk:', '') + (t.fallback ? '+pool' : '')).join(' '));
+      ok('so the final call is the AI\u2019s, not the arithmetic stand-in', row.final.source !== 'rule' && row.final.rating === 'lean_up');
+      const tech = row.analysts.filter(a => a.id === 'technical')[0];
+      ok('a step that fails twice says why', !!tech && tech.failed === true && tech.failWhy === 'busy' &&
+         /busy/.test(D.failText(tech.failWhy)));
+      ok('every request is on the run\u2019s count, retries included', row.calls === 8, row.calls + ' calls');
+    }).catch(e => ok('the retry run completed', false, String(e && e.stack || e)))
+      .then(() => { KT.data.askModel = realAsk; });
+  });
+}
+
+section('V2 — lessons');
+{
+  const Lz = KT.lessons;
+  const fpA = Lz.fingerprint({ kind: 'index', symbol: 'NIFTY', timeframe: '1S', adx: 12, rsi: 72, vix: 18.5, newsTone: -0.4, fiiNetCr: -2100, gapPct: 0.6 });
+  ok('a situation is buckets, not numbers',
+     fpA.trend === 'range' && fpA.rsi === 'overbought' && fpA.vix === 'stressed' && fpA.news === 'negative' &&
+     fpA.flows === 'fii-selling' && fpA.gap === 'gap-up');
+  ok('and reads as words', /range-bound/.test(Lz.describe(fpA)) && /FII selling/.test(Lz.describe(fpA)));
+  const fpB = Lz.fingerprint({ kind: 'stock', symbol: 'TCS', timeframe: '1D', adx: 30, price: 110, ema50: 100, rsi: 40, vix: 11, newsTone: 0.5, fiiNetCr: 1200 });
+  ok('alike situations score high and unlike ones low',
+     Lz.similarity(fpA, fpA) === 1 && Lz.similarity(fpA, fpB) < Lz.MIN_SIMILARITY,
+     'unlike: ' + Lz.similarity(fpA, fpB).toFixed(2));
+  const before = Lz.count();
+  Lz.add({ runId: 'T1', symbol: 'NIFTY', fp: fpA, text: 'When the tape is range-bound and FII sell, fade the gap-up.', outcome: { movePct: -0.4, right: true }, source: 'ai' });
+  Lz.add({ runId: 'T2', symbol: 'TCS', fp: fpB, text: 'When TCS trends up on positive news, the lean holds.', outcome: { movePct: 0.8, right: true }, source: 'ai' });
+  Lz.add({ runId: 'T1', symbol: 'NIFTY', fp: fpA, text: 'a second write for the same run', source: 'ai' });
+  ok('one lesson per run', Lz.count() === before + 2);
+  const got = Lz.relevant(fpA, { k: 3 });
+  ok('retrieval returns the similar situation and not the unlike one',
+     got.length >= 1 && got[0].lesson.runId === 'T1' && got.every(g => g.lesson.runId !== 'T2'));
+  ok('lessons reach the prompt with their outcome', /call was right, price -0\.40%/.test(Lz.forPrompt(got)));
+  ok('the arithmetic fallback says what happened',
+     /was wrong: price moved \+0\.50%/.test(Lz.ruleText({ score: -0.3 }, { movePct: 0.5, right: false }, fpA)));
+  const dump = Lz.exportJson();
+  Lz.clear();
+  ok('export and import round-trip', Lz.count() === 0 && Lz.importJson(dump).added >= 2 && Lz.count() >= 2);
+}
+
+section('V2 — any NSE stock');
+{
+  const St = KT.stocks;
+  const uni = readJSON('data/universe.json', null);
+  const n = St.setUniverse(uni);
+  ok('the stock list loads from the universe file', n > 2000, n + ' symbols');
+  if (n > 2000) {
+    const top = q => (St.search(q, 5)[0] || {}).symbol;
+    ok('search finds a ticker typed exactly', top('RELIANCE') === 'RELIANCE' && top('tcs') === 'TCS');
+    ok('search finds a company by name', top('infosys') === 'INFY', top('infosys'));
+    ok('and the indices', top('nifty') === 'NIFTY');
+    const rel = St.matcherFor('RELIANCE');
+    ok('company headlines match their company',
+       rel.test('RIL shares jump after Jio tariff hike') && rel.test('Reliance Industries Q2 profit beats estimates'));
+    /* "Bajaj", "Adani" and "Reliance" are each a name six to nine listed
+       companies answer to. Matched alone they would file Bajaj Auto's sales
+       under Bajaj Finance. */
+    ok('a group name does not match the wrong company',
+       !rel.test('Reliance Power wins a 500 MW order') &&
+       !St.matcherFor('BAJFINANCE').test('Bajaj Auto sales rise 12% in October') &&
+       !St.matcherFor('ADANIENT').test('Adani Ports cargo volumes rise') &&
+       St.matcherFor('BAJFINANCE').test('Bajaj Finance AUM grows 28%'));
+    ok('the ticker in capitals still counts', rel.test('RELIANCE hits a record high'));
+    const cons = readJSON('data/constituents.json', null);
+    if (cons && St.setPopular(cons) > 40) {
+      ok('index members rank above namesakes in search', top('reli') === 'RELIANCE', top('reli'));
+    }
+    ok('a short ticker only matches in capitals',
+       St.matcherFor('TCS').test('TCS bags a $1 billion deal') && !St.matcherFor('TCS').test('the tcs of it'));
+    const pool = [{ headline: 'RBI keeps the repo rate unchanged' }, { headline: 'Infosys wins a large deal' },
+                  { headline: 'TCS bags a large deal in Europe' }];
+    ok('a stock forecast reads its own news and the macro news, not its rivals’',
+       St.forecastNews('TCS', pool).length === 2 && St.newsFor('TCS', pool).length === 1);
+    ok('registering a stock gives it a Yahoo symbol and marks it',
+       St.register('RELIANCE') === 'RELIANCE' && KT.CONFIG.symbols.RELIANCE.stock === true &&
+       KT.CONFIG.symbols.RELIANCE.yahoo === 'RELIANCE.NS');
+    ok('an unknown symbol is refused', St.register('NOTASTOCK123') === null);
+    ok('the beta scale defaults to one until the screener answers', St.gapScale('RELIANCE') === 1);
+
+    /* The news lane's relevance follows the focus and returns when it is cleared. */
+    const F2 = KT.forecast;
+    F2.setFocus(St.focusFor('TCS'));
+    const company = F2.relevanceOf({ headline: 'TCS bags a large deal in Europe' });
+    const macro = F2.relevanceOf({ headline: 'RBI keeps the repo rate unchanged' });
+    const rival = F2.relevanceOf({ headline: 'Infosys wins a large deal' });
+    ok('in focus, the company’s own story counts most',
+       company.w === 1 && macro.w === 0.6 && rival.w < 0.3, [company.w, macro.w, rival.w].join(' / '));
+    F2.setFocus(null);
+    ok('and clearing the focus restores the index reading', F2.relevanceOf({ headline: 'RBI keeps the repo rate unchanged' }).w === 1);
+
+    // A stock gaps by its beta, not by NIFTY's amount.
+    const base = { candles: minuteCandles.length ? minuteCandles.slice() : candles.slice(), timeframe: '1S', news, global: globalCues };
+    const g1 = KT.forecast.build(Object.assign({}, base)).open;
+    const g2 = KT.forecast.build(Object.assign({}, base, { candles: base.candles.slice(), gapScale: 1.5 })).open;
+    ok('the opening gap scales with the stock’s beta',
+       !g1.hasData || Math.abs(g2.gapPct - Math.round(g1.gapPct * 1.5 * 1000) / 1000) < 0.002,
+       g1.hasData ? g1.gapPct + '% → ' + g2.gapPct + '%' : 'no cues in the snapshot');
+  }
+}
+
+section('V2 — the price model (Kronos)');
+{
+  const F3 = KT.forecast, w3 = KT.CONFIG.forecast.weights;
+  const par3 = 1 / Object.keys(w3).length;
+  ok('the price model starts below par and below the checkable lanes',
+     w3.kronos > 0 && w3.kronos < par3 &&
+     ['news', 'momentum', 'global', 'structure', 'seasonal', 'options', 'levels'].every(k => w3[k] > w3.kronos),
+     `kronos ${w3.kronos} against par ${par3.toFixed(3)}`);
+  const mc = minuteCandles.length ? minuteCandles : candles;
+  const last = mc[mc.length - 1];
+  const mk = (over) => Object.assign({ ok: true, stub: false, series: { 'NIFTY:5m': {
+    base_time: last.time, base_close: last.close,
+    steps: [1, 2, 3].map(i => ({ t: last.time + i * 300, p10: last.close * 0.995, p50: last.close * 1.01, p90: last.close * 1.025 })),
+  } } }, over || {});
+  ok('a run made by the stub is refused', F3.setKronos(mk({ stub: true })) === false);
+  ok('a failed run is refused', F3.setKronos(mk({ ok: false })) === false);
+  F3.setKronos(mk());
+  const lane = F3.kronosLane(mc.slice(), '1S', last.close, 'NIFTY');
+  ok('a fresh run votes its median against its own spread',
+     lane.hasData && Math.abs(lane.score - (0.01 / 0.015)) < 1e-6, lane.note);
+  ok('a run for another symbol stays dark', F3.kronosLane(mc.slice(), '1S', last.close, 'SENSEX').hasData === false);
+  const expired = mk(); expired.series['NIFTY:5m'].steps = [{ t: last.time - 60, p10: 1, p50: 2, p90: 3 }];
+  F3.setKronos(expired);
+  ok('an expired run stays dark', F3.kronosLane(mc.slice(), '1S', last.close, 'NIFTY').hasData === false);
+  const other = mk(); other.series['NIFTY:5m'].base_close = last.close * 1.03;
+  F3.setKronos(other);
+  ok('a run that read a different series stays dark', F3.kronosLane(mc.slice(), '1S', last.close, 'NIFTY').hasData === false);
+  F3.setKronos(mk());
+  const withK = F3.build({ candles: mc.slice(), timeframe: '1S', news, symbol: 'NIFTY' });
+  ok('in the blend it is one more lane, renormalised like the rest',
+     withK.lanes.some(l => l.id === 'kronos' && l.hasData && l.contribution > 0));
+  F3.setKronos(null);
+  ok('and with no run it drops out', !F3.build({ candles: mc.slice(), timeframe: '1S', news, symbol: 'NIFTY' })
+       .lanes.find(l => l.id === 'kronos').hasData);
+  const kj = readJSON('data/kronos.json', null);
+  ok('the shipped file parses and is not a stub', kj && kj.stub === false);
+  const py = fs.readFileSync(path.join(ROOT, 'scripts/kronos_forecast.py'), 'utf8');
+  ok('the script never raises and keeps the last good run',
+     /carry_forward\("kronos\.json"/.test(py) && /except Exception/.test(py));
+  const wf = ['.github/workflows/kronos.yml', 'docs/workflows/kronos.yml'].find(f => fs.existsSync(path.join(ROOT, f)));
+  ok('a workflow runs it, in the live branch’s concurrency group',
+     !!wf && /kronos_forecast\.py/.test(fs.readFileSync(path.join(ROOT, wf), 'utf8')) &&
+     /group: live-data/.test(fs.readFileSync(path.join(ROOT, wf), 'utf8')), wf);
+}
+
+section('V2 — the AI budget');
+{
+  const Dt = KT.data;
+  asyncChecks.push(() => {
+    KT.core.store.remove('aiUse');
+    const b0 = Dt.aiBudget();
+    ok('a fresh day starts at the free limit', b0.used === 0 && b0.left === KT.CONFIG.ai.freeDailyLimit);
+    SANDBOX.fetch = () => Promise.reject(new Error('offline'));
+    return Dt.askModel('k', 'm', 's', 'u', { purpose: 'desk:test' }).catch(() => null);
+  });
+  asyncChecks.push(() => Promise.resolve().then(() => {
+    const b1 = Dt.aiBudget();
+    ok('a request is counted when it is sent, success or not', b1.used === 1 && b1.by.desk === 1);
+    SANDBOX.fetch = () => Promise.resolve({ ok: false, status: 429,
+      text: () => Promise.resolve('{"error":{"message":"Rate limit exceeded: free-models-per-day"}}') });
+    return Dt.askModel('k', 'm', 's', 'u', { purpose: 'desk:test' }).catch(() => null);
+  }).then(() => {
+    const b2 = Dt.aiBudget();
+    ok('a daily-limit 429 marks the day spent', b2.blocked === true && b2.left === 0);
+    return Dt.askModel('k', 'm', 's', 'u', {}).then(() => false, e => /daily AI limit/.test(e.message));
+  }).then(refused => {
+    ok('and no further request is sent that day', refused === true);
+    SANDBOX.fetch = () => Promise.resolve({ ok: false, status: 429, text: () => Promise.resolve('Rate limit exceeded: 20 per minute') });
+    KT.core.store.remove('aiUse');
+    return Dt.askModel('k', 'm', 's', 'u', {}).catch(() => null);
+  }).then(() => {
+    ok('a per-minute 429 does not', Dt.aiBudget().blocked === false);
+    KT.core.store.remove('aiUse');
+    SANDBOX.fetch = () => Promise.reject(new Error('no network in selftest'));
+  }));
+  asyncChecks.push(() => {
+    let sent = null;
+    KT.core.store.remove('aiUse');
+    SANDBOX.fetch = (url, init) => {
+      sent = JSON.parse(init.body);
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ choices: [{ message: {
+        content: 'A reply long enough to count as a real answer from the model, not a label.' } }] }) });
+    };
+    return Dt.askModel('k', 'chosen/model:free', 's', 'u', { fallbackModel: 'openrouter/free' }).then(() => {
+      ok('a retry names the chosen model first and the free pool second, in one request',
+         !!sent && sent.model === undefined && Array.isArray(sent.models) &&
+         sent.models.join(' ') === 'chosen/model:free openrouter/free');
+      return Dt.askModel('k', 'chosen/model:free', 's', 'u', {});
+    }).then(() => {
+      ok('a first try names only the chosen model', !!sent && sent.model === 'chosen/model:free' && sent.models === undefined);
+      return Dt.askModel('k', 'chosen/model:free', 's', 'u', { modelOverride: 'openrouter/free' });
+    }).then(() => {
+      ok('a second ask after an empty reply goes to the pool itself', !!sent && sent.model === 'openrouter/free' && sent.models === undefined);
+    }).catch(e => ok('the fallback request was sent', false, String(e)))
+      .then(() => { KT.core.store.remove('aiUse'); SANDBOX.fetch = () => Promise.reject(new Error('no network in selftest')); });
+  });
+
+  const appSrc4 = fs.readFileSync(path.join(ROOT, 'assets/js/app.js'), 'utf8');
+  const vote4 = appSrc4.slice(appSrc4.indexOf('function maybeAskModelVote()'), appSrc4.indexOf('function parseVote('));
+  const narr4 = appSrc4.slice(appSrc4.indexOf('function maybeEnrichNarrative()'), appSrc4.indexOf('function openSymbol('));
+  ok('the single-call vote and narrative stop at the reserve, and give way to the AI desk',
+     /aiReserved\(\)/.test(vote4) && /aiReserved\(\)/.test(narr4) && /C\.ui && C\.ui\.desk/.test(appSrc4));
+}
+
+section('PAGE — one page, its cards and the code');
+{
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const classic = fs.readFileSync(path.join(ROOT, 'classic.html'), 'utf8');
+  const appSrc5 = fs.readFileSync(path.join(ROOT, 'assets/js/app.js'), 'utf8');
+  const chartSrc5 = fs.readFileSync(path.join(ROOT, 'assets/js/chart.js'), 'utf8');
+  const cfgSrc5 = fs.readFileSync(path.join(ROOT, 'assets/js/config.js'), 'utf8');
+  const pnSrc = fs.readFileSync(path.join(ROOT, 'assets/js/panels.js'), 'utf8');
+  function ids(h) { const s = new Set(); let m; const rx = /\bid="([A-Za-z0-9_-]+)"/g; while ((m = rx.exec(h))) s.add(m[1]); return s; }
+  function used(src, rx) { const s = new Set(); let m; while ((m = rx.exec(src))) s.add(m[1] || m[2]); return s; }
+  const appUsed = new Set([...used(appSrc5, /(?:core\.)?(?:text|el)\('([A-Za-z0-9_-]+)'|getElementById\('([A-Za-z0-9_-]+)'\)/g),
+                           ...used(chartSrc5, /(?:core\.)?(?:text|el)\('([A-Za-z0-9_-]+)'|getElementById\('([A-Za-z0-9_-]+)'\)/g)]);
+  const pnUsed = used(pnSrc, /(?:\$|setText)\('([A-Za-z0-9_-]+)'/g);
+  const inPage = ids(html);
+  const miss = [...appUsed, ...pnUsed].filter(id => !inPage.has(id)).sort();
+  ok('the page declares every id app.js, chart.js and panels.js write to', miss.length === 0,
+     miss.length ? 'missing: ' + miss.join(', ') : (appUsed.size + pnUsed.size) + ' ids');
+  const dup = [...inPage].filter(id => (html.match(new RegExp('id="' + id + '"', 'g')) || []).length > 1);
+  ok('no id is declared twice', dup.length === 0, dup.join(', '));
+
+  const order = ['assets/js/config.js', 'assets/js/core.js', 'assets/js/data.js', 'assets/js/forecast.js',
+                 'assets/js/postmortem.js', 'assets/js/ledger.js', 'assets/js/learn.js', 'assets/js/chart.js',
+                 'assets/js/streetcalls.js', 'assets/js/stocks.js', 'assets/js/lessons.js', 'assets/js/desk.js',
+                 'assets/js/app.js', 'assets/js/panels.js'].map(p => html.indexOf('src="' + p + '"'));
+  ok('the page loads its modules in dependency order', order.every((p, i) => p > 0 && (i === 0 || p > order[i - 1])), order.join(' < '));
+  ok('classic.html only forwards to the one page',
+     /location\.replace\('index\.html'/.test(classic) && !/assets\/js\/app\.js/.test(classic));
+  ok('the retired V2 files are gone and nothing loads them',
+     !['assets/js/v2.js', 'assets/js/v2-config.js', 'assets/v2.css'].some(f => fs.existsSync(path.join(ROOT, f))) &&
+     !/v2\.js|v2-config\.js|v2\.css/.test(html));
+  ok('the other pages link back to the terminal',
+     ['profile.html', 'data.html', 'ipo.html'].every(f => /href="index\.html"/.test(fs.readFileSync(path.join(ROOT, f), 'utf8'))));
+  ok('the chart frames NOW at the centre', /ui\.centreNow/.test(chartSrc5) && /centreNow:\s*true/.test(cfgSrc5));
+  ok('panels.js escapes what it interpolates', /function esc\(/.test(pnSrc) &&
+     !/innerHTML\s*=\s*[^;]*\+\s*(?:l\.text|r\.text|p\.lesson|it\.name|n\.headline)\b/.test(pnSrc));
+  ok('the chart reading rounds its window to a whole bar',
+     /Math\.round\(f\.forecastBars/.test(appSrc5),
+     'the session view’s 1.5 ratio made it 562.5 bars and c[1313.5] threw every evening');
+  ok('a failed load reaches the call card', /loadFailed\(S\.symbol, e\)/.test(appSrc5) && /onLoadError/.test(pnSrc));
+  ok('the record card redraws when the replay lands, not a minute later',
+     /trailHooks\[th\]\(S\)/.test(appSrc5) && /onTrail/.test(pnSrc));
+  ok('a stale quote or stale candles cannot be forecast under a new symbol',
+     /S\.quote = null;/.test(appSrc5) && /S\.candles = \[\];/.test(appSrc5) && /S\.symbol !== symAt/.test(appSrc5));
+  ok('a finished session with no verdict says which: waiting for its prices, or never scored',
+     /not scored/.test(pnSrc) && /waiting for its prices/.test(pnSrc) && /r\.expired/.test(pnSrc));
+  ok('the published record of calls is read at boot and on a slow timer',
+     /function loadCalls\(/.test(appSrc5) && /loadCalls\(true\)/.test(appSrc5) && /calls:\s*'data\/calls\.json'/.test(cfgSrc5) &&
+     /'data\/calls\.json'/.test(cfgSrc5.slice(cfgSrc5.indexOf('liveFiles'))));
+}
+
+/* The call, its judgement, the record and the learning have their own file
+   (scripts/selftest_calls.js): it replays the workflow script three times on
+   a scratch copy of the data. Run from here so one command checks it all. */
+section('CALLS — scripts/selftest_calls.js');
+asyncChecks.push(() => {
+  let out = '';
+  try {
+    out = require('child_process').execFileSync(process.execPath, [path.join(__dirname, 'selftest_calls.js')],
+                                                 { encoding: 'utf8', timeout: 170000 });
+  } catch (e) { out = String(e.stdout || '') + String(e.stderr || ''); }
+  const m = /(\d+) passed, (\d+) failed/.exec(out);
+  if (!m) { ok('scripts/selftest_calls.js ran', false, out.slice(-400)); return; }
+  out.split('\n').filter(l => /^  FAIL/.test(l)).forEach(l => console.log(l));
+  pass += +m[1]; fail += +m[2];
+  console.log('  ' + m[1] + ' passed, ' + m[2] + ' failed in scripts/selftest_calls.js');
+});
+
+section('V2 — the checks that wait on a promise');
+asyncChecks.reduce((p, fn) => p.then(fn).catch(e => ok('an async check threw', false, String(e && e.stack || e))), Promise.resolve())
+  .then(() => {
+    console.log(`\n${pass} passed, ${fail} failed`);
+    process.exit(fail ? 1 : 0);
+  });

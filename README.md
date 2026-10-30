@@ -8,6 +8,25 @@ than decorated with it — and that publishes its own measured accuracy.
 
 Live: https://voltairtechindia.github.io/Sharemarket/
 
+The call, and whether it was right (30 Oct 2026)
+------------------------------------------------
+
+One page, laid out as before, with NOW in the middle of the chart: the past
+and what the forecast said on the left, where it goes next on the right.
+Beside it, the call for the next session (lean, odds, where it opens, the
+likely closing range, what makes it right), frozen the evening before and
+again before the open by a scheduled run, so it is the same call in every
+browser. After the close it is judged: right or wrong, by how much, and when
+it missed, what it did not know (the open, the overnight cues, the news, the
+flows, the size of the move), each with a time on it. Each judgement files a
+lesson for the next call in a similar situation, and the record moves the
+inputs' weights and the size of the opening gap inside fixed guardrails. A
+model trained walk-forward on twenty years of NIFTY, SENSEX, BANK NIFTY and
+the overnight world, and two price models, vote beside the original lanes.
+The AI desk (four analysts, a bull and a bear, a final call) and the search
+for any of ~2,600 NSE stocks are on the same page. How it works:
+`docs/calls.md`; the desk and the search: `docs/v2.md`.
+
 What it does
 ------------
 

@@ -10,6 +10,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="assets/style.css" />
+<link rel="stylesheet" href="assets/panels.css" />
 <!-- Charting library is vendored rather than pulled from a CDN. A terminal you
      rely on should not stop drawing because a third-party host is having a bad
      morning, and the file is 160 KB served from the same origin as the page.
@@ -109,7 +110,11 @@
   <!-- ------------------------------------------------- MARKETWATCH (left) -->
   <aside class="panel mw-panel" aria-label="Market watch">
     <div class="mw-search">
-      <input type="search" id="mw-search" placeholder="Search nifty, sensex, vix" autocomplete="off" />
+      <input type="search" id="mw-search" placeholder="Search any NSE stock or index  ( / )" autocomplete="off"
+             role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="mw-suggest" />
+      <!-- Matches from the ~2,600 NSE names (stocks.js), under the box. The
+           row filter below still runs on the same input. -->
+      <ul class="pn-suggest hidden" id="mw-suggest" role="listbox" aria-label="Matching stocks"></ul>
     </div>
 
     <div class="panel-scroll">
@@ -272,11 +277,11 @@
       </div>
 
       <div class="chart-legend">
-        <span class="lg"><span class="lg-swatch hist"></span> Past &amp; current &middot; 4/5</span>
-        <span class="lg" title="All lanes blended. This is the headline forecast."><span class="lg-swatch fc"></span> Blended forecast &middot; 1/5</span>
+        <span class="lg"><span class="lg-swatch hist"></span> Past &amp; current &middot; 1/2</span>
+        <span class="lg" title="All lanes blended. This is the headline forecast."><span class="lg-swatch fc"></span> Blended forecast &middot; 1/2</span>
         <span class="lg" title="The line the model drew one lead earlier, kept after its time came. Violet stretches are replayed from history; amber is what this browser recorded live and never rewrote."><span class="lg-swatch trail"></span> Predicted earlier <span class="lg-swatch trail-live"></span> recorded live</span>
         <span class="lg" title="Actual close minus the remembered line, at every bar. Grey: inside the range the line carried. Green: price came in above it. Red: below it."><span class="lg-swatch err"></span> Miss</span>
-        <span class="lg" title="The call frozen when this session opened. It is never rewritten, so the line you see at close is the line that was drawn at the open."><span class="lg-swatch lock"></span> Locked call</span>
+        <span class="lg" title="The call frozen for this session, the evening before and again at the pre-open. It is never rewritten, so the line you see at the close is the line that was drawn before the open. The same call on every view."><span class="lg-swatch lock"></span> Frozen call</span>
         <span class="lg" title="What price actually did over the locked window. The gap between this and the line above is the error, in points."><span class="lg-swatch act"></span> Actual</span>
         <span class="lg" id="reason-granularity">Reason points: every 1 hour</span>
       </div>
@@ -419,18 +424,30 @@
         <div class="kv"><span class="kv-k">Entries on chart</span><span class="kv-v" id="pos-count">&mdash;</span></div>
       </div>
 
-      <!-- Forecast verdict -->
-      <div class="section">
+      <!-- ============================================================ THE CALL
+           The call for the next session, frozen the evening before and again
+           at the pre-open (ledger.lock), then judged once the session is over.
+           Always the session view's call, whichever view is on screen
+           (sessionCall in app.js); drawn on every intraday view. -->
+      <div class="section call-section" id="call-section">
         <div class="section-head">
-          <span class="label">Forecast &mdash; next <span id="fc-horizon">&mdash;</span></span>
-          <button class="btn btn-sm" id="btn-reforecast">Refresh</button>
+          <span class="label"><span id="call-title">Next session</span> <span id="call-day"></span></span>
+          <span class="label" id="call-stage">&mdash;</span>
         </div>
+        <div class="call-head">
+          <span class="call-lean" id="call-lean">Reading the market&hellip;</span>
+          <span class="call-prob num" id="call-prob"></span>
+        </div>
+        <p class="call-line" id="call-range"></p>
+        <p class="call-line" id="call-levels"></p>
+        <ul class="call-views" id="call-views"></ul>
+        <p class="fine call-stale" id="call-stale" hidden></p>
         <!-- The opening call. Hidden during the session on purpose: once the
              market has opened there is no gap left to predict, and leaving a
              stale number on screen would read as a live claim. -->
         <div class="open-call" id="open-call" hidden>
           <div class="open-call-head">
-            <span class="open-call-k">Opens at</span>
+            <span class="open-call-k">Read now &middot; opens at</span>
             <span class="open-call-when" id="open-when">&mdash;</span>
           </div>
           <div class="open-call-price num" id="open-price">&mdash;</div>
@@ -443,7 +460,7 @@
              session. Nothing here is recomputed; see lock() in ledger.js. -->
         <div class="lockscore" id="lockscore" hidden>
           <div class="lockscore-head">
-            <span class="label">Locked call &mdash; <span id="lock-stage">&mdash;</span></span>
+            <span class="label">Line against the tape &middot; <span id="lock-stage">&mdash;</span></span>
             <span class="lockscore-when" id="lock-when">&mdash;</span>
           </div>
           <div class="lockscore-grid">
@@ -456,7 +473,28 @@
           </div>
           <div class="lockscore-verdict" id="lock-verdict">&mdash;</div>
         </div>
+      </div>
 
+      <!-- ======================================================= SAID VS DID
+           Each frozen call against where its session closed and, when it
+           missed, what it did not know (postmortem.js): facts with times on
+           them, never a claimed cause. -->
+      <div class="section judge-section" id="judge-section">
+        <div class="section-head">
+          <span class="label">Said vs did</span>
+          <span class="label" id="judge-n">&mdash;</span>
+        </div>
+        <div id="judge-last"></div>
+        <ul class="judge-list" id="judge-list"></ul>
+        <p class="verdict-line" id="judge-sum"></p>
+      </div>
+
+      <!-- Forecast verdict -->
+      <div class="section">
+        <div class="section-head">
+          <span class="label">Forecast &mdash; next <span id="fc-horizon">&mdash;</span></span>
+          <button class="btn btn-sm" id="btn-reforecast">Refresh</button>
+        </div>
         <div class="verdict">
           <div class="verdict-dir" id="fc-direction">&mdash;</div>
           <div class="verdict-range num" id="fc-range">&mdash;</div>
@@ -484,6 +522,24 @@
           <div class="fc-split-verdict" id="fc-split-verdict">&mdash;</div>
         </div>
         <p style="font-size:11.5px;line-height:1.5;color:var(--ink);margin:6px 0 0" id="fc-narrative">&mdash;</p>
+      </div>
+
+      <!-- ============================================================ AI DESK
+           TradingAgents cut to the free tier (desk.js): four analysts, a bull
+           and a bear, a final call. It never sees the forecast's answer, votes
+           as one lane, and is scored like every other. -->
+      <div class="section desk-section" id="desk-section">
+        <div class="section-head">
+          <span class="label">AI desk</span>
+          <span class="label" id="desk-budget">&mdash;</span>
+        </div>
+        <div class="desk-body" id="desk-body"></div>
+        <div class="desk-actions">
+          <button class="btn btn-sm" id="desk-run">Run the desk</button>
+          <button class="btn btn-sm" id="desk-quick">Quick read</button>
+          <label class="desk-auto" title="One run before the open, one in each half of the session and one after the close, on NIFTY only, keeping requests in reserve for stocks you open."><input type="checkbox" id="desk-auto" /> Auto on NIFTY</label>
+        </div>
+        <p class="fine" id="desk-note"></p>
       </div>
 
       <!-- ================================================== PREDICTION TRAIL
@@ -638,6 +694,26 @@
         <!-- What the model has changed about itself. Empty of drama on
              purpose: see renderLearn() in app.js. -->
         <p class="learn-note" id="learn-note">&mdash;</p>
+      </div>
+
+      <!-- ============================================================ LEARNED
+           The lessons filed after every judged session and desk call, read
+           first by the next call in a similar situation; which inputs have
+           pointed the right way, session by session. -->
+      <div class="section learned-section" id="learned-section">
+        <div class="section-head">
+          <span class="label">What it has learned</span>
+          <span class="label" id="learned-n">&mdash;</span>
+        </div>
+        <ul class="pn-lessons" id="learned-lessons"></ul>
+        <div id="learned-lanes"></div>
+        <div id="learned-years"></div>
+        <p class="fine" id="learned-weights"></p>
+        <div class="learned-actions">
+          <button class="btn btn-sm" id="lessons-export" title="Save the lessons to a file, to keep them or move them to another browser">Export lessons</button>
+          <button class="btn btn-sm" id="lessons-import">Import</button>
+          <input type="file" id="lessons-file" accept="application/json,.json" hidden />
+        </div>
       </div>
 
       <!-- ========================================================= EVIDENCE
@@ -961,6 +1037,9 @@
 <script src="assets/js/analogs.js"></script>
 <script src="assets/js/vol.js"></script>
 <script src="assets/js/forecast.js"></script>
+<!-- postmortem writes the judgement ledger.settleLocks asks for, so it
+     loads first. -->
+<script src="assets/js/postmortem.js"></script>
 <script src="assets/js/ledger.js"></script>
 <!-- learn reads the ledger and is read by forecast at build time, so it
      sits between them in the load order. -->
@@ -972,6 +1051,15 @@
 <script src="assets/js/evidence.js"></script>
 <script src="assets/js/engine.js"></script>
 <script src="assets/js/chart.js"></script>
+<!-- Any NSE stock (stocks.js, with the published-calls parser it reuses),
+     the desk's lessons and the desk itself: read by app.js at run time,
+     so they load before it. panels.js draws the call, said vs did, the
+     desk and the lessons after every recompute, so it loads last. -->
+<script src="assets/js/streetcalls.js"></script>
+<script src="assets/js/stocks.js"></script>
+<script src="assets/js/lessons.js"></script>
+<script src="assets/js/desk.js"></script>
 <script src="assets/js/app.js"></script>
+<script src="assets/js/panels.js"></script>
 </body>
 </html>

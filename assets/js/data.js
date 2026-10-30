@@ -127,6 +127,9 @@
         mark('candles', true, 'cached');
         return cached;
       }
+      // The workflow only bakes the indices. A stock has no file to fall back
+      // to, and asking for one is a 404 in the console on every failure.
+      if (sym.stock) { mark('candles', false, String(err.message || err)); throw err; }
       return loadBaked(C.baked.candles(symbolKey, tfKey))
         .then(function (j) {
           mark('candles', true, 'workflow file');
@@ -383,9 +386,86 @@
       .catch(function () { return C.fallbackModels.slice(); });
   }
 
-  function askModel(key, model, system, user) {
+  /* ------------------------------------------------------- AI budget
+
+     OpenRouter's free tier allows 50 requests a day on an account that has
+     bought less than $10 of credit, and 1,000 once it has. Every request this
+     page sends is counted here, per UTC day because that is when the limit
+     resets (05:30 IST), so the desk can say how many are left before it
+     spends them. The count is this browser's; another device on the same key
+     is invisible to it, which the panel says.
+
+     A 429 that names the daily limit marks the day spent. A 429 for the
+     per-minute limit does not: it clears in a minute and the next call works. */
+  var AI_USE_KEY = 'aiUse', AI_INFO_KEY = 'aiKeyInfo';
+  function utcDay() { return new Date().toISOString().slice(0, 10); }
+  function aiUse() {
+    var u = core.store.get(AI_USE_KEY, null);
+    if (!u || u.day !== utcDay()) u = { day: utcDay(), n: 0, blocked: false, by: {} };
+    if (!u.by) u.by = {};
+    return u;
+  }
+  function aiCount(purpose) {
+    var u = aiUse();
+    u.n++;
+    var k = String(purpose || 'other').split(':')[0];
+    u.by[k] = (u.by[k] || 0) + 1;
+    core.store.set(AI_USE_KEY, u);
+    return u;
+  }
+  function aiBlock() { var u = aiUse(); u.blocked = true; core.store.set(AI_USE_KEY, u); }
+  function aiBudget() {
+    var u = aiUse(), info = core.store.get(AI_INFO_KEY, null);
+    var lim = (C.ai && C.ai.freeDailyLimit) || 50;
+    if (info && info.freeTier === false) lim = (C.ai && C.ai.paidDailyLimit) || 1000;
+    return {
+      day: u.day, used: u.n, limit: lim, left: u.blocked ? 0 : Math.max(0, lim - u.n),
+      blocked: !!u.blocked, by: u.by || {},
+      freeTier: info ? info.freeTier : null, checkedAt: info ? info.at : null,
+    };
+  }
+  /* What the key itself says: free tier or not. One GET, not a model call,
+     cached for six hours. Fails quietly and leaves the free-tier default. */
+  function checkKey(key) {
+    if (!key) return Promise.resolve(null);
+    var cached = core.store.get(AI_INFO_KEY, null);
+    if (cached && Date.now() - (cached.at || 0) < 6 * 3600000) return Promise.resolve(cached);
+    var to = withTimeout(10000);
+    return fetch(C.endpoints.openrouterKey, {
+      signal: to.signal, headers: { 'Authorization': 'Bearer ' + key }, cache: 'no-store',
+    }).then(function (r) {
+      to.done();
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (j) {
+      var d = (j && j.data) || {};
+      var info = { at: Date.now(), freeTier: d.is_free_tier !== false,
+                   label: d.label ? String(d.label).slice(0, 40) : null };
+      core.store.set(AI_INFO_KEY, info);
+      return info;
+    }).catch(function () { to.done(); return null; });
+  }
+
+  /* opts, all optional: maxTokens, temperature, timeoutMs, minChars (the
+     shortest reply that counts as an answer; 60 by default, see below) and
+     purpose (what the budget panel files the request under). */
+  function askModel(key, model, system, user, opts) {
+    opts = opts || {};
     if (!key) return Promise.reject(new Error('no key'));
-    var to = withTimeout(25000);
+    if (aiBudget().left <= 0) return Promise.reject(new Error('daily AI limit reached'));
+    aiCount(opts.purpose);
+    var to = withTimeout(opts.timeoutMs || 25000);
+    /* With a fallback the request names two models and the router tries the
+       second when the first is busy or down; still one request. Measured
+       29 Oct 2026: two of a desk run's six calls drew 429 from the chosen
+       free model, and a request naming the free pool second was answered
+       from the pool. */
+    // modelOverride: the desk's second ask after an empty reply goes to the
+    // pool itself, since a 200 with nothing in it is not something the
+    // router falls back on.
+    var use = opts.modelOverride || model;
+    var pick = opts.fallbackModel && opts.fallbackModel !== use
+      ? { models: [use, opts.fallbackModel] } : { model: use };
     return fetch(C.endpoints.openrouterChat, {
       method: 'POST',
       signal: to.signal,
@@ -396,9 +476,10 @@
         'X-Title': 'NIFTY Terminal',
       },
       body: JSON.stringify({
-        model: model,
-        temperature: 0.2,
-        max_tokens: 320,
+        model: pick.model,
+        models: pick.models,
+        temperature: opts.temperature != null ? opts.temperature : 0.2,
+        max_tokens: opts.maxTokens || 320,
         /* max_tokens covers reasoning tokens as well as the answer, and the
            free auto-router picks whatever is free at the time. Measured on
            liquid/lfm-2.5-2.6b: reasoning_tokens 320, finish_reason "length",
@@ -411,6 +492,12 @@
       }),
     }).then(function (r) {
       to.done();
+      if (r.status === 429) {
+        return r.text().then(function (t) {
+          if (/per[\s-]?day|daily|free-models-per-day/i.test(t || '')) aiBlock();
+          throw new Error('HTTP 429');
+        });
+      }
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     }).then(function (j) {
@@ -422,7 +509,7 @@
          which would have been printed to the panel as the forecast's
          explanation. Two or three sentences of prose were asked for; anything
          this short is not that, so the local wording stays. */
-      if (msg.content.trim().length < 60) throw new Error('unusable completion');
+      if (msg.content.trim().length < (opts.minChars || 60)) throw new Error('unusable completion');
       mark('openrouter', true, model);
       return msg.content;
     }).catch(function (e) {
@@ -487,6 +574,87 @@
      a sector is. */
   var SECTOR_RX = /^NIFTY (IT|BANK|PSU BANK|PRIVATE BANK|FINANCIAL SERVICES|AUTO|PHARMA|HEALTHCARE|FMCG|METAL|REALTY|ENERGY|OIL & GAS|MEDIA|INFRA|CONSUMER DURABLES|COMMODITIES|MIDCAP 100|SMALLCAP 100|NEXT 50)$/;
   var BROAD_RX = /^NIFTY (MIDCAP 100|SMALLCAP 100|NEXT 50)$/;
+
+  /* ----------------------------------------------------- crowd sentiment
+
+     What the crowd is saying, for the AI desk's sentiment analyst (the
+     fourth analyst TradingAgents runs: theirs reads Reddit and StockTwits).
+     Two free, keyless sources, both through the proxy chain, because neither
+     sends CORS headers (measured from the Pages origin, 30 Oct 2026):
+
+       Tickertape's Market Mood Index   one 0-100 gauge of the Indian market
+                                        (FII flows, volatility, momentum,
+                                        breadth), with yesterday, a week and a
+                                        month ago beside it
+       StockTwits                       the symbol's own stream: its last thirty
+                                        messages and the bullish or bearish tag
+                                        each author set. NIFTY is NIFTY50.NSE,
+                                        a stock is SYMBOL.NSE; SENSEX has none
+
+     Reddit, which TradingAgents reads, answers 403 to every proxy, so it is
+     not here. Promotions (Telegram, WhatsApp, "join") are dropped before the
+     analyst sees the stream. Either source can fail on its own; the analyst
+     is only asked when at least one answered. */
+  var SENT_TTL_MS = 10 * 60000;
+  var sentCache = {};
+  var PROMO_RX = /telegram|whatsapp|\bjoin (?:my|our|the|now)\b|\bdm me\b|free (?:tips|calls|trial)|\bt\.me\b|link in bio/i;
+
+  function stocktwitsSymbol(symbolKey) {
+    var sym = C.symbols[symbolKey] || {};
+    if (symbolKey === 'NIFTY') return 'NIFTY50.NSE';
+    if (symbolKey === 'BANKNIFTY') return 'NIFTYBANK.NSE';
+    if (sym.stock) return String(symbolKey).toUpperCase() + '.NSE';
+    return null;
+  }
+
+  function moodZone(v) {
+    return !isFinite(v) ? null : v < 30 ? 'extreme fear' : v < 50 ? 'fear' : v < 70 ? 'greed' : 'extreme greed';
+  }
+
+  function getSentiment(symbolKey) {
+    var hit = sentCache[symbolKey];
+    if (hit && Date.now() - hit.at < SENT_TTL_MS) return Promise.resolve(hit.value);
+    var opts = { proxyOnly: true, skipRss2json: true, timeout: 12000 };
+
+    var mood = fetchJSONVia('https://api.tickertape.in/mmi/now', opts).then(function (r) {
+      var d = r.data && r.data.data;
+      if (!d || !isFinite(d.indicator)) throw new Error('no mood index');
+      var v = function (x) { return x && isFinite(x.indicator) ? Math.round(x.indicator * 10) / 10 : null; };
+      return {
+        now: Math.round(d.indicator * 10) / 10, zone: moodZone(d.indicator),
+        day: v(d.lastDay), week: v(d.lastWeek), month: v(d.lastMonth),
+        at: d.date ? Math.floor(new Date(d.date).getTime() / 1000) : null,
+      };
+    }).catch(function () { return null; });
+
+    var stSym = stocktwitsSymbol(symbolKey);
+    var crowd = !stSym ? Promise.resolve(null)
+      : fetchJSONVia('https://api.stocktwits.com/api/2/streams/symbol/' + encodeURIComponent(stSym) + '.json', opts)
+        .then(function (r) {
+          var msgs = r.data && r.data.messages;
+          if (!msgs || !msgs.length) throw new Error('no messages');
+          var nowSec = Date.now() / 1000, bull = 0, bear = 0, promo = 0, items = [];
+          msgs.forEach(function (m) {
+            var ts = Math.floor(new Date(m.created_at).getTime() / 1000);
+            if (!ts || nowSec - ts > 3 * 86400) return;
+            var body = String(m.body || '').replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim();
+            if (!body || PROMO_RX.test(body)) { promo++; return; }
+            var tag = m.entities && m.entities.sentiment && m.entities.sentiment.basic;
+            if (tag === 'Bullish') bull++; else if (tag === 'Bearish') bear++;
+            items.push({ ts: ts, text: body.slice(0, 180), tag: tag === 'Bullish' || tag === 'Bearish' ? tag.toLowerCase() : null });
+          });
+          if (!items.length) throw new Error('only promotions');
+          return { symbol: stSym, n: items.length, bull: bull, bear: bear, promo: promo,
+                   from: items[items.length - 1].ts, to: items[0].ts, items: items.slice(0, 10) };
+        }).catch(function () { return null; });
+
+    return Promise.all([mood, crowd]).then(function (r) {
+      var value = r[0] || r[1] ? { at: Math.floor(Date.now() / 1000), mood: r[0], crowd: r[1] } : null;
+      mark('sentiment', !!value, value ? [r[0] ? 'mood index' : null, r[1] ? 'StockTwits' : null].filter(Boolean).join(' + ') : 'no answer');
+      if (value) sentCache[symbolKey] = { at: Date.now(), value: value };
+      return value;
+    });
+  }
 
   function getMarketInternals() {
     return fetchJSONVia(C.endpoints.nseAllIndices, { proxyOnly: true, skipRss2json: true, timeout: 16000 })
@@ -1086,11 +1254,12 @@
     fetchText: fetchText, fetchVia: fetchVia, fetchJSONVia: fetchJSONVia, loadBaked: loadBaked,
     getLongHistory: getLongHistory,
     getOptionChain: getOptionChain, summariseChain: summariseChain,
-    getMarketInternals: getMarketInternals,
+    getMarketInternals: getMarketInternals, getSentiment: getSentiment, stocktwitsSymbol: stocktwitsSymbol,
     getCandles: getCandles, getLiveQuote: getLiveQuote, getQuoteFallback: getQuoteFallback,
     fetchFastLane: fetchFastLane, mergeNews: mergeNews, adoptBakedNews: adoptBakedNews,
     restoreNews: restoreNews, getNews: getNews,
     listFreeModels: listFreeModels, askModel: askModel,
+    aiBudget: aiBudget, checkKey: checkKey,
     health: health,
   };
 })(window.KT);

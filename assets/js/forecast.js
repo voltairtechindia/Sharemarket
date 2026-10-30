@@ -51,6 +51,28 @@
     return z > 0 ? 1 - p : p;
   }
 
+  /* The odds the forecast gives the close of its horizon of finishing above
+     the last close: the question "up or down tomorrow" is asked of, and the
+     one a frozen call is judged on.
+
+     The checkpoint's own pUp is measured from the predicted open once a gap
+     is called (see pUpFrom), because measured from the close every
+     checkpoint printed 99% the moment a 0.9% gap was in the path. That was
+     true only if the gap call is certain, and it is not: this adds the gap
+     call's usual miss (CONFIG.forecast.gapSigmaPct, or a measured one) to the
+     band's own spread before asking the question against the close. With no
+     gap called the two numbers are the same. */
+  function closeOdds(f, gapSigmaPct) {
+    if (!f || !f.checkpoints || !f.checkpoints.length || !isFinite(f.lastClose)) return null;
+    var end = f.checkpoints[f.checkpoints.length - 1];
+    var sd = (end.high - end.low) / 2;
+    if (!(sd > 0)) return null;
+    var gapCalled = f.open && f.open.applies && f.open.hasData;
+    var gs = gapCalled ? f.lastClose * (gapSigmaPct != null ? gapSigmaPct : (C.forecast.gapSigmaPct || 0.35)) / 100 : 0;
+    var z = (end.value - f.lastClose) / Math.sqrt(sd * sd + gs * gs);
+    return core.clamp(Math.round(ncdf(z) * 100), 1, 99);
+  }
+
   function istMinutes(epochSec) {
     var d = core.fmt.ist(epochSec);
     return d.getHours() * 60 + d.getMinutes();
@@ -126,6 +148,24 @@
     var m = d.getHours() * 60 + d.getMinutes();
     if (m < OPEN_MIN || m >= CLOSE_MIN) return full;
     return Math.max(1, Math.round((CLOSE_MIN - m) / perBar));
+  }
+
+  /* Where the session view's projection starts: the last bar, until the bell.
+
+     After it, a series whose last one-minute bar is 15:29 read as a session
+     with one minute left. The index prints a 15:30 bar; most NSE stocks do
+     not, so at eight in the evening the page offered "74% by 15:30 today
+     (1 minutes)" on RELIANCE (seen live, 29 Oct 2026). Once the clock is past
+     that session's close the projection starts from the close, and the
+     session being forecast is the next one, exactly as it already was for a
+     series that ends on the 15:30 print. */
+  function sessionOrigin(lastSec, nowSec) {
+    var d = core.fmt.ist(lastSec);
+    if (isClosed(d)) return lastSec;
+    var m = d.getHours() * 60 + d.getMinutes();
+    if (m < OPEN_MIN || m >= CLOSE_MIN) return lastSec;
+    var closeSec = lastSec - d.getSeconds() - m * 60 + CLOSE_MIN * 60;
+    return nowSec >= closeSec ? closeSec : lastSec;
   }
 
   function advance(epochSec, barSec) {
@@ -271,6 +311,19 @@
 
   var CONSTITUENTS = { byAlias: [], ready: false };
 
+  /* A single stock in focus (the any-stock view). While set, the headlines
+     that name the company are the most relevant ones, macro stories come
+     next, and other companies' news barely counts - the reverse of the index
+     view, where a constituent is relevant and a single stock is not. Null on
+     the index, which leaves everything below exactly as it was. */
+  var FOCUS = null;
+  function setFocus(f) {
+    var key = f && f.symbol ? String(f.symbol) : null;
+    if ((FOCUS ? FOCUS.symbol : null) === key) return;
+    FOCUS = key && typeof f.test === 'function' ? { symbol: key, test: f.test } : null;
+    newsCacheClear();
+  }
+
   function setConstituents(payload) {
     CONSTITUENTS = { byAlias: [], ready: false };
     var members = (payload && payload.members) || [];
@@ -318,6 +371,11 @@
     var low = ' ' + text.toLowerCase().replace(/[^a-z0-9&]+/g, ' ') + ' ';
 
     if (PAPERWORK_RX.test(text)) return { w: 0.15, why: 'paperwork' };
+    if (FOCUS) {
+      if (FOCUS.test(text)) return { w: 1.0, why: 'company: ' + FOCUS.symbol, symbol: FOCUS.symbol };
+      if (MACRO_RX.test(text)) return { w: 0.6, why: 'macro' };
+      return { w: 0.15, why: 'another company' };
+    }
     if (MACRO_RX.test(text)) return { w: 1.0, why: 'macro' };
 
     if (CONSTITUENTS.ready) {
@@ -394,7 +452,8 @@
       var kq = (items[q].key || '') + '|' + (items[q].sentiment || 0);
       for (var c2 = 0; c2 < kq.length; c2++) h = ((h << 5) + h + kq.charCodeAt(c2)) | 0;
     }
-    var sig = items.length + ':' + (h >>> 0).toString(36) + ':' + (CONSTITUENTS.ready ? 1 : 0);
+    var sig = items.length + ':' + (h >>> 0).toString(36) + ':' + (CONSTITUENTS.ready ? 1 : 0) +
+              ':' + (FOCUS ? FOCUS.symbol : '');
     var hit = newsCacheGet(sig);
     if (hit) return hit;
 
@@ -695,7 +754,13 @@
       return { score: 0, note: 'no model read yet', hasData: false };
     }
     var age = (nowMs || Date.now()) - (vote.at || 0);
-    if (age > MODEL_MAX_AGE_MS) {
+    /* A vote may carry its own lifetime. The AI desk's call is a read of the
+       whole session, so it lives until its horizon ends or three hours pass;
+       a single headline-driven vote keeps the twenty minutes. Capped at six
+       hours whatever it claims, because no read of the tape survives a day. */
+    var maxAge = vote.ttlMs && isFinite(vote.ttlMs)
+      ? Math.max(60000, Math.min(6 * 3600000, vote.ttlMs)) : MODEL_MAX_AGE_MS;
+    if (age > maxAge) {
       return { score: 0, hasData: false,
                note: 'last read ' + Math.round(age / 60000) + ' min old, dropped' };
     }
@@ -707,6 +772,128 @@
       why: vote.why || '',
       note: (vote.why ? String(vote.why).slice(0, 110) : 'no reason given') +
             ' (' + (mins < 1 ? 'just now' : mins + ' min ago') + ')',
+    };
+  }
+
+  /* ==================================================== the price model
+
+     Kronos, a model trained on candles (scripts/kronos_forecast.py, twice a
+     weekday in Actions), asked for sixteen paths from the last close. Its
+     vote is where the median path ends against where price is now, measured
+     in the paths' own spread: a median one spread above is a full vote up.
+     The model states its own uncertainty, so a wide fan votes softly by
+     construction.
+
+     Three ways it must go dark rather than vote:
+       the run is for another series   its base close does not match the
+                                       close this chart has at that time
+       the run has expired             the chart has reached its last step
+       it is not the model             a stub run, used to test the script,
+                                       is labelled and refused here           */
+  var KRONOS = null;
+  function setKronos(payload) {
+    KRONOS = payload && payload.ok && payload.series && !payload.stub ? payload : null;
+    return !!KRONOS;
+  }
+
+  /* ============================================================ history
+
+     The twenty-year model (scripts/history_model.py): for each index, the
+     odds that the next session closes above the last one, from a factor
+     model trained walk-forward on the whole daily record, with its own
+     out-of-sample record beside it.
+
+     A lane only where the question is the same one: the horizon has to end
+     at the close of the session the model was asked about. Its vote is the
+     odds' distance from even, and it is cut while the model's record has not
+     beaten the better of its two baselines (always up; tomorrow repeats
+     today) with room to spare, because a learned model that has not shown an
+     edge out of sample is a confident guess. */
+  var HISTORY = null;
+  function setHistory(payload) {
+    HISTORY = payload && payload.ok && payload.models ? payload : null;
+    return !!HISTORY;
+  }
+  function historyTrust(rec) {
+    if (!rec || !rec.ci || !rec.baselines) return 0.25;
+    var bar = Math.max(rec.baselines.alwaysUp || 50, rec.baselines.repeat || 50);
+    if (rec.ci[0] > bar) return 1;
+    return rec.hit > bar ? 0.5 : 0.25;
+  }
+  function historyLane(symbol, endTime) {
+    var dark = function (why) { return { score: 0, hasData: false, note: why }; };
+    if (!HISTORY) return dark('no twenty-year model run yet');
+    var m = HISTORY.models[symbol || 'NIFTY'];
+    if (!m || !m.session || m.pUp == null) return dark('no twenty-year model for this index');
+    if (!endTime || istDayKey(endTime) !== m.session) return dark('the model answers for ' + m.session + ' only');
+    var set = m[m.infoSet] || {};
+    var rec = set.record || null;
+    var trust = historyTrust(rec);
+    var score = core.clamp((m.pUp - 0.5) / 0.1, -1, 1) * trust;
+    return {
+      score: score, hasData: true, pUp: m.pUp, trust: trust, record: rec, infoSet: m.infoSet,
+      note: Math.round(m.pUp * 100) + '% to close higher (' + (m.infoSet === 'preopen' ? 'with the overnight session' : 'as of the close') + ')' +
+            (rec ? '; out of sample right on ' + rec.hit + '% of ' + rec.n.toLocaleString('en-IN') +
+                   ' sessions, always-up ' + rec.baselines.alwaysUp + '%' : '') +
+            (trust < 1 ? '; vote cut to ' + Math.round(trust * 100) + '% until it beats that' : ''),
+    };
+  }
+
+  /* The second price model (scripts/chronos_forecast.py, 30 Oct 2026): the
+     same series and horizons in the same file shape, from a model pretrained
+     on series of every kind rather than on candles alone. The lane averages
+     the two; either one alone still votes. */
+  var CHRONOS = null;
+  function setChronos(payload) {
+    CHRONOS = payload && payload.ok && payload.series && !payload.stub ? payload : null;
+    return !!CHRONOS;
+  }
+
+  // One price model's read of where the horizon ends, or why it has none.
+  function priceModelRead(P, candles, tf, lastClose, symbol) {
+    if (!P) return { why: 'no price-model run yet' };
+    var key = (symbol || 'NIFTY') + ':' + (tf.barSec >= 86400 ? '1d' : '5m');
+    var s = P.series[key];
+    if (!s || !s.steps || !s.steps.length) return { why: 'no run for this series' };
+    var last = candles[candles.length - 1];
+    var steps = s.steps, end = steps[steps.length - 1];
+    if (last.time >= end.t) return { why: 'the last run has expired' };
+    var base = closeAtTime(candles, s.base_time);
+    if (base != null && Math.abs(base - s.base_close) / s.base_close > 0.006) return { why: 'the last run read a different series' };
+    if (base == null && Math.abs(lastClose - s.base_close) / s.base_close > 0.04) return { why: 'the last run is too far from this price' };
+    var spread = (end.p90 - end.p10) / 2;
+    if (!(spread > 0)) return { why: 'the run carried no spread' };
+    return { score: core.clamp((end.p50 - lastClose) / spread, -1, 1), end: end,
+             pct: (end.p50 - lastClose) / lastClose * 100 };
+  }
+
+  function kronosLane(candles, tfKey, lastClose, symbol) {
+    var dark = function (why) { return { score: 0, hasData: false, note: why }; };
+    if (!KRONOS && !CHRONOS) return dark('no price-model run yet');
+    var tf = C.timeframes[tfKey];
+    if (!tf || tf.barSec > 86400 || !candles || !candles.length || !lastClose) return dark('no run for this view');
+    var reads = [priceModelRead(KRONOS, candles, tf, lastClose, symbol), priceModelRead(CHRONOS, candles, tf, lastClose, symbol)];
+    var ok = reads.filter(function (r) { return r.score != null; });
+    if (!ok.length) return dark(reads[0].why !== 'no price-model run yet' ? reads[0].why : reads[1].why);
+    var when = timeLabel(ok[0].end.t, tf.barSec >= 86400 ? 86400 : 300);
+    if (ok.length === 1) {
+      var e = ok[0].end;
+      return {
+        score: ok[0].score, hasData: true, end: e, models: 1,
+        note: 'median path ends at ' + core.fmt.price(e.p50) + ' (' + core.fmt.pct(ok[0].pct) + ') by ' + when +
+              ', 80% of paths between ' + core.fmt.price(e.p10) + ' and ' + core.fmt.price(e.p90),
+      };
+    }
+    /* Two models: the vote is their average, and when they point opposite
+       ways the note says so rather than letting an average near zero read
+       as a model with no view. */
+    var a = ok[0], b = ok[1];
+    var split = a.pct * b.pct < 0 && Math.abs(a.pct) > 0.05 && Math.abs(b.pct) > 0.05;
+    return {
+      score: (a.score + b.score) / 2, hasData: true, end: a.end, models: 2,
+      note: 'two price models end ' + core.fmt.pct(a.pct) + ' and ' + core.fmt.pct(b.pct) + ' by ' + when +
+            (split ? ', pointing opposite ways' : '') + '; 80% range ' +
+            core.fmt.price(Math.min(a.end.p10, b.end.p10)) + ' to ' + core.fmt.price(Math.max(a.end.p90, b.end.p90)),
     };
   }
 
@@ -1005,7 +1192,9 @@
      by construction and cannot diverge again. */
   function bandPath(cfg) {
     var path = [], upper = [], lower = [], upper2 = [], lower2 = [], detail = [];
-    var cumVar = 0, t = cfg.lastCandle.time;
+    // build() hands an origin when the session view starts from the bell
+    // rather than from the last bar (sessionOrigin); calibrate() never does.
+    var cumVar = 0, t = cfg.originTime != null ? cfg.originTime : cfg.lastCandle.time;
     var useProfile = cfg.vp && cfg.vp.intraday;
     for (var k = 1; k <= cfg.bars; k++) {
       t = advance(t, cfg.barSec);
@@ -1223,6 +1412,8 @@
     var flow = flowLane(ctx.flows);
     var opts = optionsLane(ctx.options, lastClose, Date.now());
     var mdl = modelLane(ctx.modelVote, Date.now());
+    var krn = kronosLane(candles, tfKey, lastClose, ctx.symbol);
+    var hst = null;      // needs the horizon's end time; filled in once the path exists
 
     /* ------------------------------------------------------ opening gap
        Only meaningful while India is shut. Intraday there is no gap left to
@@ -1234,6 +1425,14 @@
     var nOvernight = gapApplies ? newsLane(items, { halfLifeSec: 43200 }) : null;
     var open = openLane(ctx.global, nOvernight, lastClose,
                         (KT.learn && KT.learn.openBetas && KT.learn.openBetas()) || null);
+    /* A stock does not gap by NIFTY's amount. The cues are the market's, so
+       the index model's gap is scaled by the stock's beta (stocks.js), and
+       open.price is restated so every reader of it sees the scaled number. */
+    if (open.hasData && ctx.gapScale != null && isFinite(ctx.gapScale) && ctx.gapScale !== 1) {
+      open.gapPct = r3(core.clamp(open.gapPct * ctx.gapScale, -MAX_GAP_PCT * 2, MAX_GAP_PCT * 2));
+      open.price = r2(lastClose * (1 + open.gapPct / 100));
+      open.scaledBy = ctx.gapScale;
+    }
     var gapPct = gapApplies && open.hasData ? open.gapPct : 0;
     // Shared by the band, the checkpoints and the narrative, for the reason
     // bandPath() itself exists: one number, computed once.
@@ -1245,6 +1444,17 @@
        and from CONFIG when it does not. One line, one source, and the object
        carries `fitted` so the page can say which it is showing rather than
        leaving a reader to assume the numbers were measured. */
+    /* How far ahead, and from when. */
+    var bars = Math.max(6, Math.round(tf.visibleBars * tf.forecastRatio));
+    if (tf.maxForecastBars) bars = Math.min(bars, tf.maxForecastBars);
+    // The session view runs to the bell, not to a bar count. Applied after the
+    // cap above on purpose: maxForecastBars exists to stop a long view
+    // projecting years, and a horizon that ends at 15:30 today is not the
+    // thing it is guarding against.
+    var nowSec = ctx.nowSec || Math.floor(Date.now() / 1000);
+    var originTime = tf.sessionForecast ? sessionOrigin(lastCandle.time, nowSec) : lastCandle.time;
+    if (tf.sessionForecast) bars = barsToSessionClose(originTime, tf.barSec);
+
     var W = (KT.learn && KT.learn.weights && KT.learn.weights()) || C.forecast.weights;
     var lanes = [
       { id: 'news', label: 'News flow', score: nAll.score, weight: W.news, hasData: nAll.hasData,
@@ -1258,7 +1468,17 @@
       { id: 'flow', label: 'Flows and breadth', score: flow.score, weight: W.flow, note: flow.note, hasData: flow.hasData },
       { id: 'options', label: 'Options positioning', score: opts.score, weight: W.options, note: opts.note, hasData: opts.hasData },
       { id: 'model', label: 'Model read', score: mdl.score, weight: W.model, note: mdl.note, hasData: mdl.hasData },
+      { id: 'kronos', label: krn.models === 2 ? 'Price models' : 'Price model', score: krn.score, weight: W.kronos || 0, note: krn.note, hasData: krn.hasData && !!W.kronos },
     ];
+    /* The twenty-year model's question is the next session's close, so its
+       lane needs the horizon's end before the path is drawn: the path's
+       clock is advance() from the origin, which is cheap to walk here. */
+    if (W.history) {
+      var endT = originTime;
+      for (var hk = 0; hk < bars; hk++) endT = advance(endT, tf.barSec);
+      hst = historyLane(ctx.symbol, endT);
+      lanes.push({ id: 'history', label: '20-year model', score: hst.score, weight: W.history, note: hst.note, hasData: hst.hasData });
+    }
 
     /* Lanes with no data must not drag the bias toward zero. Renormalise over
        the lanes that actually reported. hasData means the lane received input,
@@ -1288,13 +1508,8 @@
     var persistence = core.clamp(1 + ac1 * 1.6, 0.45, 1.5);
 
 
-    var bars = Math.max(6, Math.round(tf.visibleBars * tf.forecastRatio));
-    if (tf.maxForecastBars) bars = Math.min(bars, tf.maxForecastBars);
-    // The session view runs to the bell, not to a bar count. Applied after the
-    // cap above on purpose: maxForecastBars exists to stop a long view
-    // projecting years, and a horizon that ends at 15:30 today is not the
-    // thing it is guarding against.
-    if (tf.sessionForecast) bars = barsToSessionClose(lastCandle.time, tf.barSec);
+    // bars and originTime are worked out above the lanes (the 20-year
+    // model's lane needs the horizon's end).
 
     /* ---------------------------------------------------- volatility -----
        The intraday profile, the fitted model, the VIX blend, the forward
@@ -1320,7 +1535,9 @@
        session rather than decaying out of it in the first hour. */
     var evenPart = (seasonal.score * W.seasonal + mom.score * W.momentum +
                     lvl.score * W.levels + flow.score * W.flow +
-                    opts.score * W.options + mdl.score * W.model) / wsum;
+                    opts.score * W.options + mdl.score * W.model +
+                    (krn.hasData && W.kronos ? krn.score * W.kronos : 0) +
+                    (hst && hst.hasData ? hst.score * W.history : 0)) / wsum;
     var structPart = (struct.score * W.structure) / wsum;
 
     var horizonSigma = sigmaBlend * Math.sqrt(bars);
@@ -1346,7 +1563,7 @@
     var newsHalfBars = Math.max(2, bars * 0.35);
 
     var drawn = bandPath({
-      lastCandle: lastCandle, lastClose: lastClose, bars: bars, barSec: tf.barSec,
+      lastCandle: lastCandle, originTime: originTime, lastClose: lastClose, bars: bars, barSec: tf.barSec,
       sigmaBlend: sigmaBlend, varPath: varPath, vp: vp, z68: z68, z95: z95,
       lv: lv, capPct: capPct, gapPct: gapPct,
       drift: function (k, frac, t) {
@@ -1361,7 +1578,7 @@
         // trusted flat.
         var shapeAt = 0;
         if (shape) {
-          var sv = shape.at(t), s0 = shape.at(lastCandle.time);
+          var sv = shape.at(t), s0 = shape.at(originTime);
           if (sv !== null && s0 !== null) {
             shapeAt = (sv - s0) * 0.35 * core.clamp(shape.sessions / 15, 0.15, 1);
           }
@@ -1397,7 +1614,7 @@
        its own version of this is how build() and calibrate() drifted apart. */
     var GROUP_OF = { news: 'news', global: 'news', structure: 'struct',
                      seasonal: 'even', momentum: 'even', levels: 'even', flow: 'even',
-                     options: 'even', model: 'even' };
+                     options: 'even', model: 'even', kronos: 'even', history: 'even' };
     var attribution = drawn.detail.map(function (d) {
       var curve = { news: d.parts.newsDecay, even: d.parts.evenRamp,
                     struct: d.parts.structRamp, shape: 1 };
@@ -1487,7 +1704,7 @@
        Same machinery, same volatility, same level tempering. Only the drift
        source changes, so the three are directly comparable. */
     function component(parts) {
-      var out = [], tc = lastCandle.time, cv = 0;
+      var out = [], tc = originTime, cv = 0;
       for (var j = 1; j <= bars; j++) {
         tc = advance(tc, tf.barSec);
         var fr = j / bars;
@@ -1746,7 +1963,7 @@
       return bars < 45 ? bars + ' trading days' : Math.round(bars / 21) + ' months';
     }
     var mins = bars * tf.barSec / 60;
-    if (mins < 75) return Math.round(mins) + ' minutes';
+    if (mins < 75) return Math.round(mins) + (Math.round(mins) === 1 ? ' minute' : ' minutes');
     var sessionMins = CLOSE_MIN - OPEN_MIN;
     if (mins <= sessionMins) return (Math.round(mins / 30) / 2) + ' hours';
     return Math.round(mins / sessionMins * 10) / 10 + ' sessions';
@@ -2125,7 +2342,7 @@
     globalLane: globalLane, levelsLane: levelsLane, flowLane: flowLane,
     optionsLane: optionsLane, openLane: openLane, openBetaDefaults: OPEN_BETA,
     modelLane: modelLane, MODEL_MAX_AGE_MS: MODEL_MAX_AGE_MS,
-    barsToSessionClose: barsToSessionClose,
+    barsToSessionClose: barsToSessionClose, sessionOrigin: sessionOrigin, closeOdds: closeOdds,
     volProfile: volProfile, dayShape: dayShape, ncdf: ncdf,
     bandPath: bandPath, volContext: volContext, advance: advance,
     /* trail.js replays the same drift the band is drawn with, so it needs
@@ -2135,5 +2352,8 @@
     GLOBAL_MAP: GLOBAL_MAP,
     setHolidays: setHolidays, isClosed: isClosed,
     setConstituents: setConstituents, relevanceOf: relevanceOf, clusterStories: clusterStories,
+    setFocus: setFocus,
+    setKronos: setKronos, setChronos: setChronos, kronosLane: kronosLane,
+    setHistory: setHistory, historyLane: historyLane, historyTrust: historyTrust,
   };
 })(window.KT);
