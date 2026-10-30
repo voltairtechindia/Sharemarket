@@ -70,11 +70,13 @@ jobs:
           python-version: "3.13"
           cache: pip
 
-      # Pinned to the versions the model was tested with (30 Oct 2026).
+      # Pinned to the versions the model was tested with (30 Oct 2026), all of
+      # them: LightGBM's classifier needs scikit-learn, which the test machine
+      # happened to have and the runner does not (the second run failed on it).
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install "pandas==3.0.5" "numpy==2.5.3" "lightgbm==4.7.0"
+          pip install "pandas==3.0.5" "numpy==2.5.3" "lightgbm==4.7.0" "scikit-learn==1.9.1"
 
       - uses: actions/setup-node@v4
         with:
