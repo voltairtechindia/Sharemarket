@@ -926,7 +926,9 @@
     var want = C.tvGlobal || [];
     var tickers = [];
     want.forEach(function (w) { w.tv.forEach(function (t) { if (tickers.indexOf(t) === -1) tickers.push(t); }); });
-    var cols = ['close', 'change', 'update_mode', 'description', 'currency'];
+    // `change|60` is the move of the last hour's bar (empty for futures),
+    // which is what lets a reason point say what Asia did in that hour.
+    var cols = ['close', 'change', 'update_mode', 'description', 'currency', 'change|60'];
     return tvScan('global', { columns: cols, symbols: { tickers: tickers } }).then(function (j) {
       var by = {};
       rowsOf(j, cols).forEach(function (r) { by[r.tv] = r; });
@@ -940,6 +942,7 @@
             prevClose: r2(r.close / (1 + r.change / 100)),
             currency: r.currency || null, via: 'tradingview', tv: w.tv[i],
             label: w.label, delay: delayOf(r.update_mode),
+            hourPct: r['change|60'] != null && isFinite(r['change|60']) ? r3(r['change|60']) : null,
           };
           break;
         }

@@ -35,6 +35,10 @@
     levels: null,           // clustered S/R, pivots, fib, profile, gaps
     structures: [],         // triangles, flags, double tops currently on screen
     structureStats: {},     // what each of those patterns did historically here
+    daily: {},              // two years of daily bars a symbol (studies, playbook), refreshed half-hourly
+    worldTape: [],          // the world markets every few minutes while the page is open (reason points)
+    drivers: null,          // why it is moving (drivers.js explain)
+    setup: null,            // the setup check (drivers.js setup)
     calibration: null,      // how well the band has actually held up
     calibratedAt: 0,
     calibratedKey: null,    // symbol:timeframe the calibration above belongs to
@@ -373,12 +377,13 @@
       if (saved) {
         Object.keys(saved).forEach(function (k) { chart.setOverlay(k, saved[k]); });
         ovg.querySelectorAll('.ov-btn').forEach(function (b) {
-          b.classList.toggle('is-on', !!saved[b.dataset.ov]);
+          if (b.dataset.ov) b.classList.toggle('is-on', !!saved[b.dataset.ov]);
         });
       }
       ovg.addEventListener('click', function (e) {
         var btn = e.target.closest ? e.target.closest('.ov-btn') : null;
-        if (!btn) return;
+        // The Studies menu button opens its own panel (panels.js).
+        if (!btn || !btn.dataset.ov) return;
         var on = !btn.classList.contains('is-on');
         btn.classList.toggle('is-on', on);
         chart.setOverlay(btn.dataset.ov, on);
@@ -591,6 +596,7 @@
     chart.showEmpty('Loading ' + meta.label + '…', '');
     if (chart.isReplaying()) closeReplay();
     S.trailReplay = null; S.trailKey = null;
+    setTimeout(function () { refreshDaily(sym); }, 2500);
     /* A stock's candles come through the shared proxy and can fail. Say so
        and try once more a minute later, rather than leaving "Loading" up. */
     refreshAll().catch(function (e) {
@@ -785,7 +791,7 @@
       modelVote: S.modelVote || null,
       social: crowdFor(S.symbol),
     });
-    S.reasons = engine.buildReasons(S.candles, news, S.timeframe);
+    S.reasons = engine.buildReasons(S.candles, news, S.timeframe, S.worldTape);
 
     /* The frozen call, and how it is doing. Written before the chart draws,
        because the chart reads `forecast.locked` and a lock created after the
@@ -828,6 +834,8 @@
       } catch (e) { /* a full localStorage must not take the page down */ }
     }
 
+    computeDrivers();
+    if (chart.setStudyData) chart.setStudyData({ options: S.options });
     chart.setStructures(S.structures);
     chart.setLevels(S.levels);
     chart.setData(S.candles, S.forecast, S.reasons, S.timeframe, S.symbol);
@@ -1126,11 +1134,104 @@
       if (!g) return false;
       S.globalLive = g;
       applyGlobal();
+      recordWorld(g);
       renderCues();
       renderGift();
       recompute();
       return true;
     }).catch(function () { return false; });
+  }
+
+  /* The world markets, kept every five minutes for the session while the
+     page is open (and across a reload, for the day), so a reason point on
+     the chart can say what Asia, Europe or crude did in the same hour as
+     NIFTY's move instead of only what the headlines said. */
+  var TAPE_STEP = 300, TAPE_KEEP = 9 * 3600;
+  function recordWorld(g) {
+    if (!g || !g.items) return;
+    var now = Math.floor(Date.now() / 1000), slot = Math.floor(now / TAPE_STEP) * TAPE_STEP;
+    if (!S.worldTape.length) {
+      var saved = core.store.get('worldTape', null);
+      if (saved && saved.length) S.worldTape = saved.filter(function (x) { return x && now - x.t <= TAPE_KEEP; });
+    }
+    var last = S.worldTape[S.worldTape.length - 1];
+    var row = { t: slot, v: {} };
+    Object.keys(g.items).forEach(function (k) { var it = g.items[k]; if (it && isFinite(it.price)) row.v[k] = it.price; });
+    if (last && last.t === slot) S.worldTape[S.worldTape.length - 1] = row; else S.worldTape.push(row);
+    S.worldTape = S.worldTape.filter(function (x) { return now - x.t <= TAPE_KEEP; });
+    try { core.store.set('worldTape', S.worldTape, 86400000); } catch (e) { /* a full store costs only the reload */ }
+  }
+
+  /* Two years of daily bars for the symbol on screen: the studies' rules
+     need daily history (EMAs, RSI, yesterday's range), and until the
+     workflow's twenty-year playbook covers a symbol, they are measured on
+     these (studies.measureRules). One request, refreshed half-hourly. */
+  var DAILY_MS = 30 * 60000;
+  function refreshDaily(sym) {
+    sym = sym || S.symbol;
+    var have = S.daily[sym];
+    if (have && (have.pending || Date.now() - have.at < DAILY_MS)) return Promise.resolve(false);
+    S.daily[sym] = { at: have ? have.at : 0, candles: have ? have.candles : null, pending: true, local: have ? have.local : null };
+    return data.getCandles(sym, '1Y').then(function (res) {
+      var c = res && res.candles && res.candles.length ? res.candles : null;
+      S.daily[sym] = { at: Date.now(), candles: c, pending: false,
+                       local: c && KT.studies ? KT.studies.measureRules(c, null) : null };
+      if (sym === S.symbol && S.booted) recompute();
+      return !!c;
+    }).catch(function () { S.daily[sym] = { at: Date.now(), candles: null, pending: false, local: null }; return false; });
+  }
+
+  /* The playbook for a symbol: the workflow's twenty years where it has
+     them, else what this browser measured on two years. */
+  function playbookFor(sym) {
+    var st = S.study && S.study.symbols && S.study.symbols[sym] && S.study.symbols[sym].playbook;
+    if (st) return { from: st.from, to: st.to, days: st.days, cprP25: st.cprP25, cprP75: st.cprP75, base: st.base,
+                     gapFollow: st.gapFollow, rules: st.rules, source: 'workflow' };
+    var d = S.daily[sym];
+    if (d && d.local) { var o = d.local; o.source = 'browser'; return o; }
+    return null;
+  }
+
+  /* Why it is moving and the setup check (drivers.js), after the forecast. */
+  function computeDrivers() {
+    if (!KT.drivers || !S.forecast) { S.drivers = null; S.setup = null; return; }
+    var ms = core.marketState ? core.marketState() : { state: 'live' };
+    var q = S.quote || S.quotes[S.symbol] || null;
+    var price = q && isFinite(q.price) ? q.price : S.forecast.lastClose;
+    var prevClose = q && isFinite(q.prevClose) && q.prevClose > 0 ? q.prevClose
+      : q && isFinite(q.change) ? price - q.change : null;
+    // Before the open the question is the gap; once NSE has traded, the day.
+    var traded = ms.state === 'live' || ms.state === 'closed' && ms.ist && ms.ist.getHours() >= 9 && !ms.holiday;
+    var ctx = {
+      symbol: S.symbol, global: S.global, historyModel: S.historyModel, prevClose: prevClose, live: traded,
+      indexLive: S.indexLive, flows: S.flows, internals: S.internals, vix: S.vix, forecast: S.forecast,
+      move: prevClose ? { pct: (price - prevClose) / prevClose * 100, pts: price - prevClose, price: price } : null,
+    };
+    try { S.drivers = KT.drivers.explain(ctx); } catch (e) { S.drivers = null; console.warn('drivers failed:', e); }
+    var pb = playbookFor(S.symbol);
+    S.playbook = pb;
+    var daily = S.daily[S.symbol] && S.daily[S.symbol].candles;
+    var sess = KT.studies ? KT.studies.sessionsOf(S.candles) : [];
+    var today = sess.length ? sess[sess.length - 1] : null;
+    var prevSession = sess.length ? (ms.state === 'live' ? sess[sess.length - 2] : sess[sess.length - 1]) : null;
+    S.prevSession = prevSession || null;
+    var dailyRows = daily && KT.studies ? KT.studies.sessionsOf(daily).filter(function (r) { return !today || r.key < today.key; }) : [];
+    try { S.activeRules = KT.studies && today && dailyRows.length ? KT.studies.activeRules(dailyRows, today, pb, S.vix) : []; } catch (e) { S.activeRules = []; }
+    var events = [];
+    try {
+      var nowSec = Date.now() / 1000;
+      (S.events && S.events.events || []).forEach(function (e) {
+        if (e && e.impact === 'high' && e.ts && e.ts > nowSec - 3600 && e.ts < nowSec + 20 * 3600) {
+          events.push((e.country ? e.country + ' ' : '') + (e.title || 'a high-impact release') + ' at ' +
+                      (e.ist ? String(e.ist).slice(11, 16) + ' IST' : 'a scheduled time'));
+        }
+      });
+    } catch (e) { events = []; }
+    try {
+      S.setup = KT.drivers.setup({ forecast: S.forecast, drivers: S.drivers, active: S.activeRules, levels: S.levels,
+                                   options: S.options, vix: S.vix, internals: S.internals, playbook: pb,
+                                   prevSession: prevSession, events: events.slice(0, 3), symbol: S.symbol });
+    } catch (e) { S.setup = null; console.warn('setup check failed:', e); }
   }
 
   /* GIFT Nifty on the board. Its distance from NIFTY is printed in the
@@ -1646,6 +1747,8 @@
     S.timers.fiiDii = setInterval(refreshFiiDiiLive, 1200000);
     setTimeout(refreshCrowd, 9000);
     S.timers.crowd = setInterval(refreshCrowd, 60000);
+    setTimeout(function () { refreshDaily(); }, 5000);
+    S.timers.daily = setInterval(function () { refreshDaily(); }, 120000);
     S.timers.partOi = setInterval(refreshPartOi, 10800000);
     // Holdings outside the workflow universe are priced on their own slower
     // timer, because each one costs a trip through the shared public proxy.
@@ -4210,6 +4313,7 @@
     onLoadError: function (fn) { if (typeof fn === 'function') loadErrorHooks.push(fn); },
     onTrail: function (fn) { if (typeof fn === 'function') trailHooks.push(fn); },
     isStockView: isStockView,
+    playbookFor: playbookFor, refreshDaily: refreshDaily,
     onReasonClick: function (r) { if (r && r.url) window.open(r.url, '_blank', 'noopener'); },
   };
 

@@ -11,7 +11,9 @@
 
    It also writes the base rates a reader needs to judge any of those numbers:
    how often the index simply rose the next day, overall and in each kind of
-   tape (trending or range-bound, calm or stressed VIX).
+   tape (trending or range-bound, calm or stressed VIX), and (30 Oct 2026) the
+   playbook: how often each rule of thumb traders use came true (open above
+   the CPR, a gap fills, RSI over 70, NR7...), from studies.js.
 
    Writes data/study.json. Never throws: a failure is written into the file.
    Run: node scripts/history_study.js
@@ -121,7 +123,10 @@ function main() {
   try {
     const hist = readJSON('data/history_daily.json', null);
     if (!hist || !hist.series) throw new Error('data/history_daily.json missing: run scripts/fetch_history.py');
-    const KT = load(['config', 'core', 'indicators', 'levels', 'candles', 'patterns', 'structures'], { quiet: true });
+    const KT = load(['config', 'core', 'indicators', 'levels', 'candles', 'patterns', 'structures', 'studies'], { quiet: true });
+    const vix = hist.series.INDIAVIX;
+    const vixByDay = {};
+    if (vix && vix.d) vix.d.forEach((d, i) => { vixByDay[d] = vix.c[i]; });
     for (const t of TARGETS) {
       const s = hist.series[t];
       if (!s || !s.o || !s.h) { payload.errors.push({ symbol: t, error: 'no OHLC history' }); continue; }
@@ -133,6 +138,9 @@ function main() {
           patterns: patternTable(KT, c),
           structures: structureTable(KT, c),
           base: baseRates(KT, c, hist.series.INDIAVIX),
+          // The traders' rules of thumb (studies.js RULES), each with how
+          // often it came true on this record and the rate it has to beat.
+          playbook: KT.studies.measureRules(c, vixByDay),
           seconds: Math.round((Date.now() - t1) / 100) / 10,
         };
         const r = payload.symbols[t];

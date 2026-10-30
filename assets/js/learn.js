@@ -330,47 +330,91 @@
      `learned`), and they are divided back out here, so a fit is always
      measured against the model's own line, never against its last
      correction: the correction cannot feed on itself. */
-  function closeFitFrom(symbol) {
-    var none = function (n) { return { gain: 1, bias: 0, n: n || 0 }; };
-    if (!KT.ledger || !KT.ledger.locks) return none(0);
-    var rank = function (x) { return (x.timeframe === '1S' ? 2 : 0) + (x.stage === 'open' ? 1 : 0); };
+  /* The judged session calls the gap is learned from, one a session: the
+     session view's call where there is one, else the daily view's (5-minute
+     bars, the same session), the pre-open stage over the day before. A
+     browser that has been open for weeks holds mostly daily-view calls from
+     before the session call existed (one owner's: 15 judged sessions, none of
+     them on the session view, 30 Oct 2026), and they are the same claim
+     about the same session. */
+  function closeSample(symbol) {
+    if (!KT.ledger || !KT.ledger.locks) return [];
+    var tfRank = { '1S': 2, '1D': 1 };
+    var rank = function (x) { return (tfRank[x.timeframe] || 0) * 2 + (x.stage === 'open' ? 1 : 0); };
     var by = {};
     KT.ledger.locks(symbol, 400).forEach(function (r) {
-      if (!r || r.timeframe !== '1S') return;
+      if (!r || !tfRank[r.timeframe]) return;
       var cur = by[r.session];
       if (!cur || rank(r) > rank(cur)) by[r.session] = r;
     });
-    var xs = [], ys = [];
+    var out = [];
     Object.keys(by).sort().reverse().slice(0, 60).forEach(function (k) {
       var r = by[k], p = r.postmortem;
       if (!p || !p.said || !p.did || !(r.anchorPrice > 0)) return;
       var opened = num(p.said.open) != null ? p.said.open : num(r.openPrice);
       if (opened == null || num(p.said.target) == null || num(p.did.open) == null || num(p.did.close) == null) return;
-      var said = (p.said.target - opened) / r.anchorPrice * 100;
-      var did = (p.did.close - p.did.open) / r.anchorPrice * 100;
+      var a = r.anchorPrice;
       var L = r.learned || {};
       var g = num(L.g) != null && L.g > 0 ? L.g : 1, b = num(L.b) != null ? L.b : 0;
-      xs.push((said - b) / g); ys.push(did);
+      var said = (p.said.target - opened) / a * 100;
+      out.push({
+        session: r.session,
+        x: (said - b) / g,                          // the model's own intraday call, correction divided out
+        y: (p.did.close - p.did.open) / a * 100,    // what the session did from its open
+        gapSaid: (opened - a) / a * 100,
+        gapDid: (p.did.open - a) / a * 100,
+        closeDid: (p.did.close - a) / a * 100,
+      });
     });
-    var n = xs.length;
-    if (n < MIN_CLOSE_SAMPLE) return none(n);
+    return out;
+  }
+
+  // The fit itself, on any set of sample rows (closeFitFrom, closeFitCheck).
+  function fitClose(rows) {
+    var n = rows.length;
+    if (n < MIN_CLOSE_SAMPLE) return { gain: 1, bias: 0, n: n };
     var sxy = 0, sxx = 0;
-    for (var i = 0; i < n; i++) { sxy += xs[i] * ys[i]; sxx += xs[i] * xs[i]; }
-    if (!(sxx > 0)) return none(n);
+    rows.forEach(function (r) { sxy += r.x * r.y; sxx += r.x * r.x; });
+    if (!(sxx > 0)) return { gain: 1, bias: 0, n: n };
     var raw = sxy / sxx;
     var w = n / (n + MIN_CLOSE_SAMPLE);
     var gain = core.clamp(1 + (raw - 1) * w, MIN_GAIN, MAX_GAIN);
-    var res = ys.map(function (y, j) { return y - gain * xs[j]; });
-    var mean = res.reduce(function (s, x) { return s + x; }, 0) / n;
-    var sd = Math.sqrt(res.reduce(function (s, x) { return s + (x - mean) * (x - mean); }, 0) / Math.max(1, n - 1));
-    var t = sd > 0 ? mean / (sd / Math.sqrt(n)) : 0;
+    var res = rows.map(function (r) { return r.y - gain * r.x; });
+    var mean = res.reduce(function (t, v) { return t + v; }, 0) / n;
+    var sd = Math.sqrt(res.reduce(function (t, v) { return t + (v - mean) * (v - mean); }, 0) / Math.max(1, n - 1));
+    var tStat = sd > 0 ? mean / (sd / Math.sqrt(n)) : 0;
     var lean = 0;
-    if (n >= MIN_BIAS_SAMPLE && Math.abs(t) >= 2) {
+    if (n >= MIN_BIAS_SAMPLE && Math.abs(tStat) >= 2) {
       lean = core.clamp(mean * n / (n + MIN_BIAS_SAMPLE), -MAX_BIAS_PCT, MAX_BIAS_PCT);
     }
     return { gain: Math.round(gain * 1000) / 1000, bias: Math.round(lean * 1000) / 1000, n: n,
              raw: Math.round(raw * 1000) / 1000, lean: Math.round(mean * 1000) / 1000,
-             t: Math.round(t * 100) / 100 };
+             t: Math.round(tStat * 100) / 100 };
+  }
+
+  function closeFitFrom(symbol) { return fitClose(closeSample(symbol)); }
+
+  /* Would the learned size and lean have helped, on the calls it learned
+     from? Each judged session is left out in turn, the fit is made on the
+     rest, and that session's close is called again with it: the average
+     miss of the close as called, with the learned correction, and with no
+     intraday move at all (the open alone). An honest test needs the session
+     it is scored on kept out of the fit; on one owner's 15 sessions the
+     correction took the average miss from 0.96% to 0.92% this way. */
+  function closeFitCheck(symbol) {
+    var rows = closeSample(symbol), n = rows.length;
+    if (n < MIN_CLOSE_SAMPLE + 1) return { n: n };
+    var base = 0, learned = 0, flat = 0, right = 0, calls = 0;
+    rows.forEach(function (r, i) {
+      var fit = fitClose(rows.filter(function (q, j) { return j !== i; }));
+      base += Math.abs(r.closeDid - (r.gapSaid + r.x));
+      learned += Math.abs(r.closeDid - (r.gapSaid + fit.gain * r.x + fit.bias));
+      flat += Math.abs(r.closeDid - r.gapSaid);
+      if (Math.abs(r.x) >= 0.05 && Math.abs(r.y) >= 0.05) { calls++; if ((r.x > 0) === (r.y > 0)) right++; }
+    });
+    var r3 = function (v) { return Math.round(v / n * 1000) / 1000; };
+    return { n: n, base: r3(base), learned: r3(learned), flat: r3(flat), intradayRight: right, intradayCalls: calls,
+             gapMiss: r3(rows.reduce(function (t, r) { return t + Math.abs(r.gapDid - r.gapSaid); }, 0)) };
   }
   function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
 
@@ -494,7 +538,7 @@
     weights: weights, openBetas: openBetas, closeTerms: closeTerms, update: update,
     propose: propose, accept: accept, reject: reject, proposal: proposal,
     history: history, summary: summary, reset: reset,
-    openGainFrom: openGainFrom, closeFitFrom: closeFitFrom, adoptShared: adoptShared,
+    openGainFrom: openGainFrom, closeFitFrom: closeFitFrom, closeFitCheck: closeFitCheck, adoptShared: adoptShared,
     MIN_SAMPLE: MIN_SAMPLE, MAX_STEP: MAX_STEP, FLOOR: FLOOR,
     MIN_OPEN_SAMPLE: MIN_OPEN_SAMPLE, MIN_GAIN: MIN_GAIN, MAX_GAIN: MAX_GAIN,
     MIN_CLOSE_SAMPLE: MIN_CLOSE_SAMPLE, MIN_BIAS_SAMPLE: MIN_BIAS_SAMPLE, MAX_BIAS_PCT: MAX_BIAS_PCT,

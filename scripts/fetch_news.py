@@ -30,6 +30,9 @@ TTL_HOURS = 72           # anything older is dropped
 MAX_SUMMARY = 220        # characters kept per item, no article bodies
 WORKERS = 24
 FEED_TIMEOUT = 12
+# GDELT's search takes longer than a feed: the 12 seconds above timed out on
+# every scheduled run of 30 Oct 2026. One request a run, so waiting is cheap.
+LANE_TIMEOUT = {"gdelt": 35}
 
 LEX = json.loads((ROOT / "config" / "lexicon.json").read_text(encoding="utf-8"))
 BULL, BEAR = LEX["bullish"], LEX["bearish"]
@@ -150,6 +153,9 @@ def pick_feeds(feeds, cycle, wide=False):
 # Google News answers a burst of a few hundred searches from one address with
 # "unusual traffic". Six at a time spreads a wide sweep over a minute or so.
 GNEWS_GATE = threading.Semaphore(6)
+# t.me stops answering one address that asks for a few dozen channel pages at
+# once (seen 30 Oct 2026), so the Telegram channels go two at a time.
+TG_GATE = threading.Semaphore(2)
 # A wide sweep stops starting new requests after this long, so a slow source
 # can never push the run past the step's own timeout and lose every headline
 # it had already fetched.
@@ -160,6 +166,9 @@ DEADLINE = [None]
 def fetch_one(feed, session):
     if "news.google.com" in feed.get("url", ""):
         with GNEWS_GATE:
+            return _fetch_one(feed, session)
+    if feed.get("lane") == "telegram":
+        with TG_GATE:
             return _fetch_one(feed, session)
     return _fetch_one(feed, session)
 
@@ -227,10 +236,18 @@ def _fetch_one(feed, session):
     if lane in ("telegram", "gdelt"):
         try:
             r = session.get(url, headers={"User-Agent": UA, "Accept": "text/html,application/json,*/*"},
-                            timeout=FEED_TIMEOUT)
+                            timeout=LANE_TIMEOUT.get(lane, FEED_TIMEOUT))
             if r.status_code != 200:
                 return feed, [], f"HTTP {r.status_code}"
-            entries = parse_telegram(r.text) if lane == "telegram" else parse_gdelt(r.json())
+            if lane == "gdelt":
+                # Over its limit GDELT answers 200 with a sentence, not JSON.
+                try:
+                    payload = r.json()
+                except ValueError:
+                    return feed, [], "rate limited" if "limit requests" in r.text.lower() else "not JSON"
+                entries = parse_gdelt(payload)
+            else:
+                entries = parse_telegram(r.text)
             return (feed, entries, "") if entries else (feed, [], "no entries")
         except Exception as exc:  # noqa: BLE001
             return feed, [], type(exc).__name__

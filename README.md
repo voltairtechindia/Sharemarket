@@ -409,6 +409,22 @@ its own correction. Every call and its judgement is also appended to the
 gap every fifteen minutes, why it missed) long after the page's own file has
 trimmed it.
 
+### Why it is moving, and is the setup a clean one
+
+The right column now opens with two cards. **Why it is moving** splits the
+index's move into what is pushing it down and what is holding it up: every
+market abroad in points, by how much its moves have carried into NIFTY over
+twenty years, India's own heavyweights by weight, and the flows, breadth,
+VIX, options, news and crowd beside them. **Setup check** lines up every
+input: where they agree and where they fight, the room to the next wall, and
+for option sellers how quiet the day is likely to be. It is a reading of the
+inputs, never a recommendation.
+
+The **Studies** menu on the chart draws the CPR, pivots, Camarilla,
+yesterday's range, the opening range, Fibonacci, the option walls, round
+numbers, Ichimoku and RSI, each with its rule of thumb and how often that rule
+actually came true on the index's own record.
+
 ### Where it goes, by the clock
 
 The panel does not give one number for the end of the horizon. It gives a path

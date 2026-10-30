@@ -6,8 +6,9 @@ API, no paid feed. Live: https://voltairtechindia.github.io/Sharemarket/
 
 This file is the short operational layer. Long-form history and every
 measured gotcha: `docs/engineering-notes.md`. The call, its verdict, the
-record and the learning: `docs/calls.md`. The AI desk, lessons and stock
-search: `docs/v2.md`. Product and forecast rationale: `README.md`.
+record, the learning, the studies, the setup check and why it is moving:
+`docs/calls.md`. The AI desk, lessons and stock search: `docs/v2.md`. Product
+and forecast rationale: `README.md`. Repos worth wiring in: `docs/repos.md`.
 
 ## Pages
 
@@ -27,7 +28,7 @@ If nothing reads it, wire it or do not write it.
 ## Verify like this
 
 1. `node scripts/selftest.js`: loads the real modules into a vm whose global
-   is `window`; 498 checks (30 Oct 2026), each a real bug once, including
+   is `window`; 520 checks (30 Oct 2026), each a real bug once, including
    `scripts/selftest_calls.js` (the call, the verdict, the record, and the
    workflow's `daily_call.js` replayed over an evening, a morning and an
    evening on a scratch copy of the data). It also checks that every id
@@ -49,11 +50,11 @@ from raw.githubusercontent first.
 ## Load order is a dependency order
 
 `config` → `local-config` → `core` → `indicators` → `levels` → `candles` →
-`patterns` → `structures` → `journal` → `orders` → `portfolio` → `data` →
-`analogs` → `vol` → `forecast` → `postmortem` → `ledger` → `learn` → `trail` →
-`evidence` → `engine` → `chart` → `streetcalls` → `stocks` → `lessons` →
-`desk` → `app` → `panels`. Reordering breaks the page silently. The workflow
-scripts load the same files in Node through `scripts/ktvm.js`.
+`patterns` → `structures` → `studies` → `journal` → `orders` → `portfolio` →
+`data` → `analogs` → `vol` → `forecast` → `postmortem` → `ledger` → `learn` →
+`trail` → `evidence` → `engine` → `chart` → `streetcalls` → `stocks` →
+`lessons` → `desk` → `drivers` → `app` → `panels`. Reordering breaks the page
+silently. The workflow scripts load the same files in Node (`scripts/ktvm.js`).
 
 ## Invariants (details in the notes)
 
@@ -89,8 +90,8 @@ Alive from the Pages origin (29-30 Oct 2026): TradingView screener POST
 `earnings_release_next_date`, `industry`, `open`; OpenRouter models list;
 through `r.jina.ai`, Yahoo chart (`SYM.NS`, 1m, 5d), NSE, Tickertape's mood
 index and StockTwits (`NIFTY50.NSE`, `SYMBOL.NSE`; none for SENSEX). Yahoo
-direct is CORS-blocked. Reddit answers 403 to every proxy; `fetch_social.py`
-tries it keyless from Actions and drops it when refused.
+direct is CORS-blocked. Reddit answers 403 to every proxy; from Actions
+`fetch_social.py` asks for two combined feeds, keyless, and drops it if refused.
 
 ## Workflows
 
@@ -108,7 +109,7 @@ tries it keyless from Actions and drops it when refused.
   appends every call and judgement to the `training-log` branch. Where the
   calls go wrong: `git fetch origin training-log`, read its `summary.md`.
 - Both share `live-data`'s concurrency group and publish through
-  `publish_live.sh`. Added 30 Oct 2026; their first runs are the check.
+  `publish_live.sh`. Both ran green on their first push, 30 Oct 2026.
 
 ## Style
 

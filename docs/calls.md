@@ -119,6 +119,11 @@ Four things, all bounded, all visible on the page:
    when it is two standard errors clear of zero, capped at 0.25% a session.
    Each call carries the gain and lean it was drawn with (`learned`) and the
    fit divides them back out, so a correction never learns from itself.
+   A browser's own daily-view calls (5-minute bars, the same session) count
+   too, so a browser that has been open for weeks learns from day one: one
+   owner's 15 judged sessions, each scored with itself left out, took the
+   average close miss from 0.96% to 0.92% (`learn.closeFitCheck`, shown
+   under said vs did).
 
 The AI desk's final call also reads its last eight judged sessions, what the
 line said against what the market did and why it missed, before it answers
@@ -157,6 +162,53 @@ history and is never served by the site:
 
 To study where it goes wrong: `git fetch origin training-log`, then read
 `summary.md` on that branch.
+
+## Why it is moving (assets/js/drivers.js)
+
+The card splits the index's move into what is pushing it down and what is
+holding it up. Every market abroad (36 live through the screener, refreshed
+every minute) is its move times its link to NIFTY measured over twenty years
+(`history_model.py world_links`: the market's last move before the open
+against the next gap and close, and for the markets that close before NSE,
+the same day's move), in points. Within a group (the US, Asia, Europe,
+commodities, currencies and rates) only the strongest link counts, because
+the S&P, the Nasdaq and their futures are one move. India's own heavyweights
+are weight times move (full market cap weights, approximate). Flows,
+breadth, India VIX, options, news and the crowd are listed without points.
+Until the workflow's first run publishes the links, markets are shown by the
+way they usually push India and claim no points.
+
+The world markets are kept every five minutes while the page is open
+(`app.js recordWorld`), so a reason point on the chart names the market that
+moved in the same window ("Abroad in the same window: Hang Seng -0.9%"),
+not only the headline.
+
+## The setup check (drivers.setup)
+
+Two views of the same inputs, worded as conditions and never as advice:
+
+- Direction: the odds the close is higher, how many inputs agree with the
+  lean, the strongest with it and against it, the room to the next
+  resistance and support, and the call's own record.
+- Range, for selling options: one day's expected move from India VIX, the
+  line's likely range, and the signs for and against a quiet day (the CPR's
+  width against twenty years of widths, VIX level and change, the gap, high
+  impact events, expiry, the distance to the call and put walls, and a hard
+  day abroad).
+
+## Studies and the playbook (assets/js/studies.js)
+
+The Studies menu on the chart draws what Indian traders draw before the
+open: the CPR, floor pivots, Camarilla, yesterday's high, low and close, the
+first 15 minutes' range, Fibonacci of the last swing, the option walls and
+max pain, round numbers, Ichimoku and an RSI panel. Each comes with its rule
+of thumb and where price sits against it now. Every rule that can be checked
+on daily bars (21 of them: CPR width and position, breaks of yesterday's
+range, R1 and S1, Camarilla, gap fills and fades, RSI, the EMA stack, NR7,
+three red days, VIX) is measured with the rate it has to beat: over twenty
+years by `history_study.js` (data/study.json `playbook`), and until then
+over two years of daily bars in the browser. "In play now" lists the rules
+that apply to the session on screen.
 
 ## Twenty years (data/history_model.json, data/study.json)
 
@@ -200,3 +252,6 @@ Added later on 30 Oct 2026 and also waiting on a run: `data/social.json`
 (whether Tickertape, StockTwits and Reddit answer GitHub's addresses), the
 Telegram, X-mirror, GDELT, Bing and Yahoo feeds, and the first push to
 `training-log`. The gap gains need 10 judged sessions before they move.
+Also waiting on the workflow: the twenty-year world links (the drivers card
+shows directions without points until then) and the twenty-year playbook
+(the Studies menu shows two years of this browser's bars until then).

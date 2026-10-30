@@ -264,6 +264,34 @@ KT.CONFIG = {
     { key: 'gold',       tv: ['TVC:GOLD'],                   label: 'Gold' },
     { key: 'cboe_vix',   tv: ['TVC:VIX'],                    label: 'CBOE VIX' },
     { key: 'ftse',       tv: ['TVC:UKX'],                    label: 'FTSE 100' },
+    /* Added 30 Oct 2026, every symbol read back from the screener on the
+       Pages origin first (ASX 200 and Taiwan's TVC code are not carried;
+       TWSE:IX0001 is). The rest of Asia trades through India's morning, so
+       its moves are live reasons for NIFTY's; Europe opens at 12:30 IST. */
+    { key: 'kospi',      tv: ['KRX:KOSPI', 'TVC:KOSPI'],     label: 'KOSPI' },
+    { key: 'taiwan',     tv: ['TWSE:IX0001'],                label: 'Taiwan' },
+    { key: 'shanghai',   tv: ['SSE:000001'],                 label: 'Shanghai' },
+    { key: 'shenzhen',   tv: ['SZSE:399001'],                label: 'Shenzhen' },
+    { key: 'sti',        tv: ['TVC:STI'],                    label: 'Singapore STI' },
+    { key: 'dax',        tv: ['TVC:DEU40', 'XETR:DAX'],      label: 'DAX' },
+    { key: 'cac',        tv: ['TVC:CAC40', 'EURONEXT:PX1'],  label: 'CAC 40' },
+    { key: 'stoxx50',    tv: ['TVC:SX5E'],                   label: 'Euro Stoxx 50' },
+    { key: 'spx',        tv: ['SP:SPX'],                     label: 'S&P 500' },
+    { key: 'ndx',        tv: ['NASDAQ:NDX'],                 label: 'Nasdaq 100' },
+    { key: 'russell',    tv: ['TVC:RUT'],                    label: 'Russell 2000' },
+    { key: 'sox',        tv: ['NASDAQ:SOX'],                 label: 'US chip stocks' },
+    { key: 'eem',        tv: ['AMEX:EEM'],                   label: 'Emerging markets' },
+    { key: 'wti',        tv: ['NYMEX:CL1!'],                 label: 'WTI crude' },
+    { key: 'natgas',     tv: ['NYMEX:NG1!'],                 label: 'Natural gas' },
+    { key: 'copper',     tv: ['COMEX:HG1!'],                 label: 'Copper' },
+    { key: 'silver',     tv: ['COMEX:SI1!', 'TVC:SILVER'],   label: 'Silver' },
+    { key: 'usdjpy',     tv: ['FX_IDC:USDJPY'],              label: 'USD/JPY' },
+    { key: 'usdcnh',     tv: ['FX_IDC:USDCNH'],              label: 'USD/CNH' },
+    { key: 'eurusd',     tv: ['FX_IDC:EURUSD'],              label: 'EUR/USD' },
+    { key: 'us02y',      tv: ['TVC:US02Y'],                  label: 'US 2y yield' },
+    { key: 'in10y',      tv: ['TVC:IN10Y'],                  label: 'India 10y yield' },
+    { key: 'jp10y',      tv: ['TVC:JP10Y'],                  label: 'Japan 10y yield' },
+    { key: 'btc',        tv: ['BITSTAMP:BTCUSD'],            label: 'Bitcoin' },
   ],
 
   /* ------------------------------------------------------- prediction trail

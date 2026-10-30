@@ -960,6 +960,57 @@ about 100 s for three indices, the study about 11 s, the call about 3 s.
 Waiting on their first run in Actions: `fetch_social.py` from GitHub's
 addresses, the new feeds, and the first push to `training-log`.
 
+## Why it moved, the studies, and the gap from the owner's record (30 Oct 2026, evening)
+
+- **The owner's record, measured.** 15 judged NIFTY sessions in one browser,
+  all daily-view calls. The line's move after the open had a negative slope
+  on what the session did (raw -0.77), the close was off by 0.96% on average,
+  and no input pointed the right way much better than a coin. The gap learner
+  read only session-view calls and so had nothing to learn from; it now reads
+  daily-view calls too. Scored with each session left out, the learned size
+  took the miss to 0.92%; a line with no move after the open would have been
+  0.94%.
+- **More markets, measured from the Pages origin.** The screener carries
+  KOSPI, Taiwan (`TWSE:IX0001`), Shanghai, Shenzhen, Singapore, the DAX, CAC,
+  Euro Stoxx, the S&P and Nasdaq cash, the Russell, chips, emerging markets,
+  WTI, gas, copper, silver, the yen, the yuan, the euro, US 2y, India 10y,
+  Japan 10y and Bitcoin. It does not carry the ASX 200 under any code tried,
+  nor `TVC:TAIEX`. `change|60` gives the last hour's move for indices and
+  currencies; it is empty for futures.
+- **World links.** `history_model.py world_links` on the preopen panel; the
+  selfcheck now also requires the planted US-to-gap link (0.45) back within
+  0.05 (it finds 0.445) and no link for a market with none.
+- **Studies.** `studies.js`, the same code in the workflow (twenty years) and
+  the browser (two years). Tested on a built record where every gap fades:
+  the rule reads 100%, the gap slope is negative, a rule that never applies
+  reads none rather than 0%.
+- **What the first wide run said about the new sources.** Reddit answered
+  r/IndianStreetBets from Actions and refused the next subreddit, a second
+  later, with 429. It is now asked as two combined feeds (the Indian
+  subreddits as one, `r/a+b+c`, the global ones as another) five seconds
+  apart; a 429 waits once, a refusal stops. Both Telegram channels in the file
+  had no public preview and never returned a post; seven that posted that
+  morning replace them (Moneycontrol, Mint, Hindustan Times, and four world
+  headline channels: Market News Feed, FinancialJuice, Walter Bloomberg,
+  CNBC), fetched two at a time because t.me stopped answering a browser that
+  asked for forty in a row. GDELT took 10 to 15 seconds and found no article
+  even for "sensex" over a day, then said 429 to a query ten seconds later:
+  its timeout is 35 seconds now and an over-the-limit reply reads "rate
+  limited" in feed_health. xcancel answers 451 for every X account; the lane
+  stays and is expected dark.
+- **A replayed point no longer depends on where its replay began.** The trail
+  refit the volatility profile every ten bars, counted from the replay's first
+  bar. Once the morning's bars moved that first bar, the same 5-minute bar drew
+  a line 0.5 points different and the look-ahead check failed with no
+  look-ahead in it (34 of 150 points moved). The ten are counted from the start
+  of the series now: 150 of 150 identical with the future cut away.
+- **Self-tests and the saved data.** `main` carries a snapshot saved during the
+  session (12:43 IST on 30 Oct), and the calls test replays whole sessions, so
+  it read the half-finished day as the last session and 16 checks failed on
+  data alone. It leaves a part-session at the end out now, and the 15:29 check
+  accepts a tape that never had a 15:30 bar. 520 checks pass on that snapshot.
+
+
 ---
 
 ## Style

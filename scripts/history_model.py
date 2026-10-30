@@ -394,6 +394,100 @@ def fit_target(S, target, hol):
     return res
 
 
+# The live board's key for each series (config.js tvGlobal), so the page can
+# put a measured link beside every market it shows.
+LIVE_KEY = {
+    "SPX": "spx", "ES": "us_futures", "NASDAQ": "ndx", "NQ": "nasdaq_fut", "DOW": "dow_fut",
+    "VIXUS": "cboe_vix", "SOX": "sox", "EEM": "eem", "NIKKEI": "nikkei", "HANGSENG": "hangseng",
+    "KOSPI": "kospi", "TAIWAN": "taiwan", "SHANGHAI": "shanghai", "STI": "sti", "FTSE": "ftse",
+    "DAX": "dax", "BRENT": "crude", "WTI": "wti", "GOLD": "gold", "COPPER": "copper",
+    "USDINR": "usdinr", "DXY": "dxy", "US10Y": "us10y",
+}
+LABELS = {
+    "SPX": "S&P 500", "ES": "S&P 500 futures", "NASDAQ": "Nasdaq", "NQ": "Nasdaq futures", "DOW": "Dow",
+    "VIXUS": "US VIX", "SOX": "US chip stocks", "HYG": "US high-yield bonds", "EEM": "Emerging markets",
+    "NIKKEI": "Nikkei", "HANGSENG": "Hang Seng", "KOSPI": "KOSPI", "TAIWAN": "Taiwan", "ASX": "ASX 200",
+    "SHANGHAI": "Shanghai", "STI": "Singapore", "FTSE": "FTSE 100", "DAX": "DAX", "BRENT": "Brent crude",
+    "WTI": "WTI crude", "GOLD": "Gold", "COPPER": "Copper", "USDINR": "USD/INR", "DXY": "Dollar index",
+    "US10Y": "US 10y yield",
+}
+
+
+def _link(x, y, thr):
+    """Least-squares slope of y on x, the correlation, and how often the two
+    moved the same way when x moved at least `thr`."""
+    import numpy as np
+    ok = x.notna() & y.notna()
+    x, y = x[ok].astype(float), y[ok].astype(float)
+    n = int(len(x))
+    if n < 120 or float(x.var()) <= 0:
+        return None
+    beta = float(((x - x.mean()) * (y - y.mean())).sum() / ((x - x.mean()) ** 2).sum())
+    corr = float(np.corrcoef(x, y)[0, 1])
+    big = x.abs() >= thr
+    same = int(((x[big] > 0) == (y[big] > 0)).sum())
+    nb = int(big.sum())
+    return {"n": n, "beta": round(beta, 4), "corr": round(corr, 3),
+            "hit": round(same / nb * 100, 1) if nb else None, "nBig": nb}
+
+
+def world_links(S, target):
+    """How much each market's move has carried into `target`, measured on the
+    whole record and on the last three years (30 Oct 2026).
+
+      overnight   the market's last move known before NSE opens (the US and
+                  Europe's session after India's close, Asia's open the next
+                  morning) against the next session's opening gap and close
+      sameDay     for the markets that close before NSE does (Asia, India's
+                  own sectors): the same day's move against the same day's
+                  NIFTY move, which is the link that moves the index while
+                  both are trading
+
+    Moves are in percent (yields and VIX in points). `beta` is NIFTY's move
+    per unit of the market's; `hit` is how often the two went the same way
+    on days the market moved at least half a percent (or 0.05 points of
+    yield, 1 point of VIX). Descriptive, not a forecast: the page uses it to
+    say how much of a move a market can account for."""
+    import numpy as np
+    import pandas as pd
+    f, y = build_panel(S, target, "preopen")
+    base = S[target].dropna(subset=["c"])
+    idx = f.index
+    ret_t = np.log(base["c"]).diff().reindex(idx) * 100
+    out = []
+    cut = idx[-1] - pd.Timedelta(days=3 * 365)
+    for key, grp, closes_before in GLOBALS:
+        if key not in S:
+            continue
+        name = key.lower()
+        points = key in ("US10Y", "VIXUS")
+        col = "%s_%s_%s" % (grp, name, "chg1" if points else "ret1")
+        if col not in f.columns:
+            continue
+        x = f[col] * (1 if points else 100)
+        thr = 0.05 if key == "US10Y" else 1.0 if key == "VIXUS" else 0.5
+        row = {"key": key, "label": LABELS.get(key, key), "group": grp, "live": LIVE_KEY.get(key),
+               "unit": "points" if points else "pct", "closesBefore": bool(closes_before)}
+        gap_col = "asia_%s_gapnext" % name
+        if grp == "asia" and gap_col in f.columns:
+            xo = f[gap_col] * 100          # Asia's own open the next morning
+        else:
+            xo = x
+        row["overnight"] = {
+            "gap": _link(xo, y["gap"] * 100, thr),
+            "close": _link(xo, y["ret"] * 100, thr),
+        }
+        recent = idx >= cut
+        row["recent"] = {"close": _link(xo[recent], (y["ret"] * 100)[recent], thr)}
+        if closes_before:
+            g = S[key]["c"]
+            xs = np.log(asof(g, idx, idx).astype(float)).diff() * 100
+            row["sameDay"] = _link(xs, ret_t, thr)
+            row["recent"]["sameDay"] = _link(xs[recent], ret_t[recent], thr)
+        out.append(row)
+    return out
+
+
 def synthetic(seed=3):
     """A twenty-year record with one planted lead-lag: NIFTY's gap follows
     the US session that runs after its close (beta 0.45) and a little of its
@@ -446,7 +540,16 @@ def selfcheck():
     print("selfcheck: always-up %.1f%%, evening %.1f%%, preopen %.1f%%" % (base, ev["hit"], po["hit"]))
     ok = ev["hit"] <= base + 3.0 and po["hit"] >= base + 5.0
     print("selfcheck:", "ok" if ok else "FAILED: a feature sees the future, or the model cannot see the planted signal")
-    return 0 if ok else 1
+    # The world links must find the planted US-to-gap link (0.45) and not
+    # invent one for a market with none.
+    w = {r["key"]: r for r in world_links(S, "NIFTY")}
+    spx = (w.get("SPX") or {}).get("overnight", {}).get("gap") or {}
+    gold = (w.get("GOLD") or {}).get("overnight", {}).get("gap") or {}
+    wok = abs(spx.get("beta", 0) - 0.45) <= 0.05 and abs(gold.get("beta", 1)) <= 0.05
+    print("selfcheck: world link S&P to the gap %.3f (planted 0.45), gold %.3f (none)" % (spx.get("beta", float("nan")), gold.get("beta", float("nan"))))
+    if not wok:
+        print("selfcheck: FAILED: the world links do not recover the planted link")
+    return 0 if ok and wok else 1
 
 
 def main():
@@ -465,6 +568,11 @@ def main():
                 continue
             try:
                 m = fit_target(S, t, hol)
+                try:
+                    m["world"] = world_links(S, t)
+                except Exception as exc:  # noqa: BLE001 - the model stands without it
+                    m["world"] = []
+                    payload["errors"].append({"symbol": t, "error": "world links: " + repr(exc)[:200]})
                 payload["models"][t] = m
                 r = m[m["infoSet"]]["record"] or {}
                 print("  [ok ] %-9s next %s  p(up)=%.3f (%s)  out of sample %s%% of %s, always-up %s%%  %ss" % (

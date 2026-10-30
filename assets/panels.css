@@ -148,3 +148,94 @@
 .learned-actions { display: flex; gap: 8px; margin-top: 10px; }
 #learned-years:empty { display: none; }
 #learned-years .fine { margin: 6px 0 0; }
+
+/* ===================================================== 30 Oct 2026, later
+   Setup check, why it is moving, the world board, the Studies menu, the
+   topics strip and the gap analytics. Same tokens as everything above. */
+
+/* ---------------------------------------------------------- setup check */
+.setup-section .section-head { align-items: center; }
+.su-tabs { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 999px; }
+.su-tab {
+  border: 0; background: transparent; color: var(--ink-muted); font: 600 11px/1 var(--sans);
+  padding: 5px 10px; border-radius: 999px; cursor: pointer;
+}
+.su-tab[aria-pressed="true"] { background: var(--bg-active); color: var(--ink-strong); }
+.su-grade { font: 600 13px/1.35 var(--sans); color: var(--ink-strong); margin: 4px 0 6px; padding-left: 9px; border-left: 3px solid var(--border-strong); }
+.su-grade b { font-weight: 700; }
+.su-grade.strong, .su-grade.favourable { border-left-color: var(--up); }
+.su-grade.moderate, .su-grade.mixed { border-left-color: var(--warn); }
+.su-grade.unfavourable { border-left-color: var(--down); }
+.su-line { font: 400 12px/1.5 var(--sans); color: var(--ink-strong); margin: 4px 0; }
+.su-cols, .dv-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 6px 0; }
+.su-list, .dv-list, .su-signs, .sp-active, .js-list { list-style: none; margin: 2px 0 0; padding: 0; }
+.su-list li { font-size: 11.5px; line-height: 1.45; color: var(--ink-strong); padding: 2px 0; border-top: 1px dashed var(--border); }
+.su-list li.muted, .dv-list li.muted { color: var(--ink-muted); }
+.su-signs li { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 6px; font-size: 11.5px; line-height: 1.45; padding: 3px 0; color: var(--ink-strong); }
+.su-dot { width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; background: var(--ink-muted); }
+.su-signs li.good .su-dot { background: var(--up); }
+.su-signs li.bad .su-dot { background: var(--down); }
+.su-foot { margin-top: 8px; }
+
+/* ------------------------------------------------------ why it is moving */
+.dv-move { font: 500 13px/1.4 var(--sans); color: var(--ink-strong); margin: 2px 0 4px; }
+.dv-move b.up { color: var(--up); } .dv-move b.down { color: var(--down); }
+.jl-k.up { color: var(--up); } .jl-k.down { color: var(--down); }
+.dv-list li {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 6px; align-items: baseline;
+  font-size: 11.5px; line-height: 1.35; padding: 3px 0; border-top: 1px dashed var(--border);
+}
+.dv-k { color: var(--ink-strong); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dv-r { grid-column: 1; color: var(--ink-muted); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dv-pts { grid-column: 2; grid-row: 1 / span 2; font: 600 11px/1 var(--mono); white-space: nowrap; }
+.dv-pts.up { color: var(--up); } .dv-pts.down { color: var(--down); }
+.dv-world { margin-top: 8px; }
+.dv-world summary { cursor: pointer; font: 600 11px/1.4 var(--sans); color: var(--ink-muted); text-transform: uppercase; letter-spacing: .05em; }
+.wb-group { margin-top: 6px; }
+.wb-row {
+  display: grid; grid-template-columns: minmax(0, 1.4fr) 0.8fr 0.8fr 0.8fr; gap: 6px; align-items: baseline;
+  font-size: 11.5px; padding: 3px 0; border-top: 1px dashed var(--border);
+}
+.wb-k { color: var(--ink-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-k small { color: var(--ink-muted); font-size: 9.5px; }
+.wb-v, .wb-h, .wb-p { font: 500 11px/1.2 var(--mono); text-align: right; white-space: nowrap; color: var(--ink); }
+.wb-h { color: var(--ink-muted); }
+.wb-v.up, .wb-p.up { color: var(--up); } .wb-v.down, .wb-p.down { color: var(--down); }
+
+/* ------------------------------------------------------------ studies */
+.chart-panel { position: relative; }
+.ov-btn.ov-menu { font-weight: 700; }
+.studies-pop {
+  position: absolute; z-index: 40; top: 96px; right: 12px; width: 400px; max-height: min(72vh, 640px); overflow-y: auto;
+  background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: var(--radius);
+  box-shadow: var(--shadow-lg); padding: 10px 12px 12px;
+}
+.studies-pop[hidden] { display: none; }
+.sp-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.sp-head b { font: 700 14px/1.2 var(--sans); color: var(--ink-strong); }
+.sp-active li { font-size: 11.5px; line-height: 1.45; padding: 2px 0; color: var(--ink-strong); }
+.sp-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.sp-item { padding: 8px 0; border-top: 1px solid var(--border); }
+.sp-row { display: flex; gap: 8px; align-items: center; cursor: pointer; font-size: 12.5px; color: var(--ink-strong); }
+.sp-read { margin: 4px 0 0 22px; font-size: 11.5px; line-height: 1.45; color: var(--ink-strong); }
+.sp-tip { margin: 3px 0 0 22px; font-size: 11px; line-height: 1.45; color: var(--ink-muted); }
+.sp-rules { list-style: none; margin: 4px 0 0 22px; padding: 0; }
+.sp-rules li { font-size: 11px; line-height: 1.5; color: var(--ink-strong); }
+.sp-rules .muted { color: var(--ink-muted); }
+
+/* ------------------------------------------------------- topics strip */
+.topics-strip { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 12px 0; }
+.topics-strip:empty { display: none; }
+.tp-k { font: 600 10.5px/1 var(--sans); text-transform: uppercase; letter-spacing: .06em; color: var(--ink-muted); margin-right: 2px; }
+.chip.tp.up { color: var(--up); } .chip.tp.down { color: var(--down); }
+
+/* ----------------------------------------------------- gap analytics */
+.js-list li { font-size: 11.5px; line-height: 1.5; color: var(--ink-strong); padding: 2px 0; }
+
+@media (max-width: 720px) {
+  .studies-pop { left: 8px; right: 8px; width: auto; top: 120px; }
+  .su-cols, .dv-cols { grid-template-columns: 1fr; }
+  .wb-row { grid-template-columns: minmax(0, 1.3fr) 0.8fr 0.8fr; }
+  .wb-h { display: none; }
+}
+.cues-list.wb { display: block; }

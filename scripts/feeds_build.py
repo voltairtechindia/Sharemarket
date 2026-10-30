@@ -393,11 +393,17 @@ def yaml_lanes(cfg):
                "&mode=ArtList&format=json&maxrecords=75&timespan=6h&sort=DateDesc")
         name = (row.get("name") or "GDELT").strip()
         out.append(("gd_" + slug(name), name, url, "gdelt", row.get("region") or "india", ["wire"], int(row.get("priority", 1))))
-    for ch in (cfg.get("telegram") or []):
-        ch = str(ch or "").strip().lstrip("@")
+    for row in (cfg.get("telegram") or []):
+        # A plain handle is an Indian channel; a row can carry a display
+        # name, a region (world) and a priority.
+        info = row if isinstance(row, dict) else {"handle": row}
+        ch = str(info.get("handle") or "").strip().lstrip("@")
         if not re.match(r"^[A-Za-z0-9_]{3,64}$", ch):
             continue
-        out.append(("tg_" + slug(ch), "Telegram " + ch, f"https://t.me/s/{ch}", "telegram", "india", ["social", "markets"], 2))
+        region = "world" if str(info.get("region") or "").lower() == "world" else "india"
+        name = str(info.get("name") or ("Telegram " + ch)).strip()
+        out.append(("tg_" + slug(ch), name, f"https://t.me/s/{ch}", "telegram", region,
+                    ["social", "markets"], int(info.get("priority", 2))))
     kinds = {}
     for row in out:
         kinds[row[3]] = kinds.get(row[3], 0) + 1

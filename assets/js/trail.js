@@ -259,12 +259,17 @@
       if (have && have.fp === fp) return;
       // The volatility profile and the session's average shape move slowly;
       // refitting them every ten bars rather than every bar is what keeps a
-      // 480-point replay inside a couple of seconds of sliced work.
-      if (i2 - ctxCache.at >= 10 || !ctxCache.vp) {
-        var h = candles.slice(0, i2 + 1);
+      // 480-point replay inside a couple of seconds of sliced work. The ten
+      // are counted from the start of the series, not of the replay: counted
+      // from the replay, a point's line depended on where its replay began,
+      // and the same bar drew a different line once newer bars moved that
+      // start (seen 30 Oct 2026, 0.5 points on a 5-minute bar).
+      var anchor = i2 - (i2 % 10);
+      if (anchor !== ctxCache.at || !ctxCache.vp) {
+        var h = candles.slice(0, anchor + 1);
         ctxCache.vp = KT.forecast.volProfile(h, barSec);
         ctxCache.shape = KT.forecast.dayShape(h, barSec);
-        ctxCache.at = i2;
+        ctxCache.at = anchor;
       }
       var P = predictFrom(candles, ser, i2, { bars: bars, vp: ctxCache.vp, shape: ctxCache.shape });
       if (!P) return;

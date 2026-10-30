@@ -9,10 +9,11 @@ Free and keyless, every source. Nothing here raises: a source that fails keeps
 its last good reading, with that reading's own time on it so the lane can tell
 how old it is, and is recorded as failed under `sources`.
 
-Reddit (r/IndianStreetBets and three others) answers 403 to anonymous requests
-from most cloud addresses, the proxies the page uses among them (measured 6
-and 30 Oct 2026). It is tried once a run through the public RSS with an honest
-User-Agent and left out when it refuses. No key is ever used.
+Reddit answers 403 to anonymous requests from most cloud addresses, the
+proxies the page uses among them (measured 6 Oct 2026). From the workflow it
+answered once and then said 429 (30 Oct 2026), so it is asked as two combined
+feeds (r/a+b+c), a few seconds apart, through the public RSS with an honest
+User-Agent, and left out when it refuses. No key is ever used.
 
 Run:  python scripts/fetch_social.py
 """
@@ -22,6 +23,7 @@ import time
 from datetime import datetime
 
 import feedparser
+import requests
 
 from common import UA, get, load_cfg, now_iso, previous, write_json
 
@@ -31,7 +33,9 @@ ST_URL = "https://api.stocktwits.com/api/2/streams/symbol/{sym}.json"
 ST_SYMBOLS = {"NIFTY": "NIFTY50.NSE", "BANKNIFTY": "NIFTYBANK.NSE"}
 # The subreddits listed in config/feeds.yml (`reddit:`), these when it is unreadable.
 REDDIT_DEFAULT = ["IndianStreetBets", "IndiaInvestments", "StockMarketIndia", "DalalStreetTalks"]
-REDDIT_URL = "https://www.reddit.com/r/{sub}/new/.rss?limit=50"
+REDDIT_URL = "https://www.reddit.com/r/{sub}/new/.rss?limit=100"
+REDDIT_GAP_SEC = 5.0       # between two Reddit requests
+REDDIT_BACKOFF_SEC = 12.0  # after a 429, before the one retry
 # Subreddits about markets everywhere: a post counts only when it names India.
 GLOBAL_SUBS = {"options", "investing", "stocks", "wallstreetbets", "stockmarket", "economics"}
 INDIA_RX = re.compile(r"\b(india|indian|nifty|sensex|nse|bse|rupee|rbi|sebi|dalal)\b", re.I)
@@ -121,32 +125,71 @@ def reddit_subs():
     return subs or REDDIT_DEFAULT
 
 
+class Refused(RuntimeError):
+    """Reddit said no to this address (403, or 429 twice): the rest would too."""
+
+
+def reddit_get(path):
+    """One Reddit feed. A 429 waits as long as Reddit asks (capped) and tries
+    once more; a 403, or a second 429, raises Refused."""
+    headers = {"User-Agent": REDDIT_UA, "Accept": "application/atom+xml,application/xml,*/*"}
+    for attempt in (0, 1):
+        r = requests.get(REDDIT_URL.format(sub=path), headers=headers, timeout=15)
+        if r.status_code == 200:
+            return r
+        if r.status_code == 429 and attempt == 0:
+            try:
+                wait = float(r.headers.get("Retry-After") or r.headers.get("x-ratelimit-reset") or 0)
+            except ValueError:
+                wait = 0
+            time.sleep(min(max(wait, REDDIT_BACKOFF_SEC), 30))
+            continue
+        if r.status_code in (401, 403, 429):
+            raise Refused(f"HTTP {r.status_code}")
+        raise RuntimeError(f"HTTP {r.status_code}")
+    raise Refused("HTTP 429")
+
+
+def sub_of(entry, fallback):
+    """The subreddit an entry of a combined feed came from: its category, or
+    the /r/<name>/ in its link."""
+    for tag in getattr(entry, "tags", None) or []:
+        term = (tag.get("term") if isinstance(tag, dict) else None) or ""
+        if re.match(r"^[A-Za-z0-9_]{2,40}$", term):
+            return term
+    m = re.search(r"/r/([A-Za-z0-9_]+)/", getattr(entry, "link", "") or "")
+    return m.group(1) if m else fallback
+
+
 def reddit():
     """Recent posts about the market from the subreddits in config/feeds.yml,
-    scored with the news word list. Stops at the first refusal: a 403 or 429
-    from one subreddit is the same answer for all of them."""
+    scored with the news word list.
+
+    One request for the Indian subreddits together (r/a+b+c), one for the
+    global ones, a few seconds apart. On 30 Oct 2026 the first of eight
+    one-a-second requests answered and the second got 429, so the loop asked
+    eight times for what two combined feeds carry. A combined feed that fails
+    for another reason falls back to its subreddits one at a time, spaced."""
     try:
         from fetch_news import score_text
     except Exception:  # noqa: BLE001 - the lexicon is optional here
         score_text = None
     now = time.time()
     subs = reddit_subs()
-    posts, ok_subs, errors = [], [], []
-    for sub in subs:
-        try:
-            r = get(REDDIT_URL.format(sub=sub), timeout=15, retries=0,
-                    headers={"User-Agent": REDDIT_UA, "Accept": "application/atom+xml,application/xml,*/*"})
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"r/{sub}: {exc}")
-            if re.search(r"40[13]|429", str(exc)):
-                break
-            continue
-        feed = feedparser.parse(r.content)
-        if not feed.entries:
-            errors.append(f"r/{sub}: no entries")
-            continue
-        ok_subs.append(sub)
+    india = [s for s in subs if s.lower() not in GLOBAL_SUBS]
+    world = [s for s in subs if s.lower() in GLOBAL_SUBS]
+    groups = [g for g in (india, world) if g]
+    posts, ok_subs, errors, seen = [], [], [], set()
+
+    def take(feed, fallback):
         for e in feed.entries:
+            sub = sub_of(e, fallback)
+            link = getattr(e, "link", "") or getattr(e, "id", "")
+            if link in seen:
+                continue
+            seen.add(link)
+            if sub not in ok_subs:
+                ok_subs.append(sub)
             tm = getattr(e, "updated_parsed", None) or getattr(e, "published_parsed", None)
             ts = calendar.timegm(tm) if tm else None
             title = clean(getattr(e, "title", ""))
@@ -159,7 +202,42 @@ def reddit():
             s = score_text(title)[0] if score_text else 0.0
             posts.append({"ts": ts, "sub": sub, "title": title[:200], "s": round(s, 2),
                           "tag": "bullish" if s > 0.6 else "bearish" if s < -0.6 else None})
-        time.sleep(1.0)
+
+    refused = False
+    for gi, group in enumerate(groups):
+        if refused:
+            break
+        if gi:
+            time.sleep(REDDIT_GAP_SEC)
+        try:
+            feed = feedparser.parse(reddit_get("+".join(group)).content)
+            if feed.entries:
+                take(feed, group[0])
+                continue
+            errors.append(f"r/{'+'.join(group)}: no entries")
+        except Refused as exc:
+            errors.append(f"r/{'+'.join(group)}: {exc}")
+            refused = True
+            break
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"r/{'+'.join(group)}: {exc}")
+        if len(group) < 2:
+            continue
+        for sub in group:
+            time.sleep(REDDIT_GAP_SEC)
+            try:
+                feed = feedparser.parse(reddit_get(sub).content)
+            except Refused as exc:
+                errors.append(f"r/{sub}: {exc}")
+                refused = True
+                break
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"r/{sub}: {exc}")
+                continue
+            if feed.entries:
+                take(feed, sub)
+            else:
+                errors.append(f"r/{sub}: no entries")
     posts.sort(key=lambda p: -p["ts"])
     if not ok_subs:
         return {"ok": False, "why": "; ".join(errors)[:300] or "no answer", "tried": subs}

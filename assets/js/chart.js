@@ -41,13 +41,19 @@
      along the bottom of the chart, so "how close" is a bar height rather than
      something a reader has to estimate between two thin lines. */
   var trailSeries = null, errSeries = null;
+  // The RSI panel along the bottom of the plot (the "osc" study).
+  var oscSeries = null, oscLines = [];
   var pool = { structure: [], overlay: [] };     // reusable line series
   var priceLines = [];                            // horizontal lines on the candle series
   var state = {
     candles: [], forecast: null, reasons: [], patternMarkers: [],
     structures: [], levels: null, indicators: null,
     overlays: { ema: !(C.ui && C.ui.emaOff), bands: false, supertrend: false, vwap: false, levels: true, patterns: true, why: true,
-                trail: true, errors: true },
+                trail: true, errors: true,
+                // The Studies menu (30 Oct 2026, studies.js): off until asked for.
+                cpr: false, pivots: false, camarilla: false, pdhl: false, orb: false, fib: false,
+                oi: false, round: false, ichimoku: false, osc: false },
+    study: { options: null },
     tf: C.defaultTimeframe, symbol: C.defaultSymbol,
     lastCandleTime: null, pinned: null, total: 0, locked: null,
     trail: null, trailByT: {}, candleByT: {}, replay: null,
@@ -134,6 +140,7 @@
      on, so the two never overlap: a histogram drawn through the candles would
      be read as volume. */
   function mainMargins() {
+    if (state.overlays.osc) return { top: 0.07, bottom: 0.27 };
     return state.overlays.errors && state.trail && state.trail.length
       ? { top: 0.07, bottom: 0.24 } : { top: 0.08, bottom: 0.12 };
   }
@@ -236,6 +243,12 @@
       base: 0, color: p.errOn,
     });
     chart.priceScale('trailerr').applyOptions({ scaleMargins: { top: 0.83, bottom: 0.01 }, visible: false });
+
+    oscSeries = chart.addLineSeries({
+      priceScaleId: 'osc', color: '#0ea5e9', lineWidth: 1, priceLineVisible: false,
+      lastValueVisible: true, crosshairMarkerVisible: false, title: 'RSI',
+    });
+    chart.priceScale('osc').applyOptions({ scaleMargins: { top: 0.78, bottom: 0.03 }, visible: false });
 
     candleSeries = chart.addCandlestickSeries({
       upColor: p.up, downColor: p.down,
@@ -776,8 +789,97 @@
       if (o.vwap && c.some(function (b) { return (b.volume || 0) > 0; })) {
         line(KT.ind.vwap(c), { color: '#db2777', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.LargeDashed, title: '' });
       }
+      if (o.ichimoku && KT.ind.ichimoku) {
+        var ich = KT.ind.ichimoku(c);
+        line(ich.tenkan, { color: '#0284c7', lineWidth: 1, title: '' });
+        line(ich.kijun, { color: '#b91c1c', lineWidth: 1, title: '' });
+        // The cloud is drawn `shift` bars ahead of the bar it was built on.
+        var tf = C.timeframes[state.tf], bs = tf ? tf.barSec : 300;
+        var ahead = function (vals, colour) {
+          var pts = [], adv = KT.forecast && KT.forecast.advance;
+          for (var i = 0; i < c.length; i++) {
+            if (vals[i] == null || isNaN(vals[i])) continue;
+            var t = c[i].time, j = i + ich.shift;
+            if (j < c.length) t = c[j].time;
+            else if (adv) { t = c[c.length - 1].time; for (var k = c.length - 1; k < j; k++) t = adv(t, bs); }
+            else continue;
+            pts.push({ time: t, value: Math.round(vals[i] * 100) / 100 });
+          }
+          if (pts.length > 1) take('overlay', { color: colour, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, title: '' }).setData(pts);
+        };
+        ahead(ich.senkouA, '#16a34a'); ahead(ich.senkouB, '#dc2626');
+      }
     }
     endPool('overlay');
+    drawOsc();
+  }
+
+  /* RSI(14) along the bottom, with the 70 and 30 lines traders read it by. */
+  function drawOsc() {
+    if (!oscSeries) return;
+    oscLines.forEach(function (pl) { try { oscSeries.removePriceLine(pl); } catch (e) {} });
+    oscLines = [];
+    var c = state.candles;
+    if (!state.overlays.osc || c.length < 20 || !KT.ind.rsi) { oscSeries.setData([]); return; }
+    var r = KT.ind.rsi(c, 14), pts = [];
+    for (var i = 0; i < c.length; i++) if (r[i] != null && !isNaN(r[i])) pts.push({ time: c[i].time, value: Math.round(r[i] * 10) / 10 });
+    try { oscSeries.setData(pts); } catch (e) { oscSeries.setData([]); }
+    [70, 50, 30].forEach(function (v) {
+      oscLines.push(oscSeries.createPriceLine({ price: v, color: v === 50 ? '#94a3b8' : (v === 70 ? '#ef4444' : '#16a34a'),
+        lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: false, title: v === 50 ? '' : String(v) }));
+    });
+    try { chart.priceScale('right').applyOptions({ scaleMargins: mainMargins() }); } catch (e) {}
+  }
+
+  /* The study lines (studies.js), drawn as price lines on the candles. The
+     levels come from the previous session: while the market trades that is
+     yesterday's, once it has closed it is today's, which is when traders
+     draw tomorrow's CPR. */
+  function studyPrev() {
+    var S = KT.studies;
+    if (!S) return null;
+    var ss = S.sessionsOf(state.candles);
+    if (!ss.length) return null;
+    var live = core.marketState && core.marketState().state === 'live';
+    return live ? ss[ss.length - 2] || null : ss[ss.length - 1];
+  }
+  function drawStudyLines(p) {
+    var o = state.overlays, S = KT.studies;
+    if (!S || !state.candles.length) return;
+    var LS = LightweightCharts.LineStyle;
+    var add = function (price, colour, title, style, width) {
+      if (price == null || !isFinite(price)) return;
+      priceLines.push(candleSeries.createPriceLine({ price: price, color: colour, lineWidth: width || 1,
+        lineStyle: style == null ? LS.Dashed : style, axisLabelVisible: true, title: title }));
+    };
+    var prev = (o.cpr || o.pivots || o.camarilla || o.pdhl) ? studyPrev() : null;
+    if (prev) {
+      if (o.cpr) { var cp = S.cpr(prev); add(cp.TC, '#d97706', 'TC'); add(cp.P, '#d97706', 'CPR', LS.Solid); add(cp.BC, '#d97706', 'BC'); }
+      if (o.pivots) { var pv = S.floorPivots(prev); add(pv.R1, '#64748b', 'R1'); add(pv.R2, '#64748b', 'R2'); add(pv.S1, '#64748b', 'S1'); add(pv.S2, '#64748b', 'S2'); }
+      if (o.camarilla) { var cm = S.camarilla(prev); add(cm.H3, '#0d9488', 'H3', LS.Dotted); add(cm.H4, '#0d9488', 'H4'); add(cm.L3, '#0d9488', 'L3', LS.Dotted); add(cm.L4, '#0d9488', 'L4'); }
+      if (o.pdhl) { add(prev.high, '#2563eb', 'PDH', LS.Solid); add(prev.low, '#2563eb', 'PDL', LS.Solid); add(prev.close, '#2563eb', 'PDC', LS.Dotted); }
+    }
+    var tf = C.timeframes[state.tf];
+    if (o.orb && tf && tf.barSec < 86400) {
+      var orr = S.openingRange(state.candles, 15);
+      if (orr) { add(orr.high, '#16a34a', 'OR high'); add(orr.low, '#dc2626', 'OR low'); }
+    }
+    if (o.fib) {
+      var fb = S.fibonacci(state.candles, 200);
+      if (fb) fb.levels.forEach(function (l) { if (l.f >= 0.382 && l.f <= 0.618) add(l.price, '#b45309', 'Fib ' + (l.f * 100).toFixed(1).replace(/\.0$/, ''), LS.SparseDotted); });
+    }
+    if (o.oi) {
+      var oi = S.oiLevels(state.study.options);
+      if (oi && state.symbol === 'NIFTY') {
+        add(oi.callWall, p.down, 'Call wall', LS.Dashed, 2);
+        add(oi.putWall, p.up, 'Put wall', LS.Dashed, 2);
+        add(oi.maxPain, '#f59e0b', 'Max pain', LS.Dotted);
+      }
+    }
+    if (o.round) {
+      var last = state.candles[state.candles.length - 1].close;
+      S.roundLevels(last, state.symbol).forEach(function (r) { add(r.price, '#94a3b8', '', r.strong ? LS.Solid : LS.SparseDotted); });
+    }
   }
 
   /* ----------------------------------------------------------------- levels
@@ -800,6 +902,7 @@
         }));
       });
     }
+    drawStudyLines(p);
     if (state.overlays.patterns && state.structures.length) {
       var lead = state.structures[0];
       if (lead && lead.dir) {
@@ -1152,6 +1255,8 @@
     setPatterns: function (m) { state.patternMarkers = m || []; applyMarkers(); },
     setStructures: function (list) { state.structures = list || []; drawStructures(); drawLevels(); applyMarkers(); },
     setLevels: function (lv) { state.levels = lv || null; drawLevels(); },
+    // What the studies need beyond the candles: the option chain (OI walls).
+    setStudyData: function (d) { state.study = d || { options: null }; drawLevels(); },
     setOverlay: function (name, on) {
       if (!(name in state.overlays)) return;
       state.overlays[name] = !!on;

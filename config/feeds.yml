@@ -107,7 +107,10 @@ google_news_params: "hl=en-IN&gl=IN&ceid=IN:en"
 
 # GDELT's article search (api.gdeltproject.org): free, no key, refreshed every
 # fifteen minutes from news sites worldwide. Keep it to one or two queries:
-# GDELT asks for no more than one request every five seconds.
+# GDELT asks for no more than one request every five seconds. On 30 Oct 2026
+# it took 10 to 15 seconds to answer, found no article even for "sensex" over
+# a day, and answered 429 to a second query ten seconds later. Kept: it costs
+# one request a run and feed_health shows the day it starts answering again.
 gdelt:
   - { name: "GDELT India markets", q: '(nifty OR sensex OR "bank nifty" OR "dalal street" OR "indian stocks") sourcelang:english', priority: 1 }
 
@@ -142,8 +145,16 @@ x_handles:
   - deepakshenoy
   - Nifty_Banknifty
 
-# Public Telegram channels, read from the t.me web preview. No key, no account.
-# Put the channel handle without the @.
+# Public Telegram channels, read from the t.me web preview (t.me/s/<handle>).
+# No key, no account. A plain handle (without the @) is an Indian channel; a
+# row can add a display name and `region: world`. Each of these had posts on
+# the morning of 30 Oct 2026. stockmarketnewsindia and nsebseupdates, here
+# before, have no public preview and never returned a post.
 telegram:
-  - stockmarketnewsindia
-  - nsebseupdates
+  - { handle: moneycontrolcom, name: "Moneycontrol (Telegram)" }
+  - { handle: livemint,        name: "Mint (Telegram)" }
+  - { handle: hindustantimes,  name: "Hindustan Times (Telegram)" }
+  - { handle: marketfeed,      name: "Market News Feed (Telegram)",  region: world }
+  - { handle: financialjuice,  name: "FinancialJuice (Telegram)",    region: world }
+  - { handle: walterbloomberg, name: "Walter Bloomberg (Telegram)",  region: world }
+  - { handle: CNBCnews,        name: "CNBC (Telegram)",              region: world }

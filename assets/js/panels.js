@@ -886,13 +886,289 @@
   }
 
   /* =============================================================== RENDER */
+  /* ========================================================== SETUP CHECK
+     drivers.setup: the direction view (do the inputs agree, how much room)
+     and the range view (how quiet the day is likely to be, which is what an
+     option seller judges). Conditions, never instructions. */
+  var setupTab = (function () { try { return core.store.get('setupTab', 'direction'); } catch (e) { return 'direction'; } })();
+  var GRADE_WORD = { strong: 'strong', moderate: 'moderate', mixed: 'mixed', 'no lean': 'no clear lean',
+                     favourable: 'favourable', unfavourable: 'unfavourable' };
+  function renderSetup(S) {
+    var body = $('setup-body');
+    if (!body) return;
+    var su = S.setup;
+    document.querySelectorAll('#setup-tabs .su-tab').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.setup === setupTab)); });
+    if (!su) { body.innerHTML = '<p class="fine">Waiting for the forecast.</p>'; return; }
+    var html = '';
+    if (setupTab === 'range') {
+      var r = su.range;
+      html += '<div class="su-grade ' + esc(r.grade) + '">Conditions for a quiet day: <b>' + esc(GRADE_WORD[r.grade] || r.grade) + '</b></div>';
+      var bits = [];
+      if (isNum(r.sigmaPct)) bits.push('One day\'s expected move from India VIX: about ±' + r.sigmaPct.toFixed(2) + '%' + (isNum(r.oneSdPts) ? ' (' + fmt.int(r.oneSdPts) + ' points)' : '') + '.');
+      if (isNum(r.low68) && isNum(r.high68)) bits.push('The line\'s likely range at the end of its horizon: ' + px(r.low68) + ' to ' + px(r.high68) + '.');
+      html += '<p class="su-line">' + esc(bits.join(' ')) + '</p>';
+      if (r.signs.length) {
+        html += '<ul class="su-signs">' + r.signs.map(function (x) {
+          return '<li class="' + (x.good ? 'good' : 'bad') + '"><span class="su-dot"></span><span>' + esc(x.text) + '</span></li>';
+        }).join('') + '</ul>';
+      } else {
+        html += '<p class="fine">No sign either way yet: the CPR, VIX and option walls have not arrived.</p>';
+      }
+    } else {
+      var d = su.direction;
+      var dirWord = d.lean > 0 ? 'an up move' : d.lean < 0 ? 'a down move' : 'either side';
+      html += '<div class="su-grade ' + esc(d.grade.replace(' ', '-')) + '">Conditions for ' + dirWord + ': <b>' + esc(GRADE_WORD[d.grade] || d.grade) + '</b></div>';
+      var line = [];
+      if (isNum(d.pUp)) line.push('Odds the close is higher: ' + d.pUp + '%.');
+      if (d.total) line.push(d.lean ? d.agreeN + ' of ' + d.total + ' inputs point the same way.' : d.total + ' inputs with a view, split.');
+      html += '<p class="su-line">' + esc(line.join(' ')) + '</p>';
+      var li = function (x) { return '<li>' + esc(x.label) + '</li>'; };
+      html += '<div class="su-cols"><div><p class="jl-k">' + (d.lean ? 'With it' : 'Up') + '</p><ul class="su-list">' + (d.withIt.map(li).join('') || '<li class="muted">nothing strong</li>') + '</ul></div>' +
+              '<div><p class="jl-k">' + (d.lean ? 'Against it' : 'Down') + '</p><ul class="su-list">' + (d.against.map(li).join('') || '<li class="muted">nothing strong</li>') + '</ul></div></div>';
+      var room = [];
+      if (isNum(d.resistance)) room.push('resistance ' + px(d.resistance) + ' (' + (d.roomUp >= 0 ? '+' : '') + d.roomUp.toFixed(2) + '%)');
+      if (isNum(d.support)) room.push('support ' + px(d.support) + ' (-' + d.roomDown.toFixed(2) + '%)');
+      if (room.length) html += '<p class="su-line">Room: ' + esc(room.join(', ')) + '.</p>';
+      var chk = KT.learn && KT.learn.closeFitCheck ? KT.learn.closeFitCheck(S.symbol) : null;
+      var rec = sessionRecord(S.symbol);
+      var recBits = [];
+      if (rec.n) recBits.push('right on ' + rec.right + ' of ' + rec.n + ' judged sessions');
+      if (chk && chk.intradayCalls) recBits.push('its line\'s move after the open went the right way ' + chk.intradayRight + ' of ' + chk.intradayCalls + ' times');
+      if (recBits.length) html += '<p class="fine">Its own record: ' + esc(recBits.join('; ')) + '. Weigh the lean with that in mind.</p>';
+    }
+    html += '<p class="fine su-foot">A reading of the inputs on this page, not advice. Every trade is your own call.</p>';
+    body.innerHTML = html;
+  }
+
+  /* ======================================================= WHY IT IS MOVING
+     drivers.explain: the factors pushing the index down and holding it up,
+     each with the points its measured link puts on it. */
+  function renderDrivers(S) {
+    var ex = S.drivers, mv = $('drivers-move');
+    if (!mv) return;
+    var meta = C.symbols[S.symbol] || { label: S.symbol };
+    if (!ex) { mv.textContent = 'Reading the markets...'; return; }
+    var m = ex.move;
+    mv.innerHTML = m ? esc(meta.label) + ' <b class="' + (m.pct >= 0 ? 'up' : 'down') + '">' + esc(fmt.pct(m.pct)) + '</b> (' +
+      esc((m.pts >= 0 ? '+' : '') + Math.round(m.pts)) + ' points) against the last close' : esc(meta.label);
+    var item = function (x) {
+      var pts = isNum(x.pts) ? '<span class="dv-pts ' + (x.pts >= 0 ? 'up' : 'down') + '">' + (x.pts > 0 ? '+' : '') + x.pts + ' pts</span>' : '';
+      var tip = x.link ? 'Measured link: ' + x.link.beta + ' per unit move, ' + x.link.kind + ', over ' + x.link.n + ' sessions' +
+        (isNum(x.link.hit) ? '; same direction ' + x.link.hit + '% of the time on big days' : '') : x.kind === 'member' ? 'Index weight times its move (full market cap weights, approximate)' : '';
+      return '<li' + (tip ? ' title="' + esc(tip) + '"' : '') + '><span class="dv-k">' + esc(x.label) + '</span><span class="dv-r">' + esc(x.reading) + '</span>' + pts + '</li>';
+    };
+    var dn = $('drivers-down'), up = $('drivers-up');
+    if (dn) dn.innerHTML = ex.dragging.slice(0, 8).map(item).join('') || '<li class="muted">Nothing notable</li>';
+    if (up) up.innerHTML = ex.supporting.slice(0, 8).map(item).join('') || '<li class="muted">Nothing notable</li>';
+    var note = [];
+    if (ex.world && ex.world.measured && ex.world.explainedPts != null) {
+      note.push('By their measured links, markets abroad account for about ' + (ex.world.explainedPts > 0 ? '+' : '') + ex.world.explainedPts + ' points of this move.');
+    } else if (ex.world && ex.world.rows.length) {
+      note.push('Markets abroad are shown by the way they usually push India; their measured links (twenty years) arrive with the next scheduled run.');
+    }
+    if (ex.inside) {
+      var top = ex.inside.sectors.filter(function (x) { return Math.abs(x.pts) >= 3; }).slice(0, 2)
+        .concat(ex.inside.sectors.filter(function (x) { return Math.abs(x.pts) >= 3; }).slice(-2));
+      var seen = {}, words = [];
+      top.forEach(function (x) { if (seen[x.sector]) return; seen[x.sector] = 1; words.push(x.sector + ' ' + (x.pts > 0 ? '+' : '') + x.pts); });
+      if (words.length) note.push('Inside the index: ' + words.join(', ') + ' points (weights approximate).');
+    }
+    setText('drivers-note', note.join(' '));
+    renderWorldBoard(S);
+  }
+
+  var GROUP_ORDER = ['india', 'asia', 'us', 'europe', 'commodities', 'currencies and rates', 'risk appetite', 'other'];
+  var GROUP_NAME = { india: 'GIFT Nifty', asia: 'Asia', us: 'United States', europe: 'Europe', commodities: 'Commodities',
+                     'currencies and rates': 'Currencies and rates', 'risk appetite': 'Risk appetite', other: 'Other' };
+  function renderWorldBoard(S) {
+    var host = $('cues-list');
+    if (!host) return;
+    var ex = S.drivers, w = ex && ex.world;
+    if (!w || !w.rows.length) return;
+    var html = '';
+    GROUP_ORDER.forEach(function (gk) {
+      var g = w.groups[gk];
+      if (!g) return;
+      html += '<div class="wb-group"><p class="jl-k">' + esc(GROUP_NAME[gk] || gk) + '</p>';
+      g.rows.forEach(function (r) {
+        var mv = (r.move > 0 ? '+' : '') + r.move + (r.unit === 'points' ? ' pts' : '%');
+        var hr = isNum(r.hour) ? (r.hour > 0 ? '+' : '') + r.hour.toFixed(2) + '% 1h' : '';
+        var link = r.link ? 'link ' + r.link.beta : '';
+        var push = isNum(r.pushPts) ? (r.pushPts > 0 ? '+' : '') + r.pushPts + ' pts' : '';
+        html += '<div class="wb-row" title="' + esc(r.link ? 'Measured over ' + r.link.n + ' sessions (' + r.link.kind + '), correlation ' + r.link.corr : 'No measured link yet') + '">' +
+          '<span class="wb-k">' + esc(r.label) + (r.delay ? ' <small>' + r.delay + 'm</small>' : '') + '</span>' +
+          '<span class="wb-v ' + (r.move > 0 ? 'up' : r.move < 0 ? 'down' : '') + '">' + esc(mv) + '</span>' +
+          '<span class="wb-h">' + esc(hr) + '</span>' +
+          '<span class="wb-p ' + (r.pushPts > 0 ? 'up' : r.pushPts < 0 ? 'down' : '') + '">' + esc(push || link) + '</span></div>';
+      });
+      html += '</div>';
+    });
+    host.innerHTML = html;
+    setText('wb-count', w.rows.length + ' markets');
+  }
+
+  /* ============================================================ STUDIES
+     The Studies menu under the chart's overlay buttons: each study's toggle,
+     the rule of thumb it comes with, where price sits against it now, and
+     how often its rules came true (studies.js, the workflow's twenty years
+     or this browser's two). */
+  var studiesOpen = false;
+  function renderStudies(S) {
+    var pop = $('studies-pop');
+    if (!pop || !studiesOpen || !KT.studies) return;
+    var on = KT.chart && KT.chart.overlays ? KT.chart.overlays() : {};
+    var tf = C.timeframes[S.timeframe] || {};
+    var ms = core.marketState ? core.marketState() : { state: 'live' };
+    var pb = S.playbook;
+    var rd = KT.studies.readings({ candles: S.candles, options: S.options, playbook: pb, live: ms.state === 'live',
+                                   intraday: tf.barSec < 86400, symbol: S.symbol });
+    var byStudy = {};
+    (pb && pb.rules || []).forEach(function (r) { (byStudy[r.study] = byStudy[r.study] || []).push(r); });
+    var src = !pb ? 'Measuring: the rules are counted once two years of daily bars arrive.'
+      : pb.source === 'workflow' ? 'Each rule counted on ' + (C.symbols[S.symbol] || { label: S.symbol }).label + '\'s daily record, ' + String(pb.from).slice(0, 4) + ' to ' + String(pb.to).slice(0, 4) + ' (' + fmt.int(pb.days) + ' sessions).'
+      : 'Each rule counted on the last ' + fmt.int(pb.days) + ' sessions here; the twenty-year counts arrive with the scheduled run.';
+    var act = S.activeRules || [];
+    var html = '<div class="sp-head"><b>Studies</b><button class="btn btn-sm" id="studies-close">Close</button></div>' +
+      '<p class="fine">' + esc(src) + '</p>';
+    if (act.length) {
+      html += '<p class="jl-k">In play now</p><ul class="sp-active">' + act.slice(0, 6).map(function (r) {
+        return '<li><b>' + esc(r.name) + '</b>' + (r.rate != null ? ': came true ' + r.rate + '% of ' + fmt.int(r.n) + ' times' + (r.base != null ? ' (any day ' + r.base + '%)' : '') : '') + '</li>';
+      }).join('') + '</ul>';
+    }
+    // Which measured rules belong under which study (studies.js RULES `study`).
+    var RULES_OF = { cpr: ['cpr'], pivots: ['pivots'], camarilla: ['camarilla'], pdhl: ['pdhl', 'gap'],
+                     osc: ['rsi', 'ema', 'range', 'vix'] };
+    html += '<ul class="sp-list">' + KT.studies.CATALOGUE.map(function (st) {
+      var all = [];
+      (RULES_OF[st.id] || []).forEach(function (k) { all = all.concat(byStudy[k] || []); });
+      return '<li class="sp-item"><label class="sp-row"><input type="checkbox" data-study="' + esc(st.id) + '"' + (on[st.id] ? ' checked' : '') + '>' +
+        '<b>' + esc(st.name) + '</b></label>' +
+        (rd[st.id] ? '<p class="sp-read">' + esc(rd[st.id]) + '</p>' : '') +
+        '<p class="sp-tip">' + esc(st.tip) + '</p>' +
+        (all.length ? '<ul class="sp-rules">' + all.filter(function (r) { return r.n > 0; }).map(function (r) {
+          return '<li title="' + esc(r.tip) + '">' + esc(r.name) + ': <b>' + (r.rate != null ? r.rate + '%' : 'n/a') + '</b> of ' + fmt.int(r.n) +
+            (r.base != null ? ' <span class="muted">(any day ' + r.base + '%)</span>' : '') + '</li>';
+        }).join('') + '</ul>' : '') + '</li>';
+    }).join('') + '</ul>';
+    if (pb && pb.gapFollow) {
+      html += '<p class="fine">Gaps: on average ' + Math.abs(Math.round(pb.gapFollow.beta * 100)) + '% of an opening gap ' + (pb.gapFollow.beta < 0 ? 'was given back' : 'was added to') + ' by the close (' + fmt.int(pb.gapFollow.n) + ' sessions).</p>';
+    }
+    html += '<p class="fine">Rates are how often the rule came true, not a promise. A rule that only matches its "any day" rate has no edge.</p>';
+    pop.innerHTML = html;
+  }
+  function initStudies() {
+    var btn = $('btn-studies'), pop = $('studies-pop');
+    if (!btn || !pop) return;
+    btn.addEventListener('click', function () {
+      studiesOpen = !studiesOpen;
+      pop.hidden = !studiesOpen;
+      btn.setAttribute('aria-expanded', String(studiesOpen));
+      btn.classList.toggle('is-on', studiesOpen);
+      if (studiesOpen) renderStudies(KT.app.state);
+    });
+    pop.addEventListener('click', function (e) {
+      if (e.target && e.target.id === 'studies-close') { studiesOpen = false; pop.hidden = true; btn.setAttribute('aria-expanded', 'false'); btn.classList.remove('is-on'); }
+    });
+    pop.addEventListener('change', function (e) {
+      var id = e.target && e.target.dataset && e.target.dataset.study;
+      if (!id || !KT.chart) return;
+      KT.chart.setOverlay(id, !!e.target.checked);
+      try { core.store.set('overlays', KT.chart.overlays()); } catch (err) { /* a convenience */ }
+    });
+    var tabs = $('setup-tabs');
+    if (tabs) tabs.addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('.su-tab') : null;
+      if (!b) return;
+      setupTab = b.dataset.setup === 'range' ? 'range' : 'direction';
+      try { core.store.set('setupTab', setupTab); } catch (err) { /* a convenience */ }
+      renderSetup(KT.app.state);
+    });
+  }
+
+  /* ===================================================== RISING TOPICS
+     What the market is talking about: topics in the last six hours of
+     headlines and crowd posts against the eighteen before, with tone. */
+  var TOPICS = [
+    ['FII flows', /\b(fii|fiis|fpi|fpis|foreign (?:investors|funds|portfolio))\b/i],
+    ['Domestic funds', /\b(dii|diis|mutual funds?|sip inflows?)\b/i],
+    ['US Fed', /\b(fed|fomc|powell|federal reserve)\b/i],
+    ['Crude oil', /\b(crude|brent|oil prices?|opec)\b/i],
+    ['Rupee', /\b(rupee|inr)\b/i],
+    ['RBI and rates', /\b(rbi|repo rate|monetary policy|bond yields?|g-sec)\b/i],
+    ['Results', /\b(q[1-4] results|quarterly results|q[1-4] earnings|net profit|earnings)\b/i],
+    ['Tariffs and trade', /\b(tariffs?|trade (?:deal|war|talks)|trump)\b/i],
+    ['China', /\b(china|chinese|beijing|yuan)\b/i],
+    ['Asian markets', /\b(nikkei|hang seng|kospi|asian (?:markets|stocks|shares))\b/i],
+    ['Wall Street', /\b(wall street|s&p 500|nasdaq|dow jones)\b/i],
+    ['Banks', /\b(bank nifty|banks|banking|hdfc bank|icici bank|sbi|kotak|axis bank)\b/i],
+    ['IT stocks', /\b(infosys|tcs|wipro|hcl ?tech|tech mahindra|it stocks|it sector)\b/i],
+    ['Geopolitics', /\b(war|missile|border|attack|sanctions?|ceasefire|israel|iran|russia|ukraine|pakistan)\b/i],
+    ['IPOs', /\b(ipo|ipos|listing|gmp)\b/i],
+    ['Gold and silver', /\b(gold|silver|bullion)\b/i],
+    ['Inflation', /\b(inflation|cpi|wpi)\b/i],
+    ['Expiry and options', /\b(expiry|open interest|put call ratio|pcr|options data)\b/i],
+  ];
+  function renderTopics(S) {
+    var host = $('topics-strip');
+    if (!host || !KT.data || !KT.data.getNews) return;
+    var now = Date.now() / 1000, recent = {}, before = {}, tone = {};
+    // Six hours, or twelve when the last six were quiet (a night, a weekend).
+    var win = 6 * 3600;
+    var texts = KT.data.getNews().map(function (n) { return { ts: n.ts, text: n.headline, s: n.sentiment }; });
+    var live = S.crowdLive && S.crowdLive[S.symbol] && S.crowdLive[S.symbol].value;
+    if (live && live.crowd && live.crowd.items) live.crowd.items.forEach(function (it) { texts.push({ ts: it.ts, text: it.text, s: it.tag === 'bullish' ? 1 : it.tag === 'bearish' ? -1 : 0, crowd: true }); });
+    var soc = S.social && S.social.reddit && S.social.reddit.ok ? S.social.reddit.posts || [] : [];
+    soc.forEach(function (p) { texts.push({ ts: p.ts, text: p.title, s: p.s || 0, crowd: true }); });
+    if (texts.filter(function (t) { return t.ts && now - t.ts <= win; }).length < 15) win = 12 * 3600;
+    texts.forEach(function (t) {
+      if (!t.ts || !t.text) return;
+      var age = now - t.ts;
+      if (age > 24 * 3600 + win || age < -600) return;
+      TOPICS.forEach(function (tp) {
+        if (!tp[1].test(t.text)) return;
+        if (age <= win) { recent[tp[0]] = (recent[tp[0]] || 0) + 1; (tone[tp[0]] = tone[tp[0]] || []).push(isNum(t.s) ? t.s : 0); }
+        else before[tp[0]] = (before[tp[0]] || 0) + 1;
+      });
+    });
+    var hrs = win / 3600;
+    var list = Object.keys(recent).map(function (k) {
+      var rate = recent[k] / hrs, prior = (before[k] || 0) / 24;
+      var tn = tone[k].reduce(function (a, b) { return a + b; }, 0) / tone[k].length;
+      return { k: k, n: recent[k], rising: rate >= Math.max(0.5, prior * 1.5), falling: prior > 0 && rate <= prior * 0.5, tone: tn };
+    }).sort(function (a, b) { return b.n - a.n; }).slice(0, 7);
+    host.innerHTML = list.length ? '<span class="tp-k">Talked about now</span>' + list.map(function (t) {
+      return '<span class="chip tp ' + (t.tone > 0.4 ? 'up' : t.tone < -0.4 ? 'down' : '') + '" title="' + esc(t.n + ' mentions in the last ' + hrs + ' hours' + (t.rising ? ', rising' : '') + '; tone ' + (t.tone > 0.4 ? 'positive' : t.tone < -0.4 ? 'negative' : 'mixed')) + '">' +
+        esc(t.k) + ' ' + t.n + (t.rising ? ' ▲' : t.falling ? ' ▼' : '') + '</span>';
+    }).join('') : '';
+  }
+
+  /* The gap analytics under said vs did (learn.closeFitCheck). */
+  function renderJudgeStats(S) {
+    var host = $('judge-stats');
+    if (!host || !KT.learn || !KT.learn.closeFitCheck) return;
+    var c = KT.learn.closeFitCheck(S.symbol);
+    if (!c || !c.n || c.base == null) { host.innerHTML = c && c.n ? '<p class="fine">' + c.n + ' judged sessions so far; the analysis of the gap needs ' + ((KT.learn.MIN_CLOSE_SAMPLE || 10) + 1) + '.</p>' : ''; return; }
+    var better = c.learned < c.base;
+    host.innerHTML = '<p class="jl-k">The gap, over ' + c.n + ' judged sessions</p><ul class="js-list">' +
+      '<li>The close landed <b>' + c.base.toFixed(2) + '%</b> from the line on average; the open was off by ' + c.gapMiss.toFixed(2) + '%.</li>' +
+      '<li>The line\'s move after the open went the right way ' + c.intradayRight + ' of ' + c.intradayCalls + ' times.</li>' +
+      '<li>With what it has learned from those sessions (each tested with itself left out) the close would have been off by <b>' + c.learned.toFixed(2) + '%</b>' +
+        (better ? ', so the line is now drawn with it.' : ', no better, so the correction stays small.') + '</li>' +
+      '<li>A line with no move after the open would have been off by ' + c.flat.toFixed(2) + '%.</li></ul>';
+  }
+
   function render(S) {
     if (!state.firstRenderAt) state.firstRenderAt = Date.now();
     var rec = sessionRecord(S.symbol);
     renderCall(S);
+    renderSetup(S);
+    renderDrivers(S);
     renderJudge(S, rec);
+    renderJudgeStats(S);
     renderDesk(S);
     renderLearned(S);
+    renderTopics(S);
+    renderStudies(S);
     // Keep the address bar on the symbol being shown, so a copied link opens it.
     var hs = symbolFromHash();
     if (hs !== S.symbol && (hs || S.symbol !== C.defaultSymbol)) {
@@ -912,6 +1188,7 @@
 
   function init() {
     if (!KT.app || !KT.app.onRecompute) return;
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initStudies); else initStudies();
     // A link to #s=RELIANCE opens RELIANCE first, not NIFTY and then RELIANCE.
     var start = symbolFromHash();
     if (start && start !== C.defaultSymbol && KT.app.openSymbol(start)) {

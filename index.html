@@ -286,6 +286,7 @@
         <span class="lg" id="reason-granularity">Reason points: every 1 hour</span>
       </div>
       <div class="overlay-group" id="overlay-group" role="group" aria-label="Chart overlays">
+        <button class="ov-btn ov-menu" id="btn-studies" aria-haspopup="dialog" aria-expanded="false" title="CPR, pivots, Camarilla, yesterday's range, opening range, Fibonacci, OI walls, round numbers, Ichimoku, RSI: each with its rule of thumb and how often it worked">Studies &#9662;</button>
         <button class="ov-btn is-on"  data-ov="patterns"   title="Draw detected pattern geometry">Patterns</button>
         <button class="ov-btn is-on"  data-ov="levels"     title="Support and resistance price has respected">Levels</button>
         <button class="ov-btn is-on"  data-ov="ema"        title="20 / 50 / 200 exponential moving averages">EMA</button>
@@ -296,6 +297,7 @@
         <button class="ov-btn is-on"  data-ov="trail"      title="The line the model drew one lead earlier, kept on the chart">Trail</button>
         <button class="ov-btn is-on"  data-ov="errors"     title="Actual minus the remembered line, at every bar">Misses</button>
       </div>
+      <div class="studies-pop" id="studies-pop" role="dialog" aria-label="Studies" hidden></div>
     </div>
 
     <div class="chart-stage" id="chart-stage">
@@ -403,6 +405,9 @@
           <button class="filter-btn" data-filter="mine"   aria-pressed="false" id="filter-mine">My stocks</button>
         </div>
       </div>
+      <!-- What the market is talking about: topics rising in the last six
+           hours of headlines and crowd posts (panels.js renderTopics). -->
+      <div class="topics-strip" id="topics-strip"></div>
       <ul class="news-list" id="news-list"></ul>
     </section>
   </main>
@@ -475,6 +480,37 @@
         </div>
       </div>
 
+      <!-- ======================================================= SETUP CHECK
+           Every input lined up (drivers.js setup): the direction view and,
+           for option sellers, the range view. Conditions, never advice. -->
+      <div class="section setup-section" id="setup-section">
+        <div class="section-head">
+          <span class="label">Setup check</span>
+          <div class="su-tabs" id="setup-tabs" role="group" aria-label="Setup view">
+            <button class="su-tab" data-setup="direction" aria-pressed="true">Direction</button>
+            <button class="su-tab" data-setup="range" aria-pressed="false">Range</button>
+          </div>
+        </div>
+        <div id="setup-body"></div>
+      </div>
+
+      <!-- ================================================== WHY IT IS MOVING
+           Factors pushing the index down and holding it up, world markets
+           among them, in points by their measured links (drivers.js). -->
+      <div class="section drivers-section" id="drivers-section">
+        <div class="section-head"><span class="label">Why it is moving</span><span class="label" id="cues-updated">&mdash;</span></div>
+        <p class="dv-move" id="drivers-move">Reading the markets&hellip;</p>
+        <div class="dv-cols">
+          <div><p class="jl-k down">Pushing it down</p><ul class="dv-list" id="drivers-down"></ul></div>
+          <div><p class="jl-k up">Holding it up</p><ul class="dv-list" id="drivers-up"></ul></div>
+        </div>
+        <p class="fine" id="drivers-note"></p>
+        <details class="dv-world" open>
+          <summary>World markets, live <span class="muted" id="wb-count"></span></summary>
+          <div id="cues-list" class="cues-list wb"></div>
+        </details>
+      </div>
+
       <!-- ======================================================= SAID VS DID
            Each frozen call against where its session closed and, when it
            missed, what it did not know (postmortem.js): facts with times on
@@ -487,6 +523,7 @@
         <div id="judge-last"></div>
         <ul class="judge-list" id="judge-list"></ul>
         <p class="verdict-line" id="judge-sum"></p>
+        <div id="judge-stats"></div>
       </div>
 
       <!-- Forecast verdict -->
@@ -747,11 +784,7 @@
         <div id="levels-list" class="levels-list"></div>
       </div>
 
-      <!-- ====================================================== GLOBAL CUES -->
-      <div class="section" id="cues-section">
-        <div class="section-head"><span class="label">Global cues</span><span class="label" id="cues-updated">&mdash;</span></div>
-        <div id="cues-list" class="cues-list"></div>
-      </div>
+      <!-- The global cues moved up into "Why it is moving" (30 Oct 2026). -->
 
       <!-- ======================================================= INDICATORS -->
       <div class="section" id="indicator-section">
@@ -1028,6 +1061,7 @@
 <script src="assets/js/candles.js"></script>
 <script src="assets/js/patterns.js"></script>
 <script src="assets/js/structures.js"></script>
+<script src="assets/js/studies.js"></script>
 <script src="assets/js/journal.js"></script>
 <!-- The order book (profile.html) is the source of truth for holdings; the
      portfolio module reads positions off it, so it loads first. -->
@@ -1059,6 +1093,7 @@
 <script src="assets/js/stocks.js"></script>
 <script src="assets/js/lessons.js"></script>
 <script src="assets/js/desk.js"></script>
+<script src="assets/js/drivers.js"></script>
 <script src="assets/js/app.js"></script>
 <script src="assets/js/panels.js"></script>
 </body>

@@ -58,9 +58,20 @@ function kt(iso) {
   return KT;
 }
 
-const minuteRaw = readJSON('data/candles_NIFTY_1H.json', null);
+/* A snapshot committed during market hours ends in a session still trading
+   (the one of 30 Oct 2026 stops at 12:41 IST), and every replay below settles
+   whole sessions. A part-session at the end is left out, so the checks read
+   the same whatever hour the data was saved. */
+const minuteRaw = (function (raw) {
+  if (!raw || !raw.candles || !raw.candles.length) return raw;
+  const lastKey = istKey(raw.candles[raw.candles.length - 1][0]);
+  const lastMin = Math.max.apply(null, raw.candles.filter(r => istKey(r[0]) === lastKey).map(r => istMinute(r[0])));
+  return lastMin >= 15 * 60 + 29 ? raw
+    : Object.assign({}, raw, { candles: raw.candles.filter(r => istKey(r[0]) !== lastKey) });
+})(readJSON('data/candles_NIFTY_1H.json', null));
 const minutes = (minuteRaw && minuteRaw.candles || []).map(r => ({ time: r[0], open: r[1], high: r[2], low: r[3], close: r[4] }));
 function istKey(sec) { return new Date((sec + 19800) * 1000).toISOString().slice(0, 10); }
+function istMinute(sec) { const d = new Date((sec + 19800) * 1000); return d.getUTCHours() * 60 + d.getUTCMinutes(); }
 const days = [];
 minutes.forEach(c => { const k = istKey(c.time); if (days.indexOf(k) === -1) days.push(k); });
 const lastDay = days[days.length - 1], prevDay = days[days.length - 2];
@@ -184,8 +195,13 @@ section('LEDGER - settling a record row here, one lesson a session');
   B2.ledger.setShared({ v: 1, symbols: { NIFTY: { rows: [JSON.parse(JSON.stringify(adv)), JSON.parse(JSON.stringify(open))] } } });
   const no1530 = full.filter(c => (c.time + 19800) % 86400 < 15.5 * 3600 || istKey(c.time) < lastDay);
   const settled1529 = B2.ledger.settleLocks(no1530, 'NIFTY', { news: [], now: null, events: null, expiry: null });
+  // Some saved tapes have no 15:30 bar to take away; either way the tape
+  // handed over must end on the 15:29 bar.
+  const end1529 = no1530.length && istKey(no1530[no1530.length - 1].time) === lastDay &&
+    istMinute(no1530[no1530.length - 1].time) === 15 * 60 + 29;
   ok('a session whose bars stop at 15:29 still settles that evening',
-     no1530.length === full.length - 1 && settled1529 === 2, 'settled ' + settled1529);
+     end1529 && settled1529 === 2,
+     'settled ' + settled1529 + (no1530.length === full.length ? ', the saved tape had no 15:30 bar' : ''));
   // The record publishes its own settled version: the copy that knows more wins, a tie goes to the record.
   const pub = rows.map(r => Object.assign(JSON.parse(JSON.stringify(r)), { publishedMark: true }));
   B.ledger.setShared({ v: 1, symbols: { NIFTY: { rows: pub } } });
@@ -495,6 +511,118 @@ section('DESK - its own record in the final prompt');
   const pq = KT.desk.prompts.quick(F, '', '', txt);
   ok('and the final prompt carries it, in both modes', /own recent record/.test(pr.user) && /Right 2, wrong 1/.test(pr.user) &&
      /Right 2, wrong 1/.test(pq.user));
+}
+
+/* ======================================================================= */
+section('STUDIES - the levels traders draw, and the rules measured');
+{
+  const KT = load(['config', 'core', 'indicators', 'studies'], { quiet: true });
+  const St = KT.studies;
+  const prev = { high: 110, low: 90, close: 105 };
+  const cp = St.cpr(prev);
+  ok('CPR from yesterday\'s high, low and close', cp.P === 101.67 && cp.BC === 100 && cp.TC === 103.33 && cp.widthPct === 3.28, JSON.stringify(cp));
+  const pv = St.floorPivots(prev);
+  ok('floor pivots', pv.R1 === 113.33 && pv.S1 === 93.33 && pv.R2 === 121.67 && pv.S2 === 81.67, JSON.stringify(pv));
+  const cm = St.camarilla(prev);
+  ok('Camarilla H3 and L4', cm.H3 === 110.5 && cm.L4 === 94, JSON.stringify(cm));
+  ok('round numbers around NIFTY step by 100, with the 500s marked', (() => { const r = St.roundLevels(23041, 'NIFTY'); return r.length === 7 && r[3].price === 23000 && r.some(x => x.price === 23000 && x.strong); })());
+  const oi = St.oiLevels({ ok: true, resistance: [{ strike: 24000 }], support: [{ strike: 21500 }], maxPain: 22700, pcrOi: 0.9, expiryDays: 4 });
+  ok('the option walls are read from the chain the options lane reads', oi.callWall === 24000 && oi.putWall === 21500 && oi.maxPain === 22700);
+  // A record built so each rule's answer is known: every day gaps up 0.5%
+  // and gives the whole gap back by the close (a full fade, never filled
+  // above), on a flat range.
+  const days = [];
+  let c = 1000;
+  for (let i = 0; i < 300; i++) {
+    const o = c * 1.005, cl = c * 0.999;
+    const d = new Date(Date.UTC(2024, 0, 1) + i * 86400000).toISOString().slice(0, 10);
+    days.push({ key: d, time: Math.floor(Date.parse(d + 'T03:45:00Z') / 1000), open: o, high: o * 1.001, low: cl * 0.999, close: cl });
+    c = cl;
+  }
+  const m = St.measureRules(days, null);
+  const rule = k => m.rules.filter(r => r.key === k)[0];
+  ok('a gap up that always fades is measured as fading every time', rule('gap_up_fade').n >= 250 && rule('gap_up_fade').rate === 100, JSON.stringify(rule('gap_up_fade')));
+  ok('and as filling every time', rule('gap_up_fill').rate === 100);
+  ok('the gap follow-through slope is negative when gaps are given back', m.gapFollow && m.gapFollow.beta < -0.5, JSON.stringify(m.gapFollow));
+  ok('a rule that never applies is counted as none, not as a rate', rule('gap_down_fill').n === 0 && rule('gap_down_fill').rate === null);
+  const sess = St.sessionsOf([{ time: 1793251500, open: 1, high: 3, low: 0.5, close: 2 }, { time: 1793251560, open: 2, high: 4, low: 1, close: 3 },
+                              { time: 1793337900, open: 3, high: 3.5, low: 2.5, close: 3.2 }]);
+  ok('minute bars fold into one row a session', sess.length === 2 && sess[0].high === 4 && sess[0].close === 3 && sess[1].open === 3);
+}
+
+/* ======================================================================= */
+section('DRIVERS - why it is moving');
+{
+  const KT = load(['config', 'core', 'indicators', 'levels', 'candles', 'patterns', 'structures', 'studies', 'data', 'analogs', 'vol', 'forecast', 'drivers'], { quiet: true });
+  const D = KT.drivers;
+  const L = (beta) => ({ n: 4800, beta: beta, corr: 0.3, hit: 61 });
+  const world = [
+    { key: 'NQ', live: 'nasdaq_fut', unit: 'pct', closesBefore: false, overnight: { gap: L(0.18), close: L(0.2) } },
+    { key: 'ES', live: 'us_futures', unit: 'pct', closesBefore: false, overnight: { gap: L(0.3), close: L(0.35) } },
+    { key: 'HANGSENG', live: 'hangseng', unit: 'pct', closesBefore: true, overnight: { gap: L(0.1), close: L(0.1) }, sameDay: L(0.22) },
+    { key: 'US10Y', live: 'us10y', unit: 'points', closesBefore: false, overnight: { gap: L(-1), close: L(-1.5) } },
+  ];
+  const global = { items: {
+    nasdaq_fut: { label: 'Nasdaq futures', price: 100, prevClose: 103.37, changePct: -3.26 },
+    us_futures: { label: 'S&P 500 futures', price: 100, prevClose: 101.16, changePct: -1.15 },
+    hangseng: { label: 'Hang Seng', price: 100, prevClose: 100.36, changePct: -0.36, hourPct: -0.2 },
+    us10y: { label: 'US 10y yield', price: 4.53, prevClose: 4.59, changePct: -1.3 },
+    copper: { label: 'Copper', price: 6.5, prevClose: 6.58, changePct: -1.19 },
+  } };
+  const ctx = { symbol: 'NIFTY', global: global, historyModel: { models: { NIFTY: { world: world } } }, prevClose: 23000, live: true,
+                forecast: { lastClose: 23000, lanes: [] }, flows: { fii: { netCr: -944, date: '29-Oct-2026' } } };
+  const ex = D.explain(ctx);
+  const row = id => ex.world.rows.filter(r => r.id === id)[0];
+  ok('a market\'s push is its measured link times its move, in points', row('nasdaq_fut').pushPts === Math.round(0.2 * -3.26 / 100 * 23000), String(row('nasdaq_fut').pushPts));
+  ok('a market that closes before NSE is read on the same day once NSE trades', row('hangseng').link.kind === 'same day' && row('hangseng').link.beta === 0.22);
+  ok('a yield is read in points, not percent', row('us10y').unit === 'points' && Math.abs(row('us10y').move + 0.06) < 1e-9 && row('us10y').pushPts > 0);
+  ok('one move counted once: a group is worth its strongest link, not the sum', ex.world.explainedPts === row('nasdaq_fut').pushPts + row('hangseng').pushPts + row('us10y').pushPts,
+     ex.world.explainedPts + ' vs ' + [row('nasdaq_fut').pushPts, row('us_futures').pushPts, row('hangseng').pushPts, row('us10y').pushPts].join(','));
+  ok('a market with no measured link claims no points, only its usual direction', row('copper').pushPts === null && row('copper').dir === -1 && !row('copper').measured);
+  ok('FII selling stays on the card next to the measured pushes', ex.dragging.some(x => x.id === 'fii'));
+  const pre = D.explain(Object.assign({}, ctx, { live: false }));
+  ok('before the open the link is the one to the opening gap', pre.world.rows.filter(r => r.id === 'us_futures')[0].link.kind === 'overnight, to the open');
+}
+
+/* ======================================================================= */
+section('REASONS - what the world did in the same window');
+{
+  const KT = kt(lastDay + 'T12:00:00');
+  const c = upTo(lastDay).slice(-120);
+  const t0 = c[0].time;
+  // A Hang Seng fall planted across the whole window, nothing else moving.
+  const tape = [];
+  for (let t = Math.floor(t0 / 300) * 300 - 600; t <= c[c.length - 1].time + 600; t += 300) {
+    tape.push({ t: t, v: { hangseng: 20000 * (1 - (t - t0) / 3600 * 0.01), crude: 80 } });
+  }
+  const rs = KT.engine.buildReasons(c, [], '1D', tape);
+  ok('a notable window names the market abroad that moved with it', rs.some(r => r.world && r.world.length && r.world[0].key === 'hangseng' && /Hang Seng -/.test(r.text)),
+     rs.filter(r => r.world && r.world.length).length + ' of ' + rs.length + ' points');
+  const bare = KT.engine.buildReasons(c, [], '1D');
+  ok('without the tape the points are what they were', bare.every(r => !r.world || !r.world.length));
+}
+
+/* ======================================================================= */
+section('LEARN - the gap, from the daily view\'s calls too');
+{
+  const KT = kt(lastDay + 'T17:00:00');
+  const day = i => '2026-0' + (7 + Math.floor(i / 28)) + '-' + String(1 + (i % 28)).padStart(2, '0');
+  const row = (i, tf, said, did) => ({
+    id: 'NIFTY:' + day(i) + ':' + tf + ':advance', symbol: 'NIFTY', session: day(i), stage: 'advance', timeframe: tf,
+    lockedAt: 1000 + i, anchorPrice: 25000, openPrice: 25000, target: 25000 * (1 + said / 100), path: [{ time: 100 + i, value: 25000 }],
+    outcome: { closeActual: 25000 * (1 + did / 100) },
+    postmortem: { said: { open: 25000, target: 25000 * (1 + said / 100) }, did: { open: 25000, close: 25000 * (1 + did / 100), pct: did }, verdict: 'wrong' },
+  });
+  const alt = i => (i % 2 ? 1 : -1) * (0.3 + (i % 5) * 0.05);
+  KT.core.store.set('fcLocks', Array.from({ length: 12 }, (_, i) => row(i, '1D', alt(i), -alt(i))));
+  const fit = KT.learn.closeFitFrom('NIFTY');
+  ok('a browser\'s daily-view calls count toward the fit', fit.n === 12 && fit.raw === -1 && fit.gain === KT.learn.MIN_GAIN, JSON.stringify(fit));
+  KT.core.store.set('fcLocks', Array.from({ length: 12 }, (_, i) => row(i, '1H', alt(i), -alt(i))));
+  ok('an hourly-view call does not: it is not a claim about the session', KT.learn.closeFitFrom('NIFTY').n === 0);
+  KT.core.store.set('fcLocks', Array.from({ length: 14 }, (_, i) => row(i, '1D', alt(i), -alt(i) * 0.5)));
+  const chk = KT.learn.closeFitCheck('NIFTY');
+  ok('the check scores each session with itself left out, and a line that keeps pointing the wrong way is helped by the learned size',
+     chk.n === 14 && chk.learned < chk.base && chk.intradayRight === 0 && chk.intradayCalls === 14, JSON.stringify(chk));
 }
 
 /* ======================================================================= */

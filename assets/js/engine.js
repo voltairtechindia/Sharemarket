@@ -36,7 +36,38 @@
      the daily view, 1 day on the monthly view - but only where something
      actually happened. A quiet bucket gets no marker, which is what keeps the
      chart free of noise.                                                    */
-  function buildReasons(candles, items, tfKey) {
+  /* What the world did in a window, from the browser's tape of world
+     markets (app.js recordWorld): the biggest movers among the markets that
+     trade while NSE does, as plain words. Empty when the tape does not
+     cover the window, which is any time the page was not open. */
+  var WORLD_LABEL = { gift_nifty: 'GIFT Nifty', us_futures: 'US futures', nasdaq_fut: 'Nasdaq futures', nikkei: 'Nikkei',
+                      hangseng: 'Hang Seng', kospi: 'KOSPI', taiwan: 'Taiwan', shanghai: 'Shanghai', shenzhen: 'Shenzhen',
+                      sti: 'Singapore', dax: 'DAX', cac: 'CAC 40', stoxx50: 'Euro Stoxx', ftse: 'FTSE', crude: 'Brent crude',
+                      wti: 'WTI crude', usdinr: 'the rupee (USD/INR)', dxy: 'the dollar index', gold: 'gold', copper: 'copper',
+                      usdjpy: 'USD/JPY' };
+  function worldIn(tape, from, to) {
+    if (!tape || tape.length < 2) return [];
+    var a = null, b = null;
+    for (var i = 0; i < tape.length; i++) {
+      if (tape[i].t <= from) a = tape[i];
+      if (tape[i].t <= to) b = tape[i];
+    }
+    if (!a || !b || a === b || to - b.t > 900) return [];
+    var out = [];
+    Object.keys(WORLD_LABEL).forEach(function (k) {
+      var x = a.v[k], y = b.v[k];
+      if (!(x > 0) || !(y > 0)) return;
+      var pct = (y - x) / x * 100;
+      var need = k === 'usdinr' || k === 'dxy' || k === 'usdjpy' ? 0.15 : 0.35;
+      if (Math.abs(pct) >= need) out.push({ key: k, label: WORLD_LABEL[k], pct: Math.round(pct * 100) / 100 });
+    });
+    return out.sort(function (p, q) { return Math.abs(q.pct) - Math.abs(p.pct); }).slice(0, 3);
+  }
+  function worldWords(list) {
+    return list.map(function (w) { return w.label + ' ' + (w.pct > 0 ? '+' : '') + w.pct.toFixed(2) + '%'; }).join(', ');
+  }
+
+  function buildReasons(candles, items, tfKey, tape) {
     var tf = C.timeframes[tfKey];
     if (!candles || candles.length < 3) return [];
     var bucketSec = tf.reasonBucket;
@@ -93,11 +124,16 @@
       if (!notable && !newsWorthy) return;   // quiet bucket - no marker, no noise
 
       var agrees = top ? ((top.sentiment > 0) === (move > 0)) : null;
+      // The world in the same window (30 Oct 2026): a move that came from
+      // Asia or crude is said to, rather than pinned on a headline.
+      var abroad = notable && bucketSec < 86400 ? worldIn(tape, k, k + bucketSec) : [];
       var text;
       if (top) {
-        text = top.headline;
+        text = top.headline + (abroad.length ? ' Abroad in the same window: ' + worldWords(abroad) + '.' : '');
+      } else if (abroad.length) {
+        text = 'No scored headline landed in this window. Abroad in the same window: ' + worldWords(abroad) + '.';
       } else if (notable) {
-        text = 'No scored headline landed in this window. The move looks technical - ' +
+        text = 'No scored headline landed in this window. The move looks technical: ' +
                (move > 0 ? 'buying into ' : 'selling into ') + core.fmt.price(b.last.close) + '.';
       } else return;
 
@@ -114,6 +150,7 @@
         agrees: agrees,
         newsCount: found.inWindow,
         bucketSec: bucketSec,
+        world: abroad,
       });
     });
 
