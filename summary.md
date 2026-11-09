@@ -1,26 +1,27 @@
 # Training log: where the calls went right and wrong
 
-Rewritten by `scripts/training_log.js` after every run of the history workflow (last: 2026-11-06T17:58:12.010Z). Not served by the site. Every number here is recomputed from `log/*.jsonl`; README.md has the schema.
+Rewritten by `scripts/training_log.js` after every run of the history workflow (last: 2026-11-09T10:32:35.544Z). Not served by the site. Every number here is recomputed from `log/*.jsonl`; README.md has the schema.
 
-12 calls frozen, 10 judged, 13 runs logged.
+14 calls frozen, 12 judged, 14 runs logged.
 
 ## NIFTY
 
 | | |
 | --- | --- |
-| Judged sessions | 5 |
-| Right / wrong / no lean or flat | 2 / 2 / 1 |
-| "Always up" would have been right | 5 of 5 |
-| Close off the line, average | 434 points (1.82%) |
-| Net miss (market minus line) | +1.82%, the market closed above the line |
-| Close inside its likely range (68%) | 2 of 5 |
-| Close inside its wide range (95%) | 2 of 5 |
-| Open off the call, average | 244 points |
+| Judged sessions | 6 |
+| Right / wrong / no lean or flat | 3 / 2 / 1 |
+| "Always up" would have been right | 6 of 6 |
+| Close off the line, average | 366 points (1.53%) |
+| Net miss (market minus line) | +1.50%, the market closed above the line |
+| Close inside its likely range (68%) | 3 of 6 |
+| Close inside its wide range (95%) | 3 of 6 |
+| Open off the call, average | 207 points |
 
-The last 5 sessions, newest first (the call each session is judged on):
+The last 6 sessions, newest first (the call each session is judged on):
 
 | Session | Call | Odds up | Line said | Closed | Off by | Verdict | First reason |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-11-09 | up (advance) | 59% | 25,068 | 25,045 (+0.06%) | -23 | right |  |
 | 2026-11-06 | down (advance) | 5% | 24,257 | 25,030 (+2.01%) | +773 | wrong | After the call was frozen, the rupee (USD/INR) strengthened 0.61%, Nasdaq futures rose 1.1%. |
 | 2026-11-05 | no lean (advance) | 52% | 23,919 | 24,537 (+2.61%) | +618 | no-call | Most of the miss was there at the open: it opened at 24,378.05, the call said 23,979.43 (+399 pts). |
 | 2026-11-04 | up (advance) | 65% | 23,868 | 23,961 (+0.63%) | +92 | right |  |
@@ -31,30 +32,32 @@ By the situation the call was made in (two or more sessions):
 
 | Situation | Sessions | Right |
 | --- | --- | --- |
-| FII buying | 4 | 2 (50%) |
+| FII buying | 5 | 3 (60%) |
+| an uptrend | 4 | 3 (75%) |
+| mixed news | 4 | 2 (50%) |
+| RSI overbought | 4 | 3 (75%) |
 | VIX normal | 4 | 2 (50%) |
-| mixed news | 3 | 1 (33%) |
-| an uptrend | 3 | 2 (67%) |
-| RSI overbought | 3 | 2 (67%) |
+| a flat open | 2 | 2 (100%) |
 | a gap-down open | 2 | 0 (0%) |
 
 ## SENSEX
 
 | | |
 | --- | --- |
-| Judged sessions | 5 |
-| Right / wrong / no lean or flat | 3 / 2 / 0 |
-| "Always up" would have been right | 5 of 5 |
-| Close off the line, average | 1366 points (1.77%) |
-| Net miss (market minus line) | +1.72%, the market closed above the line |
-| Close inside its likely range (68%) | 1 of 5 |
-| Close inside its wide range (95%) | 4 of 5 |
-| Open off the call, average | 882 points |
+| Judged sessions | 6 |
+| Right / wrong / no lean or flat | 3 / 2 / 1 |
+| "Always up" would have been right | 6 of 6 |
+| Close off the line, average | 1143 points (1.48%) |
+| Net miss (market minus line) | +1.44%, the market closed above the line |
+| Close inside its likely range (68%) | 2 of 6 |
+| Close inside its wide range (95%) | 5 of 6 |
+| Open off the call, average | 760 points |
 
-The last 5 sessions, newest first (the call each session is judged on):
+The last 6 sessions, newest first (the call each session is judged on):
 
 | Session | Call | Odds up | Line said | Closed | Off by | Verdict | First reason |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-11-09 | no lean (advance) | 51% | 81,079 | 81,107 (+0.10%) | +27 | no-call | Most of the miss was there at the open: it opened at 81,313.44, the call said 81,163.79 (+150 pts). |
 | 2026-11-06 | down (advance) | 23% | 78,339 | 81,028 (+2.17%) | +2689 | wrong | After the call was frozen, the rupee (USD/INR) strengthened 0.60%. |
 | 2026-11-05 | up (advance) | 82% | 78,040 | 79,310 (+2.60%) | +1270 | right |  |
 | 2026-11-04 | up (advance) | 80% | 77,410 | 77,301 (+0.50%) | -109 | right |  |
@@ -86,14 +89,15 @@ By the situation the call was made in (two or more sessions):
 
 | Input | Right way | Wrong way | Rate |
 | --- | --- | --- | --- |
-| levels | 6 | 3 | 67% |
+| global | 6 | 5 | 55% |
+| levels | 6 | 5 | 55% |
+| momentum | 7 | 3 | 70% |
+| seasonal | 10 | 0 | 100% |
+| options | 5 | 4 | 56% |
 | flow | 7 | 2 | 78% |
-| global | 4 | 5 | 44% |
-| momentum | 6 | 3 | 67% |
-| seasonal | 8 | 0 | 100% |
-| options | 4 | 3 | 57% |
+| structure | 0 | 5 | 0% |
 | kronos | 0 | 4 | 0% |
-| structure | 0 | 3 | 0% |
+| crowd | 0 | 2 | 0% |
 | news | 2 | 0 | 100% |
 
 ## The five biggest gaps between line and close
@@ -106,9 +110,8 @@ By the situation the call was made in (two or more sessions):
 
 ## What the record had learned at the last run
 
-- judged sessions behind the fit: 5
-- opening gap gain: 1 from 5 opens
-- session move size: 1, lean 0.00% from 5 sessions
+- judged sessions behind the fit: 6
+- opening gap gain: 1 from 6 opens
+- session move size: 1, lean 0.00% from 6 sessions
 - lane weights: the starting set (nothing has cleared its evidence bar yet)
-- notes from that run: NIFTY: 2026-11-09 already has its advance call
 
