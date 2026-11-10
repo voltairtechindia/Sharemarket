@@ -1,8 +1,8 @@
 # Training log: where the calls went right and wrong
 
-Rewritten by `scripts/training_log.js` after every run of the history workflow (last: 2026-11-09T21:28:16.233Z). Not served by the site. Every number here is recomputed from `log/*.jsonl`; README.md has the schema.
+Rewritten by `scripts/training_log.js` after every run of the history workflow (last: 2026-11-10T10:33:51.457Z). Not served by the site. Every number here is recomputed from `log/*.jsonl`; README.md has the schema.
 
-14 calls frozen, 12 judged, 15 runs logged.
+14 calls frozen, 12 judged, 16 runs logged.
 
 ## NIFTY
 
