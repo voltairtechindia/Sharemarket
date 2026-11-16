@@ -1,26 +1,27 @@
 # Training log: where the calls went right and wrong
 
-Rewritten by `scripts/training_log.js` after every run of the history workflow (last: 2026-11-13T18:33:15.381Z). Not served by the site. Every number here is recomputed from `log/*.jsonl`; README.md has the schema.
+Rewritten by `scripts/training_log.js` after every run of the history workflow (last: 2026-11-16T10:19:59.596Z). Not served by the site. Every number here is recomputed from `log/*.jsonl`; README.md has the schema.
 
-20 calls frozen, 18 judged, 23 runs logged.
+22 calls frozen, 20 judged, 24 runs logged.
 
 ## NIFTY
 
 | | |
 | --- | --- |
-| Judged sessions | 9 |
-| Right / wrong / no lean or flat | 6 / 2 / 1 |
-| "Always up" would have been right | 8 of 9 |
-| Close off the line, average | 278 points (1.15%) |
-| Net miss (market minus line) | +0.87%, the market closed above the line |
-| Close inside its likely range (68%) | 6 of 9 |
-| Close inside its wide range (95%) | 6 of 9 |
-| Open off the call, average | 189 points |
+| Judged sessions | 10 |
+| Right / wrong / no lean or flat | 6 / 3 / 1 |
+| "Always up" would have been right | 9 of 10 |
+| Close off the line, average | 271 points (1.12%) |
+| Net miss (market minus line) | +0.86%, the market closed above the line |
+| Close inside its likely range (68%) | 6 of 10 |
+| Close inside its wide range (95%) | 7 of 10 |
+| Open off the call, average | 183 points |
 
-The last 9 sessions, newest first (the call each session is judged on):
+The last 10 sessions, newest first (the call each session is judged on):
 
 | Session | Call | Odds up | Line said | Closed | Off by | Verdict | First reason |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-11-16 | down (advance) | 38% | 25,080 | 25,291 (+0.58%) | +211 | wrong | 44 strong headlines after the call pointed up. The loudest, at 11:12: "Saw the rally coming? How India's mutua |
 | 2026-11-13 | down (advance) | 36% | 25,246 | 25,144 (-0.61%) | -102 | right |  |
 | 2026-11-12 | up (advance) | 82% | 25,494 | 25,299 (+0.17%) | -194 | right |  |
 | 2026-11-11 | up (advance) | 76% | 25,263 | 25,255 (+0.84%) | -8 | right |  |
@@ -35,12 +36,12 @@ By the situation the call was made in (two or more sessions):
 
 | Situation | Sessions | Right |
 | --- | --- | --- |
-| an uptrend | 7 | 6 (86%) |
-| mixed news | 7 | 5 (71%) |
-| FII buying | 7 | 5 (71%) |
-| RSI overbought | 7 | 6 (86%) |
-| VIX normal | 5 | 3 (60%) |
-| a gap-down open | 3 | 1 (33%) |
+| an uptrend | 8 | 6 (75%) |
+| mixed news | 8 | 5 (63%) |
+| FII buying | 8 | 5 (63%) |
+| RSI overbought | 8 | 6 (75%) |
+| VIX normal | 6 | 3 (50%) |
+| a gap-down open | 4 | 1 (25%) |
 | VIX elevated | 3 | 3 (100%) |
 | a gap-up open | 3 | 3 (100%) |
 | a flat open | 2 | 2 (100%) |
@@ -49,19 +50,20 @@ By the situation the call was made in (two or more sessions):
 
 | | |
 | --- | --- |
-| Judged sessions | 9 |
-| Right / wrong / no lean or flat | 5 / 2 / 2 |
-| "Always up" would have been right | 8 of 9 |
-| Close off the line, average | 899 points (1.16%) |
-| Net miss (market minus line) | +0.88%, the market closed above the line |
-| Close inside its likely range (68%) | 5 of 9 |
-| Close inside its wide range (95%) | 8 of 9 |
-| Open off the call, average | 698 points |
+| Judged sessions | 10 |
+| Right / wrong / no lean or flat | 5 / 2 / 3 |
+| "Always up" would have been right | 9 of 10 |
+| Close off the line, average | 906 points (1.16%) |
+| Net miss (market minus line) | +0.91%, the market closed above the line |
+| Close inside its likely range (68%) | 6 of 10 |
+| Close inside its wide range (95%) | 9 of 10 |
+| Open off the call, average | 725 points |
 
-The last 9 sessions, newest first (the call each session is judged on):
+The last 10 sessions, newest first (the call each session is judged on):
 
 | Session | Call | Odds up | Line said | Closed | Off by | Verdict | First reason |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-11-16 | no lean (advance) | 47% | 81,135 | 82,105 (+0.63%) | +970 | no-call | Most of the miss was there at the open: it opened at 81,857.39, the call said 80,890.11 (+967 pts). |
 | 2026-11-13 | no lean (advance) | 50% | 81,787 | 81,592 (-0.39%) | -194 | no-call |  |
 | 2026-11-12 | up (advance) | 55% | 82,611 | 81,911 (+0.04%) | -700 | right |  |
 | 2026-11-11 | up (advance) | 75% | 81,542 | 81,879 (+0.95%) | +337 | right |  |
@@ -87,26 +89,26 @@ By the situation the call was made in (two or more sessions):
 
 ## Why the wrong calls missed
 
-- a bigger move than its own range: 4
-- most of the miss was already there at the open: 4
-- its own inputs pointed the wrong way: 4
-- the overnight cues moved after the freeze: 3
-- strong news after the freeze: 2
+- most of the miss was already there at the open: 5
+- its own inputs pointed the wrong way: 5
+- a bigger move than its own range: 5
+- the overnight cues moved after the freeze: 4
+- strong news after the freeze: 3
 - FII flows that day: 2
 
 ## Inputs: pointed the way the session went
 
 | Input | Right way | Wrong way | Rate |
 | --- | --- | --- | --- |
-| global | 12 | 5 | 71% |
-| momentum | 11 | 5 | 69% |
-| seasonal | 14 | 2 | 88% |
-| levels | 7 | 9 | 44% |
-| options | 8 | 6 | 57% |
-| flow | 9 | 4 | 69% |
-| crowd | 2 | 6 | 25% |
+| global | 12 | 7 | 63% |
+| momentum | 13 | 5 | 72% |
+| seasonal | 16 | 2 | 89% |
+| levels | 8 | 10 | 44% |
+| options | 8 | 8 | 50% |
+| flow | 9 | 6 | 60% |
+| crowd | 2 | 7 | 22% |
+| structure | 2 | 5 | 29% |
 | kronos | 1 | 6 | 14% |
-| structure | 1 | 5 | 17% |
 | news | 2 | 1 | 67% |
 
 ## The five biggest gaps between line and close
@@ -115,13 +117,12 @@ By the situation the call was made in (two or more sessions):
 - SENSEX 2026-11-02 (advance): +1639 points. Wrong: said down (-0.55%), closed +1.66%. Most of it was at the open. Widest at 15:30 (+1639). id `SENSEX:2026-11-02:1S:advance:wf`
 - SENSEX 2026-11-05 (advance): +1270 points. Right: said up (+0.96%), closed +2.60%. Widest at 14:15 (+1331). id `SENSEX:2026-11-05:1S:advance:wf`
 - SENSEX 2026-11-03 (advance): +1124 points. Right: said up (+0.13%), closed +1.62%. Widest at 15:30 (+1124). id `SENSEX:2026-11-03:1S:advance:wf`
-- NIFTY 2026-11-06 (advance): +773 points. Wrong: said down (-1.14%), closed +2.01%. Cues moved after the freeze. Widest at 15:30 (+773). id `NIFTY:2026-11-06:1S:advance:wf`
+- SENSEX 2026-11-16 (advance): +970 points. No lean called: said flat (-0.56%), closed +0.63%. Most of it was at the open. Widest at 09:45 (+1117). id `SENSEX:2026-11-16:1S:advance:wf`
 
 ## What the record had learned at the last run
 
-- judged sessions behind the fit: 9
-- opening gap gain: 1 from 9 opens
-- session move size: 1, lean 0.00% from 9 sessions
+- judged sessions behind the fit: 10
+- opening gap gain: 0.995 from 10 opens
+- session move size: 1.569, lean 0.00% from 10 sessions (raw slope 2.138, lean t 1.93)
 - lane weights: the starting set (nothing has cleared its evidence bar yet)
-- notes from that run: NIFTY: 2026-11-16 already has its advance call
 
