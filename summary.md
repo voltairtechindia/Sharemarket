@@ -1,26 +1,27 @@
 # Training log: where the calls went right and wrong
 
-Rewritten by `scripts/training_log.js` after every run of the history workflow (last: 2026-11-19T19:30:55.350Z). Not served by the site. Every number here is recomputed from `log/*.jsonl`; README.md has the schema.
+Rewritten by `scripts/training_log.js` after every run of the history workflow (last: 2026-11-20T10:38:48.559Z). Not served by the site. Every number here is recomputed from `log/*.jsonl`; README.md has the schema.
 
-28 calls frozen, 26 judged, 31 runs logged.
+30 calls frozen, 28 judged, 32 runs logged.
 
 ## NIFTY
 
 | | |
 | --- | --- |
-| Judged sessions | 13 |
-| Right / wrong / no lean or flat | 8 / 3 / 2 |
-| "Always up" would have been right | 11 of 13 |
-| Close off the line, average | 243 points (1.00%) |
-| Net miss (market minus line) | +0.74%, the market closed above the line |
-| Close inside its likely range (68%) | 8 of 13 |
-| Close inside its wide range (95%) | 10 of 13 |
-| Open off the call, average | 171 points |
+| Judged sessions | 14 |
+| Right / wrong / no lean or flat | 9 / 3 / 2 |
+| "Always up" would have been right | 12 of 14 |
+| Close off the line, average | 230 points (0.95%) |
+| Net miss (market minus line) | +0.70%, the market closed above the line |
+| Close inside its likely range (68%) | 9 of 14 |
+| Close inside its wide range (95%) | 11 of 14 |
+| Open off the call, average | 183 points |
 
-The last 13 sessions, newest first (the call each session is judged on):
+The last 14 sessions, newest first (the call each session is judged on):
 
 | Session | Call | Odds up | Line said | Closed | Off by | Verdict | First reason |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-11-20 | up (advance) | 86% | 25,737 | 25,801 (+1.12%) | +63 | right |  |
 | 2026-11-19 | up (advance) | 65% | 25,303 | 25,514 (+1.14%) | +211 | right |  |
 | 2026-11-18 | down (advance) | 38% | 25,337 | 25,228 (-0.63%) | -109 | right |  |
 | 2026-11-17 | no lean (advance) | 47% | 25,257 | 25,387 (+0.38%) | +130 | no-call | Most of the miss was there at the open: it opened at 25,323.65, the call said 25,178.66 (+145 pts). |
@@ -39,12 +40,12 @@ By the situation the call was made in (two or more sessions):
 
 | Situation | Sessions | Right |
 | --- | --- | --- |
-| FII buying | 10 | 7 (70%) |
-| an uptrend | 9 | 7 (78%) |
-| mixed news | 9 | 6 (67%) |
-| VIX normal | 8 | 5 (63%) |
-| RSI overbought | 8 | 6 (75%) |
-| a gap-up open | 4 | 4 (100%) |
+| FII buying | 11 | 8 (73%) |
+| an uptrend | 10 | 8 (80%) |
+| mixed news | 10 | 7 (70%) |
+| VIX normal | 9 | 6 (67%) |
+| RSI overbought | 9 | 7 (78%) |
+| a gap-up open | 5 | 5 (100%) |
 | a gap-down open | 4 | 1 (25%) |
 | a flat open | 3 | 3 (100%) |
 | VIX elevated | 3 | 3 (100%) |
@@ -55,19 +56,20 @@ By the situation the call was made in (two or more sessions):
 
 | | |
 | --- | --- |
-| Judged sessions | 13 |
-| Right / wrong / no lean or flat | 6 / 3 / 4 |
-| "Always up" would have been right | 11 of 13 |
-| Close off the line, average | 833 points (1.06%) |
-| Net miss (market minus line) | +0.79%, the market closed above the line |
-| Close inside its likely range (68%) | 9 of 13 |
-| Close inside its wide range (95%) | 12 of 13 |
-| Open off the call, average | 634 points |
+| Judged sessions | 14 |
+| Right / wrong / no lean or flat | 6 / 3 / 5 |
+| "Always up" would have been right | 12 of 14 |
+| Close off the line, average | 786 points (1.00%) |
+| Net miss (market minus line) | +0.72%, the market closed above the line |
+| Close inside its likely range (68%) | 10 of 14 |
+| Close inside its wide range (95%) | 13 of 14 |
+| Open off the call, average | 673 points |
 
-The last 13 sessions, newest first (the call each session is judged on):
+The last 14 sessions, newest first (the call each session is judged on):
 
 | Session | Call | Odds up | Line said | Closed | Off by | Verdict | First reason |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-11-20 | no lean (advance) | 54% | 84,082 | 83,920 (+1.08%) | -162 | no-call | Most of the miss was there at the open: it opened at 82,479.52, the call said 83,653.60 (-1,174 pts). |
 | 2026-11-19 | up (advance) | 63% | 82,287 | 83,022 (+1.21%) | +735 | right |  |
 | 2026-11-18 | no lean (advance) | 46% | 82,465 | 82,032 (-0.61%) | -433 | no-call | After the call was frozen, FTSE fell 1.3%, Dow futures fell 1.0%. |
 | 2026-11-17 | down (advance) | 41% | 81,923 | 82,532 (+0.52%) | +609 | wrong | 40 strong headlines after the call pointed up. The loudest, at 13:29: "Bank Nifty scales record high as broad  |
@@ -111,15 +113,15 @@ By the situation the call was made in (two or more sessions):
 
 | Input | Right way | Wrong way | Rate |
 | --- | --- | --- | --- |
-| global | 16 | 9 | 64% |
-| momentum | 18 | 6 | 75% |
-| levels | 13 | 11 | 54% |
-| seasonal | 20 | 4 | 83% |
+| global | 18 | 9 | 67% |
+| momentum | 20 | 6 | 77% |
+| seasonal | 21 | 4 | 84% |
+| levels | 14 | 11 | 56% |
+| flow | 11 | 9 | 55% |
 | options | 10 | 10 | 50% |
-| flow | 9 | 9 | 50% |
-| structure | 2 | 9 | 18% |
+| structure | 2 | 11 | 15% |
+| kronos | 2 | 8 | 20% |
 | crowd | 3 | 7 | 30% |
-| kronos | 2 | 7 | 22% |
 | news | 2 | 3 | 40% |
 
 ## The five biggest gaps between line and close
@@ -132,9 +134,8 @@ By the situation the call was made in (two or more sessions):
 
 ## What the record had learned at the last run
 
-- judged sessions behind the fit: 13
-- opening gap gain: 0.946 from 13 opens
-- session move size: 1.175, lean 0.00% from 13 sessions (raw slope 1.31, lean t 2.19)
+- judged sessions behind the fit: 14
+- opening gap gain: 0.936 from 14 opens
+- session move size: 1.291, lean 0.00% from 14 sessions (raw slope 1.499, lean t 2.51)
 - lane weights: the starting set (nothing has cleared its evidence bar yet)
-- notes from that run: NIFTY: 2026-11-20 already has its advance call | SENSEX: 2026-11-20 already has its advance call
 
