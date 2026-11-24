@@ -1,8 +1,8 @@
 # Training log: where the calls went right and wrong
 
-Rewritten by `scripts/training_log.js` after every run of the history workflow (last: 2026-11-24T13:04:56.769Z). Not served by the site. Every number here is recomputed from `log/*.jsonl`; README.md has the schema.
+Rewritten by `scripts/training_log.js` after every run of the history workflow (last: 2026-11-24T21:10:03.020Z). Not served by the site. Every number here is recomputed from `log/*.jsonl`; README.md has the schema.
 
-32 calls frozen, 30 judged, 36 runs logged.
+32 calls frozen, 30 judged, 37 runs logged.
 
 ## NIFTY
 
@@ -140,5 +140,5 @@ By the situation the call was made in (two or more sessions):
 - opening gap gain: 0.942 from 15 opens
 - session move size: 0.834, lean 0.00% from 15 sessions (raw slope 0.723, lean t 1.28)
 - lane weights: the starting set (nothing has cleared its evidence bar yet)
-- notes from that run: NIFTY: nothing frozen, the bars end on 2026-11-23, and 2026-11-24 has traded since | SENSEX: nothing frozen, the bars end on 2026-11-23, and 2026-11-24 has traded since
+- notes from that run: NIFTY: 2026-11-25 already has its advance call | SENSEX: 2026-11-25 already has its advance call
 
